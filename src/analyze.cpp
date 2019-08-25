@@ -3871,7 +3871,11 @@ static void analyze_fn_async(CodeGen *g, ZigFn *fn, bool resolve_frame) {
                 return;
             }
         }
-        assert(callee->anal_state == FnAnalStateComplete);
+        if (callee->anal_state != FnAnalStateComplete) {
+            assert(g->errors.length != 0);
+            fn->anal_state = FnAnalStateInvalid;
+            return;
+        }
         analyze_fn_async(g, callee, true);
         if (callee->anal_state == FnAnalStateInvalid) {
             fn->anal_state = FnAnalStateInvalid;
@@ -4146,6 +4150,8 @@ void semantic_analyze(CodeGen *g) {
     for (g->fn_defs_index = 0; g->fn_defs_index < g->fn_defs.length; g->fn_defs_index += 1) {
         ZigFn *fn = g->fn_defs.at(g->fn_defs_index);
         analyze_fn_async(g, fn, true);
+        if (fn->anal_state == FnAnalStateInvalid)
+            continue;
         if (fn_is_async(fn) && fn->non_async_node != nullptr) {
             ErrorMsg *msg = add_node_error(g, fn->proto_node,
                 buf_sprintf("'%s' cannot be async", buf_ptr(&fn->symbol_name)));
@@ -5197,20 +5203,21 @@ static ZigType *get_async_fn_type(CodeGen *g, ZigType *orig_fn_type) {
     return fn_type;
 }
 
-static void emit_error_notes_for_type_loop(CodeGen *g, ErrorMsg *msg, ZigType *stop_type,
+static void emit_error_notes_for_type_loop(CodeGen *g, ErrorMsg *msg, bool keep_going,
         ZigType *ty, AstNode *src_node)
 {
     ErrorMsg *note = add_error_note(g, msg, src_node,
         buf_sprintf("when analyzing type '%s' here", buf_ptr(&ty->name)));
-    if (ty == stop_type)
+    if (!keep_going)
         return;
     switch (ty->id) {
         case ZigTypeIdFnFrame: {
+            keep_going = !ty->data.frame.reported_loop_err;
             ty->data.frame.reported_loop_err = true;
             ZigType *depending_type = ty->data.frame.resolve_loop_type;
             if (depending_type == nullptr)
                 return;
-            emit_error_notes_for_type_loop(g, note, stop_type,
+            emit_error_notes_for_type_loop(g, note, keep_going,
                 depending_type, ty->data.frame.resolve_loop_src_node);
         }
         default:
@@ -5232,8 +5239,7 @@ static Error resolve_async_frame(CodeGen *g, ZigType *frame_type) {
             frame_type->data.frame.reported_loop_err = true;
             ErrorMsg *msg = add_node_error(g, fn->proto_node,
                     buf_sprintf("'%s' depends on itself", buf_ptr(&frame_type->name)));
-            emit_error_notes_for_type_loop(g, msg,
-                    frame_type,
+            emit_error_notes_for_type_loop(g, msg, true,
                     frame_type->data.frame.resolve_loop_type,
                     frame_type->data.frame.resolve_loop_src_node);
             emit_error_notes_for_ref_stack(g, msg);
@@ -5344,6 +5350,11 @@ static Error resolve_async_frame(CodeGen *g, ZigType *frame_type) {
             return ErrorSemanticAnalyzeFail;
         }
         analyze_fn_async(g, callee, true);
+        if (callee->inferred_async_node == inferred_async_checking) {
+            assert(g->errors.length != 0);
+            frame_type->data.frame.locals_struct = g->builtin_types.entry_invalid;
+            return ErrorSemanticAnalyzeFail;
+        }
         if (!fn_is_async(callee))
             continue;
 
