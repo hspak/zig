@@ -1,3 +1,10 @@
+test "zig fmt: c pointer type" {
+    try testCanonical(
+        \\pub extern fn repro() [*c]const u8;
+        \\
+    );
+}
+
 test "zig fmt: asm expression with comptime content" {
     try testCanonical(
         \\comptime {
@@ -21,6 +28,7 @@ test "zig fmt: asm expression with comptime content" {
         \\
     );
 }
+
 test "zig fmt: var struct field" {
     try testCanonical(
         \\pub const Pointer = struct {
@@ -2591,7 +2599,7 @@ test "zig fmt: comments at several places in struct init" {
     try testTransform(
         \\var bar = Bar{
         \\    .x = 10, // test
-        \\    .y = "test" 
+        \\    .y = "test"
         \\    // test
         \\};
         \\
