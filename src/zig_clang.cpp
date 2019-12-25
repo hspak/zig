@@ -1571,6 +1571,16 @@ const ZigClangTypedefNameDecl *ZigClangTypedefNameDecl_getCanonicalDecl(const Zi
     return reinterpret_cast<const ZigClangTypedefNameDecl *>(decl);
 }
 
+const ZigClangFunctionDecl *ZigClangFunctionDecl_getCanonicalDecl(const ZigClangFunctionDecl *self) {
+    const clang::FunctionDecl *decl = reinterpret_cast<const clang::FunctionDecl*>(self)->getCanonicalDecl();
+    return reinterpret_cast<const ZigClangFunctionDecl *>(decl);
+}
+
+const ZigClangVarDecl *ZigClangVarDecl_getCanonicalDecl(const ZigClangVarDecl *self) {
+    const clang::VarDecl *decl = reinterpret_cast<const clang::VarDecl*>(self)->getCanonicalDecl();
+    return reinterpret_cast<const ZigClangVarDecl *>(decl);
+}
+
 const ZigClangRecordDecl *ZigClangRecordDecl_getDefinition(const ZigClangRecordDecl *zig_record_decl) {
     const clang::RecordDecl *record_decl = reinterpret_cast<const clang::RecordDecl *>(zig_record_decl);
     const clang::RecordDecl *definition = record_decl->getDefinition();
@@ -1825,6 +1835,23 @@ bool ZigClangExpr_EvaluateAsConstantExpr(const ZigClangExpr *self, ZigClangExprE
     return true;
 }
 
+const ZigClangExpr *ZigClangInitListExpr_getInit(const ZigClangInitListExpr *self, unsigned i) {
+    auto casted = reinterpret_cast<const clang::InitListExpr *>(self);
+    const clang::Expr *result = casted->getInit(i);
+    return reinterpret_cast<const ZigClangExpr *>(result);
+}
+
+const ZigClangExpr *ZigClangInitListExpr_getArrayFiller(const ZigClangInitListExpr *self) {
+    auto casted = reinterpret_cast<const clang::InitListExpr *>(self);
+    const clang::Expr *result = casted->getArrayFiller();
+    return reinterpret_cast<const ZigClangExpr *>(result);
+}
+
+unsigned ZigClangInitListExpr_getNumInits(const ZigClangInitListExpr *self) {
+    auto casted = reinterpret_cast<const clang::InitListExpr *>(self);
+    return casted->getNumInits();
+}
+
 ZigClangAPValueKind ZigClangAPValue_getKind(const ZigClangAPValue *self) {
     auto casted = reinterpret_cast<const clang::APValue *>(self);
     return (ZigClangAPValueKind)casted->getKind();
@@ -2065,6 +2092,11 @@ const ZigClangAPValue * ZigClangVarDecl_evaluateValue(const struct ZigClangVarDe
     return reinterpret_cast<const ZigClangAPValue *>(result);
 }
 
+enum ZigClangStorageClass ZigClangVarDecl_getStorageClass(const struct ZigClangVarDecl *self) {
+    auto casted = reinterpret_cast<const clang::VarDecl *>(self);
+    return (ZigClangStorageClass)casted->getStorageClass();
+}
+
 enum ZigClangBuiltinTypeKind ZigClangBuiltinType_getKind(const struct ZigClangBuiltinType *self) {
     auto casted = reinterpret_cast<const clang::BuiltinType *>(self);
     return (ZigClangBuiltinTypeKind)casted->getKind();
@@ -2137,6 +2169,11 @@ unsigned ZigClangAPFloat_convertToHexString(const ZigClangAPFloat *self, char *D
 {
     auto casted = reinterpret_cast<const llvm::APFloat *>(self);
     return casted->convertToHexString(DST, HexDigits, UpperCase, (llvm::APFloat::roundingMode)RM);
+}
+
+double ZigClangAPFloat_getValueAsApproximateDouble(const ZigClangFloatingLiteral *self) {
+    auto casted = reinterpret_cast<const clang::FloatingLiteral *>(self);
+    return casted->getValueAsApproximateDouble();
 }
 
 enum ZigClangStringLiteral_StringKind ZigClangStringLiteral_getKind(const struct ZigClangStringLiteral *self) {

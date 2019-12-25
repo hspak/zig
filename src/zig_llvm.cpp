@@ -156,6 +156,10 @@ unsigned ZigLLVMDataLayoutGetStackAlignment(LLVMTargetDataRef TD) {
     return unwrap(TD)->getStackAlignment();
 }
 
+unsigned ZigLLVMDataLayoutGetProgramAddressSpace(LLVMTargetDataRef TD) {
+    return unwrap(TD)->getProgramAddressSpace();
+}
+
 bool ZigLLVMTargetMachineEmitToFile(LLVMTargetMachineRef targ_machine_ref, LLVMModuleRef module_ref,
         const char *filename, ZigLLVM_EmitOutputType output_type, char **error_message, bool is_debug,
         bool is_small, bool time_report)
@@ -269,18 +273,24 @@ ZIG_EXTERN_C LLVMTypeRef ZigLLVMTokenTypeInContext(LLVMContextRef context_ref) {
 }
 
 LLVMValueRef ZigLLVMBuildCall(LLVMBuilderRef B, LLVMValueRef Fn, LLVMValueRef *Args,
-        unsigned NumArgs, unsigned CC, ZigLLVM_FnInline fn_inline, const char *Name)
+        unsigned NumArgs, unsigned CC, ZigLLVM_CallAttr attr, const char *Name)
 {
     CallInst *call_inst = CallInst::Create(unwrap(Fn), makeArrayRef(unwrap(Args), NumArgs), Name);
     call_inst->setCallingConv(CC);
-    switch (fn_inline) {
-        case ZigLLVM_FnInlineAuto:
+    switch (attr) {
+        case ZigLLVM_CallAttrAuto:
             break;
-        case ZigLLVM_FnInlineAlways:
-            call_inst->addAttribute(AttributeList::FunctionIndex, Attribute::AlwaysInline);
+        case ZigLLVM_CallAttrNeverTail:
+            call_inst->setTailCallKind(CallInst::TCK_NoTail);
             break;
-        case ZigLLVM_FnInlineNever:
+        case ZigLLVM_CallAttrNeverInline:
             call_inst->addAttribute(AttributeList::FunctionIndex, Attribute::NoInline);
+            break;
+        case ZigLLVM_CallAttrAlwaysTail:
+            call_inst->setTailCallKind(CallInst::TCK_MustTail);
+            break;
+        case ZigLLVM_CallAttrAlwaysInline:
+            call_inst->addAttribute(AttributeList::FunctionIndex, Attribute::AlwaysInline);
             break;
     }
     return wrap(unwrap(B)->Insert(call_inst));
