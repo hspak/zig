@@ -464,8 +464,16 @@ pub fn getrandom(buf: [*]u8, count: usize, flags: u32) usize {
     return syscall3(SYS_getrandom, @ptrToInt(buf), count, flags);
 }
 
-pub fn kill(pid: i32, sig: i32) usize {
+pub fn kill(pid: pid_t, sig: i32) usize {
     return syscall2(SYS_kill, @bitCast(usize, @as(isize, pid)), @bitCast(usize, @as(isize, sig)));
+}
+
+pub fn tkill(tid: pid_t, sig: i32) usize {
+    return syscall2(SYS_tkill, @bitCast(usize, @as(isize, tid)), @bitCast(usize, @as(isize, sig)));
+}
+
+pub fn tgkill(tgid: pid_t, tid: pid_t, sig: i32) usize {
+    return syscall2(SYS_tgkill, @bitCast(usize, @as(isize, tgid)), @bitCast(usize, @as(isize, tid)), @bitCast(usize, @as(isize, sig)));
 }
 
 pub fn unlink(path: [*:0]const u8) usize {
@@ -480,7 +488,7 @@ pub fn unlinkat(dirfd: i32, path: [*:0]const u8, flags: u32) usize {
     return syscall3(SYS_unlinkat, @bitCast(usize, @as(isize, dirfd)), @ptrToInt(path), flags);
 }
 
-pub fn waitpid(pid: i32, status: *u32, flags: u32) usize {
+pub fn waitpid(pid: pid_t, status: *u32, flags: u32) usize {
     return syscall4(SYS_wait4, @bitCast(usize, @as(isize, pid)), @ptrToInt(status), flags, 0);
 }
 
@@ -504,7 +512,7 @@ pub fn clock_gettime(clk_id: i32, tp: *timespec) usize {
     return syscall2(SYS_clock_gettime, @bitCast(usize, @as(isize, clk_id)), @ptrToInt(tp));
 }
 
-extern fn init_vdso_clock_gettime(clk: i32, ts: *timespec) usize {
+fn init_vdso_clock_gettime(clk: i32, ts: *timespec) callconv(.C) usize {
     const ptr = @intToPtr(?*const c_void, vdso.lookup(VDSO_CGT_VER, VDSO_CGT_SYM));
     // Note that we may not have a VDSO at all, update the stub address anyway
     // so that clock_gettime will fall back on the good old (and slow) syscall
@@ -657,15 +665,15 @@ pub fn setgroups(size: usize, list: *const u32) usize {
     }
 }
 
-pub fn getpid() i32 {
-    return @bitCast(i32, @truncate(u32, syscall0(SYS_getpid)));
+pub fn getpid() pid_t {
+    return @bitCast(pid_t, @truncate(u32, syscall0(SYS_getpid)));
 }
 
-pub fn gettid() i32 {
-    return @bitCast(i32, @truncate(u32, syscall0(SYS_gettid)));
+pub fn gettid() pid_t {
+    return @bitCast(pid_t, @truncate(u32, syscall0(SYS_gettid)));
 }
 
-pub fn sigprocmask(flags: u32, noalias set: *const sigset_t, noalias oldset: ?*sigset_t) usize {
+pub fn sigprocmask(flags: u32, noalias set: ?*const sigset_t, noalias oldset: ?*sigset_t) usize {
     return syscall4(SYS_rt_sigprocmask, flags, @ptrToInt(set), @ptrToInt(oldset), NSIG / 8);
 }
 
@@ -695,18 +703,6 @@ pub fn sigaction(sig: u6, noalias act: *const Sigaction, noalias oact: ?*Sigacti
         @memcpy(@ptrCast([*]u8, &old.mask), @ptrCast([*]const u8, &ksa_old.mask), ksa_mask_size);
     }
     return 0;
-}
-
-pub fn blockAllSignals(set: *sigset_t) void {
-    _ = syscall4(SYS_rt_sigprocmask, SIG_BLOCK, @ptrToInt(&all_mask), @ptrToInt(set), NSIG / 8);
-}
-
-pub fn blockAppSignals(set: *sigset_t) void {
-    _ = syscall4(SYS_rt_sigprocmask, SIG_BLOCK, @ptrToInt(&app_mask), @ptrToInt(set), NSIG / 8);
-}
-
-pub fn restoreSignals(set: *sigset_t) void {
-    _ = syscall4(SYS_rt_sigprocmask, SIG_SETMASK, @ptrToInt(set), 0, NSIG / 8);
 }
 
 pub fn sigaddset(set: *sigset_t, sig: u6) void {
@@ -969,7 +965,7 @@ pub fn sched_yield() usize {
     return syscall0(SYS_sched_yield);
 }
 
-pub fn sched_getaffinity(pid: i32, size: usize, set: *cpu_set_t) usize {
+pub fn sched_getaffinity(pid: pid_t, size: usize, set: *cpu_set_t) usize {
     const rc = syscall3(SYS_sched_getaffinity, @bitCast(usize, @as(isize, pid)), size, @ptrToInt(set));
     if (@bitCast(isize, rc) < 0) return rc;
     if (rc < size) @memset(@ptrCast([*]u8, set) + rc, 0, size - rc);
@@ -1046,7 +1042,7 @@ pub fn uname(uts: *utsname) usize {
 }
 
 // XXX: This should be weak
-extern const __ehdr_start: elf.Ehdr = undefined;
+extern const __ehdr_start: elf.Ehdr;
 
 pub fn dl_iterate_phdr(comptime T: type, callback: extern fn (info: *dl_phdr_info, size: usize, data: ?*T) i32, data: ?*T) isize {
     if (builtin.link_libc) {
@@ -1112,6 +1108,14 @@ pub fn io_uring_enter(fd: i32, to_submit: u32, min_complete: u32, flags: u32, si
 
 pub fn io_uring_register(fd: i32, opcode: u32, arg: ?*const c_void, nr_args: u32) usize {
     return syscall4(SYS_io_uring_register, @bitCast(usize, @as(isize, fd)), opcode, @ptrToInt(arg), nr_args);
+}
+
+pub fn memfd_create(name: [*:0]const u8, flags: u32) usize {
+    return syscall2(SYS_memfd_create, @ptrToInt(name), flags);
+}
+
+pub fn getrusage(who: i32, usage: *rusage) usize {
+    return syscall2(SYS_getrusage, @bitCast(usize, @as(isize, who)), @ptrToInt(usage));
 }
 
 test "" {

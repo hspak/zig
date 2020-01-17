@@ -22,32 +22,28 @@ const start_sym_name = if (is_mips) "__start" else "_start";
 comptime {
     if (builtin.output_mode == .Lib and builtin.link_mode == .Dynamic) {
         if (builtin.os == .windows and !@hasDecl(root, "_DllMainCRTStartup")) {
-            @export("_DllMainCRTStartup", _DllMainCRTStartup, .Strong);
+            @export(_DllMainCRTStartup, .{ .name = "_DllMainCRTStartup" });
         }
     } else if (builtin.output_mode == .Exe or @hasDecl(root, "main")) {
         if (builtin.link_libc and @hasDecl(root, "main")) {
             if (@typeInfo(@TypeOf(root.main)).Fn.calling_convention != .C) {
-                @export("main", main, .Weak);
+                @export(main, .{ .name = "main", .linkage = .Weak });
             }
         } else if (builtin.os == .windows) {
             if (!@hasDecl(root, "WinMain") and !@hasDecl(root, "WinMainCRTStartup")) {
-                @export("WinMainCRTStartup", WinMainCRTStartup, .Strong);
+                @export(WinMainCRTStartup, .{ .name = "WinMainCRTStartup" });
             }
         } else if (builtin.os == .uefi) {
-            if (!@hasDecl(root, "EfiMain")) @export("EfiMain", EfiMain, .Strong);
+            if (!@hasDecl(root, "EfiMain")) @export(EfiMain, .{ .name = "EfiMain" });
         } else if (is_wasm and builtin.os == .freestanding) {
-            if (!@hasDecl(root, start_sym_name)) @export(start_sym_name, wasm_freestanding_start, .Strong);
+            if (!@hasDecl(root, start_sym_name)) @export(wasm_freestanding_start, .{ .name = start_sym_name });
         } else if (builtin.os != .other and builtin.os != .freestanding) {
-            if (!@hasDecl(root, start_sym_name)) @export(start_sym_name, _start, .Strong);
+            if (!@hasDecl(root, start_sym_name)) @export(_start, .{ .name = start_sym_name });
         }
     }
 }
 
-stdcallcc fn _DllMainCRTStartup(
-    hinstDLL: std.os.windows.HINSTANCE,
-    fdwReason: std.os.windows.DWORD,
-    lpReserved: std.os.windows.LPVOID,
-) std.os.windows.BOOL {
+fn _DllMainCRTStartup(hinstDLL: std.os.windows.HINSTANCE, fdwReason: std.os.windows.DWORD, lpReserved: std.os.windows.LPVOID) callconv(.Stdcall) std.os.windows.BOOL {
     if (@hasDecl(root, "DllMain")) {
         return root.DllMain(hinstDLL, fdwReason, lpReserved);
     }
@@ -55,13 +51,13 @@ stdcallcc fn _DllMainCRTStartup(
     return std.os.windows.TRUE;
 }
 
-extern fn wasm_freestanding_start() void {
+fn wasm_freestanding_start() callconv(.C) void {
     // This is marked inline because for some reason LLVM in release mode fails to inline it,
     // and we want fewer call frames in stack traces.
     _ = @call(.{ .modifier = .always_inline }, callMain, .{});
 }
 
-extern fn EfiMain(handle: uefi.Handle, system_table: *uefi.tables.SystemTable) usize {
+fn EfiMain(handle: uefi.Handle, system_table: *uefi.tables.SystemTable) callconv(.C) usize {
     const bad_efi_main_ret = "expected return type of main to be 'void', 'noreturn', or 'usize'";
     uefi.handle = handle;
     uefi.system_table = system_table;
@@ -84,7 +80,7 @@ extern fn EfiMain(handle: uefi.Handle, system_table: *uefi.tables.SystemTable) u
     }
 }
 
-nakedcc fn _start() noreturn {
+fn _start() callconv(.Naked) noreturn {
     if (builtin.os == builtin.Os.wasi) {
         // This is marked inline because for some reason LLVM in release mode fails to inline it,
         // and we want fewer call frames in stack traces.
@@ -127,7 +123,7 @@ nakedcc fn _start() noreturn {
     @call(.{ .modifier = .never_inline }, posixCallMainAndExit, .{});
 }
 
-stdcallcc fn WinMainCRTStartup() noreturn {
+fn WinMainCRTStartup() callconv(.Stdcall) noreturn {
     @setAlignStack(16);
     if (!builtin.single_threaded) {
         _ = @import("start_windows_tls.zig");
@@ -146,14 +142,14 @@ fn posixCallMainAndExit() noreturn {
     const argc = starting_stack_ptr[0];
     const argv = @ptrCast([*][*:0]u8, starting_stack_ptr + 1);
 
-    const envp_optional = @ptrCast([*:null]?[*:0]u8, argv + argc + 1);
+    const envp_optional = @ptrCast([*:null]?[*:0]u8, @alignCast(@alignOf(usize), argv + argc + 1));
     var envp_count: usize = 0;
     while (envp_optional[envp_count]) |_| : (envp_count += 1) {}
     const envp = @ptrCast([*][*:0]u8, envp_optional)[0..envp_count];
 
     if (builtin.os == .linux) {
         // Find the beginning of the auxiliary vector
-        const auxv = @ptrCast([*]std.elf.Auxv, envp.ptr + envp_count + 1);
+        const auxv = @ptrCast([*]std.elf.Auxv, @alignCast(@alignOf(usize), envp.ptr + envp_count + 1));
         std.os.linux.elf_aux_maybe = auxv;
         // Initialize the TLS area
         const gnu_stack_phdr = std.os.linux.tls.initTLS() orelse @panic("ELF missing stack size");
@@ -198,7 +194,7 @@ fn callMainWithArgs(argc: usize, argv: [*][*:0]u8, envp: [][*:0]u8) u8 {
     return initEventLoopAndCallMain();
 }
 
-extern fn main(c_argc: i32, c_argv: [*][*:0]u8, c_envp: [*:null]?[*:0]u8) i32 {
+fn main(c_argc: i32, c_argv: [*][*:0]u8, c_envp: [*:null]?[*:0]u8) callconv(.C) i32 {
     var env_count: usize = 0;
     while (c_envp[env_count] != null) : (env_count += 1) {}
     const envp = @ptrCast([*][*:0]u8, c_envp)[0..env_count];

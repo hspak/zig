@@ -57,6 +57,23 @@ enum PtrLen {
     PtrLenC,
 };
 
+enum CallingConvention {
+    CallingConventionUnspecified,
+    CallingConventionC,
+    CallingConventionCold,
+    CallingConventionNaked,
+    CallingConventionAsync,
+    CallingConventionInterrupt,
+    CallingConventionSignal,
+    CallingConventionStdcall,
+    CallingConventionFastcall,
+    CallingConventionVectorcall,
+    CallingConventionThiscall,
+    CallingConventionAPCS,
+    CallingConventionAAPCS,
+    CallingConventionAAPCSVFP,
+};
+
 // This one corresponds to the builtin.zig enum.
 enum BuiltinPtrSize {
     BuiltinPtrSizeOne,
@@ -341,6 +358,8 @@ struct LazyValueSizeOf {
 
     IrAnalyze *ira;
     IrInstruction *target_type;
+
+    bool bit_size;
 };
 
 struct LazyValueSliceType {
@@ -398,6 +417,7 @@ struct LazyValueFnType {
     IrInstruction *align_inst; // can be null
     IrInstruction *return_type;
 
+    CallingConvention cc;
     bool is_generic;
 };
 
@@ -508,7 +528,6 @@ struct TldVar {
 
     ZigVar *var;
     Buf *extern_lib_name;
-    Buf *section_name;
     bool analyzing_type; // flag to detect dependency loops
 };
 
@@ -612,15 +631,6 @@ enum NodeType {
     NodeTypeVarFieldType,
 };
 
-enum CallingConvention {
-    CallingConventionUnspecified,
-    CallingConventionC,
-    CallingConventionCold,
-    CallingConventionNaked,
-    CallingConventionStdcall,
-    CallingConventionAsync,
-};
-
 enum FnInline {
     FnInlineAuto,
     FnInlineAlways,
@@ -639,10 +649,12 @@ struct AstNodeFnProto {
     AstNode *align_expr;
     // populated if the "section(S)" is present
     AstNode *section_expr;
+    // populated if the "callconv(S)" is present
+    AstNode *callconv_expr;
     Buf doc_comments;
 
     FnInline fn_inline;
-    CallingConvention cc;
+    bool is_async;
 
     VisibMod visib_mod;
     bool auto_err_set;
@@ -1680,7 +1692,7 @@ enum BuiltinFnId {
     BuiltinFnIdCos,
     BuiltinFnIdExp,
     BuiltinFnIdExp2,
-    BuiltinFnIdLn,
+    BuiltinFnIdLog,
     BuiltinFnIdLog2,
     BuiltinFnIdLog10,
     BuiltinFnIdFabs,
@@ -1744,6 +1756,7 @@ enum BuiltinFnId {
     BuiltinFnIdFrameSize,
     BuiltinFnIdAs,
     BuiltinFnIdCall,
+    BuiltinFnIdBitSizeof,
 };
 
 struct BuiltinFnEntry {
@@ -2120,6 +2133,7 @@ struct CodeGen {
     bool have_winmain_crt_startup;
     bool have_dllmain_crt_startup;
     bool have_err_ret_tracing;
+    bool link_eh_frame_hdr;
     bool c_want_stdint;
     bool c_want_stdbool;
     bool verbose_tokenize;
@@ -2218,6 +2232,8 @@ struct ZigVar {
     LLVMValueRef param_value_ref;
     size_t mem_slot_index;
     IrExecutable *owner_exec;
+
+    Buf *section_name;
 
     // In an inline loop, multiple variables may be created,
     // In this case, a reference to a variable should follow
@@ -3133,6 +3149,7 @@ struct IrInstructionAsmGen {
 struct IrInstructionSizeOf {
     IrInstruction base;
 
+    bool bit_size;
     IrInstruction *type_value;
 };
 
@@ -3549,6 +3566,7 @@ struct IrInstructionFnProto {
 
     IrInstruction **param_types;
     IrInstruction *align_value;
+    IrInstruction *callconv_value;
     IrInstruction *return_type;
     bool is_var_args;
 };
@@ -3772,9 +3790,8 @@ struct IrInstructionArgType {
 struct IrInstructionExport {
     IrInstruction base;
 
-    IrInstruction *name;
-    IrInstruction *linkage;
     IrInstruction *target;
+    IrInstruction *options;
 };
 
 struct IrInstructionErrorReturnTrace {
@@ -3840,9 +3857,8 @@ struct IrInstructionAddImplicitReturnType {
 struct IrInstructionFloatOp {
     IrInstruction base;
 
-    BuiltinFnId op;
-    IrInstruction *type;
-    IrInstruction *op1;
+    BuiltinFnId fn_id;
+    IrInstruction *operand;
 };
 
 struct IrInstructionCheckRuntimeScope {

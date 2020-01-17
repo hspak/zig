@@ -1084,7 +1084,7 @@ fn openSelfDebugInfoMacOs(allocator: *mem.Allocator) !DebugInfo {
             std.macho.LC_SYMTAB => break @ptrCast(*std.macho.symtab_command, ptr),
             else => {},
         }
-        ptr += lc.cmdsize; // TODO https://github.com/ziglang/zig/issues/1403
+        ptr = @alignCast(@alignOf(std.macho.load_command), ptr + lc.cmdsize);
     } else {
         return error.MissingDebugInfo;
     };
@@ -2129,7 +2129,7 @@ fn getLineNumberInfoMacOs(di: *DebugInfo, symbol: MachoSymbol, target_address: u
                 std.macho.LC_SEGMENT_64 => break @ptrCast(*const std.macho.segment_command_64, @alignCast(@alignOf(std.macho.segment_command_64), ptr)),
                 else => {},
             }
-            ptr += lc.cmdsize; // TODO https://github.com/ziglang/zig/issues/1403
+            ptr = @alignCast(@alignOf(std.macho.load_command), ptr + lc.cmdsize);
         } else {
             return error.MissingDebugInfo;
         };
@@ -2428,7 +2428,7 @@ fn resetSegfaultHandler() void {
     os.sigaction(os.SIGILL, &act, null);
 }
 
-extern fn handleSegfaultLinux(sig: i32, info: *const os.siginfo_t, ctx_ptr: *const c_void) noreturn {
+fn handleSegfaultLinux(sig: i32, info: *const os.siginfo_t, ctx_ptr: *const c_void) callconv(.C) noreturn {
     // Reset to the default handler so that if a segfault happens in this handler it will crash
     // the process. Also when this handler returns, the original instruction will be repeated
     // and the resulting segfault will crash the process rather than continually dump stack traces.
@@ -2475,7 +2475,7 @@ extern fn handleSegfaultLinux(sig: i32, info: *const os.siginfo_t, ctx_ptr: *con
     os.abort();
 }
 
-stdcallcc fn handleSegfaultWindows(info: *windows.EXCEPTION_POINTERS) c_long {
+fn handleSegfaultWindows(info: *windows.EXCEPTION_POINTERS) callconv(.Stdcall) c_long {
     const exception_address = @ptrToInt(info.ExceptionRecord.ExceptionAddress);
     switch (info.ExceptionRecord.ExceptionCode) {
         windows.EXCEPTION_DATATYPE_MISALIGNMENT => panicExtra(null, exception_address, "Unaligned Memory Access", .{}),

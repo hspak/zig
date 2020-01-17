@@ -303,6 +303,25 @@ test "math.max" {
     testing.expect(max(@as(i32, -1), @as(i32, 2)) == 2);
 }
 
+pub fn clamp(clamped_val: var, bound_1: var, bound_2: var) Min(@TypeOf(bound_1), @TypeOf(bound_2)) {
+    const upper_bound = max(bound_1, bound_2);
+    const lower_bound = min(bound_1, bound_2);
+    return min(upper_bound, max(clamped_val, lower_bound));
+}
+test "math.clamp" {
+    // Within range
+    testing.expect(std.math.clamp(@as(i32, -1), @as(i32, -4), @as(i32, 7)) == -1);
+    // Below
+    testing.expect(std.math.clamp(@as(i32, -5), @as(i32, -4), @as(i32, 7)) == -4);
+    // Above
+    testing.expect(std.math.clamp(@as(i32, 8), @as(i32, -4), @as(i32, 7)) == 7);
+
+    // Reverse
+    testing.expect(std.math.clamp(@as(i32, -1), @as(i32, 7), @as(i32, -4)) == -1);
+    testing.expect(std.math.clamp(@as(i32, -5), @as(i32, 7), @as(i32, -4)) == -4);
+    testing.expect(std.math.clamp(@as(i32, 8), @as(i32, 7), @as(i32, -4)) == 7);
+}
+
 pub fn mul(comptime T: type, a: T, b: T) (error{Overflow}!T) {
     var answer: T = undefined;
     return if (@mulWithOverflow(T, a, b, &answer)) error.Overflow else answer;
@@ -926,9 +945,6 @@ test "minInt and maxInt" {
 }
 
 test "max value type" {
-    // If the type of maxInt(i32) was i32 then this implicit cast to
-    // u32 would not work. But since the value is a number literal,
-    // it works fine.
     const x: u32 = maxInt(i32);
     testing.expect(x == 2147483647);
 }
@@ -944,7 +960,32 @@ test "math.mulWide" {
     testing.expect(mulWide(u8, 100, 100) == 10000);
 }
 
-/// Not to be confused with `std.mem.Compare`.
+/// See also `CompareOperator`.
+pub const Order = enum {
+    /// Less than (`<`)
+    lt,
+
+    /// Equal (`==`)
+    eq,
+
+    /// Greater than (`>`)
+    gt,
+};
+
+/// Given two numbers, this function returns the order they are with respect to each other.
+pub fn order(a: var, b: var) Order {
+    if (a == b) {
+        return .eq;
+    } else if (a < b) {
+        return .lt;
+    } else if (a > b) {
+        return .gt;
+    } else {
+        unreachable;
+    }
+}
+
+/// See also `Order`.
 pub const CompareOperator = enum {
     /// Less than (`<`)
     lt,
@@ -979,7 +1020,7 @@ pub fn compare(a: var, op: CompareOperator, b: var) bool {
     };
 }
 
-test "math.lt, et al < <= > >= between signed and unsigned" {
+test "compare between signed and unsigned" {
     testing.expect(compare(@as(i8, -1), .lt, @as(u8, 255)));
     testing.expect(compare(@as(i8, 2), .gt, @as(u8, 1)));
     testing.expect(!compare(@as(i8, -1), .gte, @as(u8, 255)));

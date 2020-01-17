@@ -162,7 +162,7 @@ pub const Type = struct {
     }
 
     pub fn dump(base: *const Type) void {
-        std.debug.warn("{}", @tagName(base.id));
+        std.debug.warn("{}", .{@tagName(base.id)});
     }
 
     fn init(base: *Type, comp: *Compilation, id: Id, name: []const u8) void {
@@ -337,7 +337,7 @@ pub const Type = struct {
             }
         };
 
-        const CallingConvention = builtin.TypeInfo.CallingConvention;
+        const CallingConvention = builtin.CallingConvention;
 
         pub const Param = struct {
             is_noalias: bool,
@@ -352,6 +352,7 @@ pub const Type = struct {
                 .Naked => "nakedcc ",
                 .Stdcall => "stdcallcc ",
                 .Async => "async ",
+                else => unreachable,
             };
         }
 

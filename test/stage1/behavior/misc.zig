@@ -16,10 +16,10 @@ test "empty function with comments" {
 }
 
 comptime {
-    @export("disabledExternFn", disabledExternFn, builtin.GlobalLinkage.Internal);
+    @export(disabledExternFn, .{ .name = "disabledExternFn", .linkage = .Internal });
 }
 
-extern fn disabledExternFn() void {}
+fn disabledExternFn() callconv(.C) void {}
 
 test "call disabled extern fn" {
     disabledExternFn();

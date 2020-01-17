@@ -611,3 +611,21 @@ test "function call result coerces from tagged union to the tag" {
     S.doTheTest();
     comptime S.doTheTest();
 }
+
+test "0-sized extern union definition" {
+    const U = extern union {
+        a: void,
+        const f = 1;
+    };
+
+    expect(U.f == 1);
+}
+
+test "union initializer generates padding only if needed" {
+    const U = union(enum) {
+        A: u24,
+    };
+
+    var v = U{ .A = 532 };
+    expect(v.A == 532);
+}
