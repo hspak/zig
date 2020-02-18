@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 2.8.5)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Debug" CACHE STRING
-        "Choose the type of build, options are: Debug Release RelWithDebInfo MinSizeRel." FORCE)
+        "Choose the type of build, options are: None Debug Release RelWithDebInfo MinSizeRel." FORCE)
 endif()
 
 if(NOT CMAKE_INSTALL_PREFIX)
@@ -438,7 +438,7 @@ set(ZIG_MAIN_SRC "${CMAKE_SOURCE_DIR}/src/main.cpp")
 set(ZIG0_SHIM_SRC "${CMAKE_SOURCE_DIR}/src/userland.cpp")
 
 if(ZIG_ENABLE_MEM_PROFILE)
-    set(ZIG_SOURCES_MEM_PROFILE "${CMAKE_SOURCE_DIR}/src/memory_profiling.cpp")
+    set(ZIG_SOURCES_MEM_PROFILE "${CMAKE_SOURCE_DIR}/src/mem_profile.cpp")
 endif()
 
 set(ZIG_SOURCES
@@ -454,10 +454,12 @@ set(ZIG_SOURCES
     "${CMAKE_SOURCE_DIR}/src/errmsg.cpp"
     "${CMAKE_SOURCE_DIR}/src/error.cpp"
     "${CMAKE_SOURCE_DIR}/src/glibc.cpp"
+    "${CMAKE_SOURCE_DIR}/src/heap.cpp"
     "${CMAKE_SOURCE_DIR}/src/ir.cpp"
     "${CMAKE_SOURCE_DIR}/src/ir_print.cpp"
     "${CMAKE_SOURCE_DIR}/src/libc_installation.cpp"
     "${CMAKE_SOURCE_DIR}/src/link.cpp"
+    "${CMAKE_SOURCE_DIR}/src/mem.cpp"
     "${CMAKE_SOURCE_DIR}/src/os.cpp"
     "${CMAKE_SOURCE_DIR}/src/parser.cpp"
     "${CMAKE_SOURCE_DIR}/src/range_set.cpp"

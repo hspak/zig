@@ -1139,6 +1139,7 @@ struct AstNodeErrorType {
 };
 
 struct AstNodeAwaitExpr {
+    Token *noasync_token;
     AstNode *expr;
 };
 
@@ -1947,6 +1948,15 @@ enum BuildMode {
     BuildModeSmallRelease,
 };
 
+enum CodeModel {
+    CodeModelDefault,
+    CodeModelTiny,
+    CodeModelSmall,
+    CodeModelKernel,
+    CodeModelMedium,
+    CodeModelLarge,
+};
+
 enum EmitFileType {
     EmitFileTypeBinary,
     EmitFileTypeAssembly,
@@ -1991,6 +2001,9 @@ struct CFile {
 
 // When adding fields, check if they should be added to the hash computation in build_with_cache
 struct CodeGen {
+    // arena allocator destroyed just prior to codegen emit
+    heap::ArenaAllocator *pass1_arena;
+
     //////////////////////////// Runtime State
     LLVMModuleRef module;
     ZigList<ErrorMsg*> errors;
@@ -2166,7 +2179,9 @@ struct CodeGen {
     bool is_big_endian;
     bool have_c_main;
     bool have_winmain;
+    bool have_wwinmain;
     bool have_winmain_crt_startup;
+    bool have_wwinmain_crt_startup;
     bool have_dllmain_crt_startup;
     bool have_err_ret_tracing;
     bool link_eh_frame_hdr;
@@ -2235,6 +2250,8 @@ struct CodeGen {
     bool enable_dump_analysis;
     bool enable_doc_generation;
     bool disable_bin_generation;
+    bool test_is_evented;
+    CodeModel code_model;
 
     Buf *mmacosx_version_min;
     Buf *mios_version_min;
@@ -2267,7 +2284,6 @@ struct ZigVar {
     Scope *parent_scope;
     Scope *child_scope;
     LLVMValueRef param_value_ref;
-    IrExecutableSrc *owner_exec;
 
     Buf *section_name;
 
@@ -2479,6 +2495,9 @@ struct ScopeExpr {
     size_t children_len;
 
     MemoizedBool need_spill;
+    // This is a hack. I apologize for this, I need this to work so that I
+    // can make progress on other fronts. I'll pay off this tech debt eventually.
+    bool spill_harder;
 };
 
 // synchronized with code in define_builtin_compile_vars
@@ -4482,6 +4501,7 @@ struct IrInstSrcAwait {
 
     IrInstSrc *frame;
     ResultLoc *result_loc;
+    bool is_noasync;
 };
 
 struct IrInstGenAwait {
@@ -4490,6 +4510,7 @@ struct IrInstGenAwait {
     IrInstGen *frame;
     IrInstGen *result_loc;
     ZigFn *target_fn;
+    bool is_noasync;
 };
 
 struct IrInstSrcResume {

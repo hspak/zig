@@ -19,8 +19,8 @@ const windows = std.os.windows;
 
 pub const leb = @import("debug/leb128.zig");
 
-pub const FailingAllocator = @import("debug/failing_allocator.zig").FailingAllocator;
-pub const failing_allocator = &FailingAllocator.init(global_allocator, 0).allocator;
+pub const global_allocator = @compileError("Please switch to std.testing.allocator.");
+pub const failing_allocator = @compileError("Please switch to std.testing.failing_allocator.");
 
 pub const runtime_safety = switch (builtin.mode) {
     .Debug, .ReleaseSafe => true,
@@ -50,7 +50,7 @@ pub fn warn(comptime fmt: []const u8, args: var) void {
     const held = stderr_mutex.acquire();
     defer held.release();
     const stderr = getStderrStream();
-    stderr.print(fmt, args) catch return;
+    noasync stderr.print(fmt, args) catch return;
 }
 
 pub fn getStderrStream() *io.OutStream(File.WriteError) {
@@ -102,15 +102,15 @@ pub fn detectTTYConfig() TTY.Config {
 pub fn dumpCurrentStackTrace(start_addr: ?usize) void {
     const stderr = getStderrStream();
     if (builtin.strip_debug_info) {
-        stderr.print("Unable to dump stack trace: debug info stripped\n", .{}) catch return;
+        noasync stderr.print("Unable to dump stack trace: debug info stripped\n", .{}) catch return;
         return;
     }
     const debug_info = getSelfDebugInfo() catch |err| {
-        stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
+        noasync stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
         return;
     };
     writeCurrentStackTrace(stderr, debug_info, detectTTYConfig(), start_addr) catch |err| {
-        stderr.print("Unable to dump stack trace: {}\n", .{@errorName(err)}) catch return;
+        noasync stderr.print("Unable to dump stack trace: {}\n", .{@errorName(err)}) catch return;
         return;
     };
 }
@@ -121,21 +121,16 @@ pub fn dumpCurrentStackTrace(start_addr: ?usize) void {
 pub fn dumpStackTraceFromBase(bp: usize, ip: usize) void {
     const stderr = getStderrStream();
     if (builtin.strip_debug_info) {
-        stderr.print("Unable to dump stack trace: debug info stripped\n", .{}) catch return;
+        noasync stderr.print("Unable to dump stack trace: debug info stripped\n", .{}) catch return;
         return;
     }
     const debug_info = getSelfDebugInfo() catch |err| {
-        stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
+        noasync stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
         return;
     };
     const tty_config = detectTTYConfig();
     printSourceAtAddress(debug_info, stderr, ip, tty_config) catch return;
-    const first_return_address = @intToPtr(*const usize, bp + @sizeOf(usize)).*;
-    printSourceAtAddress(debug_info, stderr, first_return_address - 1, tty_config) catch return;
-    var it = StackIterator{
-        .first_addr = null,
-        .fp = bp,
-    };
+    var it = StackIterator.init(null, bp);
     while (it.next()) |return_address| {
         printSourceAtAddress(debug_info, stderr, return_address - 1, tty_config) catch return;
     }
@@ -178,7 +173,7 @@ pub fn captureStackTrace(first_address: ?usize, stack_trace: *builtin.StackTrace
         }
         stack_trace.index = slice.len;
     } else {
-        var it = StackIterator.init(first_address);
+        var it = StackIterator.init(first_address, null);
         for (stack_trace.instruction_addresses) |*addr, i| {
             addr.* = it.next() orelse {
                 stack_trace.index = i;
@@ -194,15 +189,15 @@ pub fn captureStackTrace(first_address: ?usize, stack_trace: *builtin.StackTrace
 pub fn dumpStackTrace(stack_trace: builtin.StackTrace) void {
     const stderr = getStderrStream();
     if (builtin.strip_debug_info) {
-        stderr.print("Unable to dump stack trace: debug info stripped\n", .{}) catch return;
+        noasync stderr.print("Unable to dump stack trace: debug info stripped\n", .{}) catch return;
         return;
     }
     const debug_info = getSelfDebugInfo() catch |err| {
-        stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
+        noasync stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
         return;
     };
     writeStackTrace(stack_trace, stderr, getDebugInfoAllocator(), debug_info, detectTTYConfig()) catch |err| {
-        stderr.print("Unable to dump stack trace: {}\n", .{@errorName(err)}) catch return;
+        noasync stderr.print("Unable to dump stack trace: {}\n", .{@errorName(err)}) catch return;
         return;
     };
 }
@@ -243,7 +238,7 @@ pub fn panicExtra(trace: ?*const builtin.StackTrace, first_trace_addr: ?usize, c
     switch (@atomicRmw(u8, &panicking, .Add, 1, .SeqCst)) {
         0 => {
             const stderr = getStderrStream();
-            stderr.print(format ++ "\n", args) catch os.abort();
+            noasync stderr.print(format ++ "\n", args) catch os.abort();
             if (trace) |t| {
                 dumpStackTrace(t.*);
             }
@@ -290,13 +285,15 @@ pub fn writeStackTrace(
 }
 
 pub const StackIterator = struct {
-    first_addr: ?usize,
+    // Skip every frame before this address is found
+    first_address: ?usize,
+    // Last known value of the frame pointer register
     fp: usize,
 
-    pub fn init(first_addr: ?usize) StackIterator {
+    pub fn init(first_address: ?usize, fp: ?usize) StackIterator {
         return StackIterator{
-            .first_addr = first_addr,
-            .fp = @frameAddress(),
+            .first_address = first_address,
+            .fp = fp orelse @frameAddress(),
         };
     }
 
@@ -304,28 +301,45 @@ pub const StackIterator = struct {
     // the previous fp is stored, while on some other architectures such as
     // RISC-V it points to the "top" of the frame, just above where the previous
     // fp and the return address are stored.
-    const fp_adjust_factor = if (builtin.arch == .riscv32 or builtin.arch == .riscv64)
+    const fp_offset = if (builtin.arch.isRISCV())
         2 * @sizeOf(usize)
     else
         0;
 
     fn next(self: *StackIterator) ?usize {
-        if (self.fp <= fp_adjust_factor) return null;
-        self.fp = @intToPtr(*const usize, self.fp - fp_adjust_factor).*;
-        if (self.fp <= fp_adjust_factor) return null;
+        var address = self.next_internal() orelse return null;
 
-        if (self.first_addr) |addr| {
-            while (self.fp > fp_adjust_factor) : (self.fp = @intToPtr(*const usize, self.fp - fp_adjust_factor).*) {
-                const return_address = @intToPtr(*const usize, self.fp - fp_adjust_factor + @sizeOf(usize)).*;
-                if (addr == return_address) {
-                    self.first_addr = null;
-                    return return_address;
-                }
+        if (self.first_address) |first_address| {
+            while (address != first_address) {
+                address = self.next_internal() orelse return null;
             }
+            self.first_address = null;
         }
 
-        const return_address = @intToPtr(*const usize, self.fp - fp_adjust_factor + @sizeOf(usize)).*;
-        return return_address;
+        return address;
+    }
+
+    fn next_internal(self: *StackIterator) ?usize {
+        const fp = math.sub(usize, self.fp, fp_offset) catch return null;
+
+        // Sanity check
+        if (fp == 0 or !mem.isAligned(fp, @alignOf(usize)))
+            return null;
+
+        const new_fp = @intToPtr(*const usize, fp).*;
+
+        // Sanity check: the stack grows down thus all the parent frames must be
+        // be at addresses that are greater (or equal) than the previous one.
+        // A zero frame pointer often signals this is the last frame, that case
+        // is gracefully handled by the next call to next_internal
+        if (new_fp != 0 and new_fp < self.fp)
+            return null;
+
+        const new_pc = @intToPtr(*const usize, fp + @sizeOf(usize)).*;
+
+        self.fp = new_fp;
+
+        return new_pc;
     }
 };
 
@@ -338,7 +352,7 @@ pub fn writeCurrentStackTrace(
     if (builtin.os == .windows) {
         return writeCurrentStackTraceWindows(out_stream, debug_info, tty_config, start_addr);
     }
-    var it = StackIterator.init(start_addr);
+    var it = StackIterator.init(start_addr, null);
     while (it.next()) |return_address| {
         try printSourceAtAddress(debug_info, out_stream, return_address - 1, tty_config);
     }
@@ -376,6 +390,7 @@ pub fn printSourceAtAddress(debug_info: *DebugInfo, out_stream: var, address: us
     return noasync printSourceAtAddressPosix(debug_info, out_stream, address, tty_config);
 }
 
+/// TODO resources https://github.com/ziglang/zig/issues/4353
 fn printSourceAtAddressWindows(
     di: *DebugInfo,
     out_stream: var,
@@ -470,7 +485,7 @@ fn printSourceAtAddressWindows(
                                 line_index += @sizeOf(pdb.LineNumberEntry);
 
                                 const vaddr_start = frag_vaddr_start + line_num_entry.Offset;
-                                if (relative_address <= vaddr_start) {
+                                if (relative_address < vaddr_start) {
                                     break;
                                 }
                             }
@@ -553,12 +568,12 @@ pub const TTY = struct {
             switch (conf) {
                 .no_color => return,
                 .escape_codes => switch (color) {
-                    .Red => out_stream.write(RED) catch return,
-                    .Green => out_stream.write(GREEN) catch return,
-                    .Cyan => out_stream.write(CYAN) catch return,
-                    .White, .Bold => out_stream.write(WHITE) catch return,
-                    .Dim => out_stream.write(DIM) catch return,
-                    .Reset => out_stream.write(RESET) catch return,
+                    .Red => noasync out_stream.write(RED) catch return,
+                    .Green => noasync out_stream.write(GREEN) catch return,
+                    .Cyan => noasync out_stream.write(CYAN) catch return,
+                    .White, .Bold => noasync out_stream.write(WHITE) catch return,
+                    .Dim => noasync out_stream.write(DIM) catch return,
+                    .Reset => noasync out_stream.write(RESET) catch return,
                 },
                 .windows_api => if (builtin.os == .windows) {
                     const S = struct {
@@ -602,6 +617,7 @@ pub const TTY = struct {
     };
 };
 
+/// TODO resources https://github.com/ziglang/zig/issues/4353
 fn populateModule(di: *DebugInfo, mod: *Module) !void {
     if (mod.populated)
         return;
@@ -713,17 +729,17 @@ fn printLineInfo(
     tty_config.setColor(out_stream, .White);
 
     if (line_info) |*li| {
-        try out_stream.print("{}:{}:{}", .{ li.file_name, li.line, li.column });
+        try noasync out_stream.print("{}:{}:{}", .{ li.file_name, li.line, li.column });
     } else {
-        try out_stream.print("???:?:?", .{});
+        try noasync out_stream.write("???:?:?");
     }
 
     tty_config.setColor(out_stream, .Reset);
-    try out_stream.write(": ");
+    try noasync out_stream.write(": ");
     tty_config.setColor(out_stream, .Dim);
-    try out_stream.print("0x{x} in {} ({})", .{ address, symbol_name, compile_unit_name });
+    try noasync out_stream.print("0x{x} in {} ({})", .{ address, symbol_name, compile_unit_name });
     tty_config.setColor(out_stream, .Reset);
-    try out_stream.write("\n");
+    try noasync out_stream.write("\n");
 
     // Show the matching source code line if possible
     if (line_info) |li| {
@@ -732,12 +748,12 @@ fn printLineInfo(
                 // The caret already takes one char
                 const space_needed = @intCast(usize, li.column - 1);
 
-                try out_stream.writeByteNTimes(' ', space_needed);
+                try noasync out_stream.writeByteNTimes(' ', space_needed);
                 tty_config.setColor(out_stream, .Green);
-                try out_stream.write("^");
+                try noasync out_stream.write("^");
                 tty_config.setColor(out_stream, .Reset);
             }
-            try out_stream.write("\n");
+            try noasync out_stream.write("\n");
         } else |err| switch (err) {
             error.EndOfFile, error.FileNotFound => {},
             error.BadPathName => {},
@@ -753,6 +769,7 @@ pub const OpenSelfDebugInfoError = error{
     UnsupportedOperatingSystem,
 };
 
+/// TODO resources https://github.com/ziglang/zig/issues/4353
 /// TODO once https://github.com/ziglang/zig/issues/3157 is fully implemented,
 /// make this `noasync fn` and remove the individual noasync calls.
 pub fn openSelfDebugInfo(allocator: *mem.Allocator) !DebugInfo {
@@ -944,8 +961,8 @@ fn readSparseBitVector(stream: var, allocator: *mem.Allocator) ![]usize {
 fn findDwarfSectionFromElf(elf_file: *elf.Elf, name: []const u8) !?DwarfInfo.Section {
     const elf_header = (try elf_file.findSection(name)) orelse return null;
     return DwarfInfo.Section{
-        .offset = elf_header.offset,
-        .size = elf_header.size,
+        .offset = elf_header.sh_offset,
+        .size = elf_header.sh_size,
     };
 }
 
@@ -961,6 +978,7 @@ pub fn openDwarfDebugInfo(di: *DwarfInfo, allocator: *mem.Allocator) !void {
     try di.scanAllCompileUnits();
 }
 
+/// TODO resources https://github.com/ziglang/zig/issues/4353
 pub fn openElfDebugInfo(
     allocator: *mem.Allocator,
     data: []u8,
@@ -985,22 +1003,21 @@ pub fn openElfDebugInfo(
 
     var di = DwarfInfo{
         .endian = efile.endian,
-        .debug_info = (data[@intCast(usize, debug_info.offset)..@intCast(usize, debug_info.offset + debug_info.size)]),
-        .debug_abbrev = (data[@intCast(usize, debug_abbrev.offset)..@intCast(usize, debug_abbrev.offset + debug_abbrev.size)]),
-        .debug_str = (data[@intCast(usize, debug_str.offset)..@intCast(usize, debug_str.offset + debug_str.size)]),
-        .debug_line = (data[@intCast(usize, debug_line.offset)..@intCast(usize, debug_line.offset + debug_line.size)]),
+        .debug_info = (data[@intCast(usize, debug_info.sh_offset)..@intCast(usize, debug_info.sh_offset + debug_info.sh_size)]),
+        .debug_abbrev = (data[@intCast(usize, debug_abbrev.sh_offset)..@intCast(usize, debug_abbrev.sh_offset + debug_abbrev.sh_size)]),
+        .debug_str = (data[@intCast(usize, debug_str.sh_offset)..@intCast(usize, debug_str.sh_offset + debug_str.sh_size)]),
+        .debug_line = (data[@intCast(usize, debug_line.sh_offset)..@intCast(usize, debug_line.sh_offset + debug_line.sh_size)]),
         .debug_ranges = if (opt_debug_ranges) |debug_ranges|
-            data[@intCast(usize, debug_ranges.offset)..@intCast(usize, debug_ranges.offset + debug_ranges.size)]
+            data[@intCast(usize, debug_ranges.sh_offset)..@intCast(usize, debug_ranges.sh_offset + debug_ranges.sh_size)]
         else
             null,
     };
-
-    efile.close();
 
     try openDwarfDebugInfo(&di, allocator);
     return di;
 }
 
+/// TODO resources https://github.com/ziglang/zig/issues/4353
 fn openSelfDebugInfoPosix(allocator: *mem.Allocator) !DwarfInfo {
     var exe_file = try fs.openSelfExe();
     errdefer exe_file.close();
@@ -1020,6 +1037,7 @@ fn openSelfDebugInfoPosix(allocator: *mem.Allocator) !DwarfInfo {
     return openElfDebugInfo(allocator, exe_mmap);
 }
 
+/// TODO resources https://github.com/ziglang/zig/issues/4353
 fn openSelfDebugInfoMacOs(allocator: *mem.Allocator) !DebugInfo {
     const hdr = &std.c._mh_execute_header;
     assert(hdr.magic == std.macho.MH_MAGIC_64);
@@ -1390,8 +1408,12 @@ pub const DwarfInfo = struct {
 
                     // All the addresses in the list are relative to the value
                     // specified by DW_AT_low_pc or to some other value encoded
-                    // in the list itself
-                    var base_address = try compile_unit.die.getAttrAddr(DW.AT_low_pc);
+                    // in the list itself.
+                    // If no starting value is specified use zero.
+                    var base_address = compile_unit.die.getAttrAddr(DW.AT_low_pc) catch |err| switch (err) {
+                        error.MissingDebugInfo => 0,
+                        else => return err,
+                    };
 
                     try s.seekable_stream.seekTo(ranges_offset);
 
@@ -1410,8 +1432,6 @@ pub const DwarfInfo = struct {
                             return compile_unit;
                         }
                     }
-
-                    return error.InvalidDebugInfo;
                 } else |err| {
                     if (err != error.MissingDebugInfo) return err;
                     continue;
@@ -2070,6 +2090,7 @@ fn getAbbrevTableEntry(abbrev_table: *const AbbrevTable, abbrev_code: u64) ?*con
     return null;
 }
 
+/// TODO resources https://github.com/ziglang/zig/issues/4353
 fn getLineNumberInfoMacOs(di: *DebugInfo, symbol: MachoSymbol, address: usize) !LineInfo {
     const ofile = symbol.ofile orelse return error.MissingDebugInfo;
     const gop = try di.ofiles.getOrPut(ofile);
@@ -2192,11 +2213,6 @@ fn readInitialLength(comptime E: type, in_stream: *io.InStream(E), is_64: *bool)
     }
 }
 
-/// This should only be used in temporary test programs.
-pub const global_allocator = &global_fixed_allocator.allocator;
-var global_fixed_allocator = std.heap.ThreadSafeFixedBufferAllocator.init(global_allocator_mem[0..]);
-var global_allocator_mem: [100 * 1024]u8 = undefined;
-
 /// TODO multithreaded awareness
 var debug_info_allocator: ?*mem.Allocator = null;
 var debug_info_arena_allocator: std.heap.ArenaAllocator = undefined;
@@ -2240,6 +2256,7 @@ pub fn attachSegfaultHandler() void {
 
     os.sigaction(os.SIGSEGV, &act, null);
     os.sigaction(os.SIGILL, &act, null);
+    os.sigaction(os.SIGBUS, &act, null);
 }
 
 fn resetSegfaultHandler() void {
@@ -2257,6 +2274,7 @@ fn resetSegfaultHandler() void {
     };
     os.sigaction(os.SIGSEGV, &act, null);
     os.sigaction(os.SIGILL, &act, null);
+    os.sigaction(os.SIGBUS, &act, null);
 }
 
 fn handleSegfaultLinux(sig: i32, info: *const os.siginfo_t, ctx_ptr: *const c_void) callconv(.C) noreturn {
@@ -2269,6 +2287,7 @@ fn handleSegfaultLinux(sig: i32, info: *const os.siginfo_t, ctx_ptr: *const c_vo
     switch (sig) {
         os.SIGSEGV => std.debug.warn("Segmentation fault at address 0x{x}\n", .{addr}),
         os.SIGILL => std.debug.warn("Illegal instruction at address 0x{x}\n", .{addr}),
+        os.SIGBUS => std.debug.warn("Bus error at address 0x{x}\n", .{addr}),
         else => unreachable,
     }
     switch (builtin.arch) {
@@ -2307,13 +2326,36 @@ fn handleSegfaultLinux(sig: i32, info: *const os.siginfo_t, ctx_ptr: *const c_vo
 }
 
 fn handleSegfaultWindows(info: *windows.EXCEPTION_POINTERS) callconv(.Stdcall) c_long {
-    const exception_address = @ptrToInt(info.ExceptionRecord.ExceptionAddress);
     switch (info.ExceptionRecord.ExceptionCode) {
-        windows.EXCEPTION_DATATYPE_MISALIGNMENT => panicExtra(null, exception_address, "Unaligned Memory Access", .{}),
-        windows.EXCEPTION_ACCESS_VIOLATION => panicExtra(null, exception_address, "Segmentation fault at address 0x{x}", .{info.ExceptionRecord.ExceptionInformation[1]}),
-        windows.EXCEPTION_ILLEGAL_INSTRUCTION => panicExtra(null, exception_address, "Illegal Instruction", .{}),
-        windows.EXCEPTION_STACK_OVERFLOW => panicExtra(null, exception_address, "Stack Overflow", .{}),
+        windows.EXCEPTION_DATATYPE_MISALIGNMENT => handleSegfaultWindowsExtra(info, 0, "Unaligned Memory Access"),
+        windows.EXCEPTION_ACCESS_VIOLATION => handleSegfaultWindowsExtra(info, 1, null),
+        windows.EXCEPTION_ILLEGAL_INSTRUCTION => handleSegfaultWindowsExtra(info, 2, null),
+        windows.EXCEPTION_STACK_OVERFLOW => handleSegfaultWindowsExtra(info, 0, "Stack Overflow"),
         else => return windows.EXCEPTION_CONTINUE_SEARCH,
+    }
+}
+
+// zig won't let me use an anon enum here https://github.com/ziglang/zig/issues/3707
+fn handleSegfaultWindowsExtra(info: *windows.EXCEPTION_POINTERS, comptime msg: u8, comptime format: ?[]const u8) noreturn {
+    const exception_address = @ptrToInt(info.ExceptionRecord.ExceptionAddress);
+    if (@hasDecl(windows, "CONTEXT")) {
+        const regs = info.ContextRecord.getRegs();
+        switch (msg) {
+            0 => std.debug.warn("{}\n", .{format.?}),
+            1 => std.debug.warn("Segmentation fault at address 0x{x}\n", .{info.ExceptionRecord.ExceptionInformation[1]}),
+            2 => std.debug.warn("Illegal instruction at address 0x{x}\n", .{regs.ip}),
+            else => unreachable,
+        }
+
+        dumpStackTraceFromBase(regs.bp, regs.ip);
+        os.abort();
+    } else {
+        switch (msg) {
+            0 => panicExtra(null, exception_address, format.?, .{}),
+            1 => panicExtra(null, exception_address, "Segmentation fault at address 0x{x}", .{info.ExceptionRecord.ExceptionInformation[1]}),
+            2 => panicExtra(null, exception_address, "Illegal Instruction", .{}),
+            else => unreachable,
+        }
     }
 }
 
