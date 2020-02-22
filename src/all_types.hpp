@@ -18,7 +18,6 @@
 #include "bigfloat.hpp"
 #include "target.hpp"
 #include "tokenizer.hpp"
-#include "libc_installation.hpp"
 
 struct AstNode;
 struct ZigFn;
@@ -370,10 +369,20 @@ enum LazyValueId {
     LazyValueIdFnType,
     LazyValueIdErrUnionType,
     LazyValueIdArrayType,
+    LazyValueIdTypeInfoDecls,
 };
 
 struct LazyValue {
     LazyValueId id;
+};
+
+struct LazyValueTypeInfoDecls {
+    LazyValue base;
+
+    IrAnalyze *ira;
+
+    ScopeDecls *decls_scope;
+    IrInst *source_instr;
 };
 
 struct LazyValueAlignOf {
@@ -1957,12 +1966,6 @@ enum CodeModel {
     CodeModelLarge,
 };
 
-enum EmitFileType {
-    EmitFileTypeBinary,
-    EmitFileTypeAssembly,
-    EmitFileTypeLLVMIr,
-};
-
 struct LinkLib {
     Buf *name;
     Buf *path;
@@ -2133,13 +2136,15 @@ struct CodeGen {
 
     Buf llvm_triple_str;
     Buf global_asm;
-    Buf output_file_path;
     Buf o_file_output_path;
+    Buf bin_file_output_path;
+    Buf asm_file_output_path;
+    Buf llvm_ir_file_output_path;
     Buf *cache_dir;
     // As an input parameter, mutually exclusive with enable_cache. But it gets
     // populated in codegen_build_and_link.
     Buf *output_dir;
-    Buf **libc_include_dir_list;
+    const char **libc_include_dir_list;
     size_t libc_include_dir_len;
 
     Buf *zig_c_headers_dir; // Cannot be overridden; derived from zig_lib_dir.
@@ -2220,14 +2225,13 @@ struct CodeGen {
     ZigList<const char *> lib_dirs;
     ZigList<const char *> framework_dirs;
 
-    ZigLibCInstallation *libc;
+    Stage2LibCInstallation *libc;
 
     size_t version_major;
     size_t version_minor;
     size_t version_patch;
     const char *linker_script;
 
-    EmitFileType emit_file_type;
     BuildMode build_mode;
     OutType out_type;
     const ZigTarget *zig_target;
@@ -2249,7 +2253,9 @@ struct CodeGen {
     bool function_sections;
     bool enable_dump_analysis;
     bool enable_doc_generation;
-    bool disable_bin_generation;
+    bool emit_bin;
+    bool emit_asm;
+    bool emit_llvm_ir;
     bool test_is_evented;
     CodeModel code_model;
 
