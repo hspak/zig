@@ -765,6 +765,7 @@ pub extern fn ZigClangTagDecl_isThisDeclarationADefinition(self: *const ZigClang
 pub extern fn ZigClangEnumType_getDecl(record_ty: ?*const struct_ZigClangEnumType) *const struct_ZigClangEnumDecl;
 pub extern fn ZigClangRecordDecl_getCanonicalDecl(record_decl: ?*const struct_ZigClangRecordDecl) ?*const struct_ZigClangTagDecl;
 pub extern fn ZigClangFieldDecl_getCanonicalDecl(field_decl: ?*const struct_ZigClangFieldDecl) ?*const struct_ZigClangFieldDecl;
+pub extern fn ZigClangFieldDecl_getAlignedAttribute(field_decl: ?*const struct_ZigClangFieldDecl, *const ZigClangASTContext) c_uint;
 pub extern fn ZigClangEnumDecl_getCanonicalDecl(self: ?*const struct_ZigClangEnumDecl) ?*const struct_ZigClangTagDecl;
 pub extern fn ZigClangTypedefNameDecl_getCanonicalDecl(self: ?*const struct_ZigClangTypedefNameDecl) ?*const struct_ZigClangTypedefNameDecl;
 pub extern fn ZigClangFunctionDecl_getCanonicalDecl(self: ?*const struct_ZigClangFunctionDecl) ?*const struct_ZigClangFunctionDecl;
@@ -812,6 +813,7 @@ pub extern fn ZigClangType_getPointeeType(self: ?*const struct_ZigClangType) str
 pub extern fn ZigClangType_isVoidType(self: ?*const struct_ZigClangType) bool;
 pub extern fn ZigClangType_isConstantArrayType(self: ?*const struct_ZigClangType) bool;
 pub extern fn ZigClangType_isRecordType(self: ?*const struct_ZigClangType) bool;
+pub extern fn ZigClangType_isIncompleteOrZeroLengthArrayType(self: ?*const struct_ZigClangType, *const ZigClangASTContext) bool;
 pub extern fn ZigClangType_isArrayType(self: ?*const struct_ZigClangType) bool;
 pub extern fn ZigClangType_isBooleanType(self: ?*const struct_ZigClangType) bool;
 pub extern fn ZigClangType_getTypeClassName(self: *const struct_ZigClangType) [*:0]const u8;
@@ -1050,7 +1052,7 @@ pub const struct_ZigClangExprEvalResult = extern struct {
 
 pub const struct_ZigClangAPValue = extern struct {
     Kind: ZigClangAPValueKind,
-    Data: if (builtin.os == .windows and builtin.abi == .msvc) [52]u8 else [68]u8,
+    Data: if (builtin.os.tag == .windows and builtin.abi == .msvc) [52]u8 else [68]u8,
 };
 pub extern fn ZigClangVarDecl_getTypeSourceInfo_getType(self: *const struct_ZigClangVarDecl) struct_ZigClangQualType;
 

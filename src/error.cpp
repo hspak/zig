@@ -81,6 +81,9 @@ const char *err_str(Error err) {
         case ErrorWindowsSdkNotFound: return "Windows SDK not found";
         case ErrorUnknownDynamicLinkerPath: return "unknown dynamic linker path";
         case ErrorTargetHasNoDynamicLinker: return "target has no dynamic linker";
+        case ErrorInvalidAbiVersion: return "invalid C ABI version";
+        case ErrorInvalidOperatingSystemVersion: return "invalid operating system version";
+        case ErrorUnknownClangOption: return "unknown Clang option";
     }
     return "(invalid error)";
 }

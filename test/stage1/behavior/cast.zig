@@ -304,20 +304,6 @@ fn cast128Float(x: u128) f128 {
     return @bitCast(f128, x);
 }
 
-test "const slice widen cast" {
-    const bytes align(4) = [_]u8{
-        0x12,
-        0x12,
-        0x12,
-        0x12,
-    };
-
-    const u32_value = @bytesToSlice(u32, bytes[0..])[0];
-    expect(u32_value == 0x12121212);
-
-    expect(@bitCast(u32, bytes) == 0x12121212);
-}
-
 test "single-item pointer of array to slice and to unknown length pointer" {
     testCastPtrOfArrayToSliceAndPtr();
     comptime testCastPtrOfArrayToSliceAndPtr();
@@ -392,12 +378,6 @@ test "comptime_int @intToFloat" {
     }
 }
 
-test "@bytesToSlice keeps pointer alignment" {
-    var bytes = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
-    const numbers = @bytesToSlice(u32, bytes[0..]);
-    comptime expect(@TypeOf(numbers) == []align(@alignOf(@TypeOf(bytes))) u32);
-}
-
 test "@intCast i32 to u7" {
     var x: u128 = maxInt(u128);
     var y: i32 = 120;
@@ -455,7 +435,8 @@ fn incrementVoidPtrValue(value: ?*c_void) void {
 
 test "implicit cast from [*]T to ?*c_void" {
     var a = [_]u8{ 3, 2, 1 };
-    incrementVoidPtrArray(a[0..].ptr, 3);
+    var runtime_zero: usize = 0;
+    incrementVoidPtrArray(a[runtime_zero..].ptr, 3);
     expect(std.mem.eql(u8, &a, &[_]u8{ 4, 3, 2 }));
 }
 
@@ -509,6 +490,17 @@ test "@intToEnum passed a comptime_int to an enum with one item" {
     };
     const x = @intToEnum(E, 0);
     expect(x == E.A);
+}
+
+test "@intToEnum runtime to  an extern enum with duplicate values" {
+    const E = extern enum(u8) {
+        A = 1,
+        B = 1,
+    };
+    var a: u8 = 1;
+    var x = @intToEnum(E, a);
+    expect(x == E.A);
+    expect(x == E.B);
 }
 
 test "@intCast to u0 and use the result" {
@@ -794,4 +786,11 @@ test "cast between C pointer with different but compatible types" {
         }
     };
     S.doTheTest();
+}
+
+var global_struct: struct { f0: usize } = undefined;
+
+test "assignment to optional pointer result loc" {
+    var foo: struct { ptr: ?*c_void } = .{ .ptr = &global_struct };
+    expect(foo.ptr.? == @ptrCast(*c_void, &global_struct));
 }

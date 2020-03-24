@@ -248,21 +248,13 @@ static const char *mingwex_generic_src[] = {
     "math" OS_SEP "tgammal.c",
     "math" OS_SEP "truncl.c",
     "misc" OS_SEP "alarm.c",
-    "misc" OS_SEP "assert.c",
     "misc" OS_SEP "basename.c",
     "misc" OS_SEP "btowc.c",
     "misc" OS_SEP "delay-f.c",
     "misc" OS_SEP "delay-n.c",
     "misc" OS_SEP "delayimp.c",
-    "misc" OS_SEP "difftime.c",
-    "misc" OS_SEP "difftime32.c",
-    "misc" OS_SEP "difftime64.c",
     "misc" OS_SEP "dirent.c",
     "misc" OS_SEP "dirname.c",
-    "misc" OS_SEP "execv.c",
-    "misc" OS_SEP "execve.c",
-    "misc" OS_SEP "execvp.c",
-    "misc" OS_SEP "execvpe.c",
     "misc" OS_SEP "feclearexcept.c",
     "misc" OS_SEP "fegetenv.c",
     "misc" OS_SEP "fegetexceptflag.c",
@@ -300,10 +292,6 @@ static const char *mingwex_generic_src[] = {
     "misc" OS_SEP "mkstemp.c",
     "misc" OS_SEP "seterrno.c",
     "misc" OS_SEP "sleep.c",
-    "misc" OS_SEP "spawnv.c",
-    "misc" OS_SEP "spawnve.c",
-    "misc" OS_SEP "spawnvp.c",
-    "misc" OS_SEP "spawnvpe.c",
     "misc" OS_SEP "strnlen.c",
     "misc" OS_SEP "strsafe.c",
     "misc" OS_SEP "strtoimax.c",
@@ -463,7 +451,6 @@ static const char *mingwex_x86_src[] = {
     "math" OS_SEP "x86" OS_SEP "fmod.c",
     "math" OS_SEP "x86" OS_SEP "fmodf.c",
     "math" OS_SEP "x86" OS_SEP "fmodl.c",
-    "math" OS_SEP "x86" OS_SEP "frexpl.S",
     "math" OS_SEP "x86" OS_SEP "fucom.c",
     "math" OS_SEP "x86" OS_SEP "ilogbf.S",
     "math" OS_SEP "x86" OS_SEP "ilogbl.S",
@@ -509,43 +496,21 @@ static const char *mingwex_x86_src[] = {
 
 static const char *mingwex_arm32_src[] = {
     "math" OS_SEP "arm" OS_SEP "_chgsignl.S",
-    "math" OS_SEP "arm" OS_SEP "ceil.S",
-    "math" OS_SEP "arm" OS_SEP "ceilf.S",
-    "math" OS_SEP "arm" OS_SEP "ceill.S",
-    "math" OS_SEP "arm" OS_SEP "copysignl.c",
     "math" OS_SEP "arm" OS_SEP "exp2.c",
-    "math" OS_SEP "arm" OS_SEP "floor.S",
-    "math" OS_SEP "arm" OS_SEP "floorf.S",
-    "math" OS_SEP "arm" OS_SEP "floorl.S",
-    "math" OS_SEP "arm" OS_SEP "ldexpl.c",
-    "math" OS_SEP "arm" OS_SEP "log2.c",
     "math" OS_SEP "arm" OS_SEP "nearbyint.S",
     "math" OS_SEP "arm" OS_SEP "nearbyintf.S",
     "math" OS_SEP "arm" OS_SEP "nearbyintl.S",
-    "math" OS_SEP "arm" OS_SEP "scalbn.c",
-    "math" OS_SEP "arm" OS_SEP "sincos.c",
     "math" OS_SEP "arm" OS_SEP "trunc.S",
     "math" OS_SEP "arm" OS_SEP "truncf.S",
 };
 
 static const char *mingwex_arm64_src[] = {
-    "math" OS_SEP "arm64" OS_SEP "ceilf.S",
-    "math" OS_SEP "arm64" OS_SEP "ceill.S",
-    "math" OS_SEP "arm64" OS_SEP "ceil.S",
     "math" OS_SEP "arm64" OS_SEP "_chgsignl.S",
-    "math" OS_SEP "arm64" OS_SEP "copysignl.c",
     "math" OS_SEP "arm64" OS_SEP "exp2f.S",
     "math" OS_SEP "arm64" OS_SEP "exp2.S",
-    "math" OS_SEP "arm64" OS_SEP "floorf.S",
-    "math" OS_SEP "arm64" OS_SEP "floorl.S",
-    "math" OS_SEP "arm64" OS_SEP "floor.S",
-    "math" OS_SEP "arm64" OS_SEP "ldexpl.c",
-    "math" OS_SEP "arm64" OS_SEP "log2.c",
     "math" OS_SEP "arm64" OS_SEP "nearbyintf.S",
     "math" OS_SEP "arm64" OS_SEP "nearbyintl.S",
     "math" OS_SEP "arm64" OS_SEP "nearbyint.S",
-    "math" OS_SEP "arm64" OS_SEP "scalbn.c",
-    "math" OS_SEP "arm64" OS_SEP "sincos.c",
     "math" OS_SEP "arm64" OS_SEP "truncf.S",
     "math" OS_SEP "arm64" OS_SEP "trunc.S",
 };
@@ -601,6 +566,7 @@ static const char *build_libc_object(CodeGen *parent_gen, const char *name, CFil
         Stage2ProgressNode *progress_node)
 {
     CodeGen *child_gen = create_child_codegen(parent_gen, nullptr, OutTypeObj, nullptr, name, progress_node);
+    child_gen->root_out_name = buf_create_from_str(name);
     ZigList<CFile *> c_source_files = {0};
     c_source_files.append(c_file);
     child_gen->c_source_files = c_source_files;
@@ -1018,43 +984,58 @@ static bool is_musl_arch_name(const char *name) {
     return false;
 }
 
+enum MuslSrc {
+    MuslSrcAsm,
+    MuslSrcNormal,
+    MuslSrcO3,
+};
+
+static void add_musl_src_file(HashMap<Buf *, MuslSrc, buf_hash, buf_eql_buf> &source_table,
+        const char *file_path)
+{
+    Buf *src_file = buf_create_from_str(file_path);
+
+    MuslSrc src_kind;
+    if (buf_ends_with_str(src_file, ".c")) {
+        bool want_O3 = buf_starts_with_str(src_file, "musl/src/malloc/") ||
+            buf_starts_with_str(src_file, "musl/src/string/") ||
+            buf_starts_with_str(src_file, "musl/src/internal/");
+        src_kind = want_O3 ? MuslSrcO3 : MuslSrcNormal;
+    } else if (buf_ends_with_str(src_file, ".s") || buf_ends_with_str(src_file, ".S")) {
+        src_kind = MuslSrcAsm;
+    } else {
+        zig_unreachable();
+    }
+    if (ZIG_OS_SEP_CHAR != '/') {
+        buf_replace(src_file, '/', ZIG_OS_SEP_CHAR);
+    }
+    source_table.put_unique(src_file, src_kind);
+}
+
 static const char *build_musl(CodeGen *parent, Stage2ProgressNode *progress_node) {
     CodeGen *child_gen = create_child_codegen(parent, nullptr, OutTypeLib, nullptr, "c", progress_node);
 
     // When there is a src/<arch>/foo.* then it should substitute for src/foo.*
     // Even a .s file can substitute for a .c file.
 
-    enum MuslSrc {
-        MuslSrcAsm,
-        MuslSrcNormal,
-        MuslSrcO3,
-    };
-
     const char *target_musl_arch_name = target_arch_musl_name(parent->zig_target->arch);
 
     HashMap<Buf *, MuslSrc, buf_hash, buf_eql_buf> source_table = {};
-    source_table.init(1800);
+    source_table.init(2000);
 
     for (size_t i = 0; i < array_length(ZIG_MUSL_SRC_FILES); i += 1) {
-        Buf *src_file = buf_create_from_str(ZIG_MUSL_SRC_FILES[i]);
-
-        MuslSrc src_kind;
-        if (buf_ends_with_str(src_file, ".c")) {
-            assert(buf_starts_with_str(src_file, "musl/src/"));
-            bool want_O3 = buf_starts_with_str(src_file, "musl/src/malloc/") ||
-                buf_starts_with_str(src_file, "musl/src/string/") ||
-                buf_starts_with_str(src_file, "musl/src/internal/");
-            src_kind = want_O3 ? MuslSrcO3 : MuslSrcNormal;
-        } else if (buf_ends_with_str(src_file, ".s") || buf_ends_with_str(src_file, ".S")) {
-            src_kind = MuslSrcAsm;
-        } else {
-            continue;
-        }
-        if (ZIG_OS_SEP_CHAR != '/') {
-            buf_replace(src_file, '/', ZIG_OS_SEP_CHAR);
-        }
-        source_table.put_unique(src_file, src_kind);
+        add_musl_src_file(source_table, ZIG_MUSL_SRC_FILES[i]);
     }
+
+    static const char *time32_compat_arch_list[] = {"arm", "i386", "mips", "powerpc"};
+    for (size_t arch_i = 0; arch_i < array_length(time32_compat_arch_list); arch_i += 1) {
+        if (strcmp(target_musl_arch_name, time32_compat_arch_list[arch_i]) == 0) {
+            for (size_t i = 0; i < array_length(ZIG_MUSL_COMPAT_TIME32_FILES); i += 1) {
+                add_musl_src_file(source_table, ZIG_MUSL_COMPAT_TIME32_FILES[i]);
+            }
+        }
+    }
+
 
     ZigList<CFile *> c_source_files = {0};
 
@@ -1216,6 +1197,7 @@ static const char *get_libc_crt_file(CodeGen *parent, const char *file, Stage2Pr
                 "mingw" OS_SEP "crt" OS_SEP "xncommod.c",
                 "mingw" OS_SEP "crt" OS_SEP "cinitexe.c",
                 "mingw" OS_SEP "crt" OS_SEP "merr.c",
+                "mingw" OS_SEP "crt" OS_SEP "usermatherr.c",
                 "mingw" OS_SEP "crt" OS_SEP "pesect.c",
                 "mingw" OS_SEP "crt" OS_SEP "udllargc.c",
                 "mingw" OS_SEP "crt" OS_SEP "xthdloc.c",
@@ -1669,7 +1651,6 @@ static void construct_linker_job_elf(LinkJob *lj) {
 
     bool is_lib = g->out_type == OutTypeLib;
     bool is_dyn_lib = g->is_dynamic && is_lib;
-    Buf *soname = nullptr;
     if (!g->have_dynamic_link) {
         if (g->zig_target->arch == ZigLLVM_arm || g->zig_target->arch == ZigLLVM_armeb ||
             g->zig_target->arch == ZigLLVM_thumb || g->zig_target->arch == ZigLLVM_thumbeb)
@@ -1680,15 +1661,13 @@ static void construct_linker_job_elf(LinkJob *lj) {
         }
     } else if (is_dyn_lib) {
         lj->args.append("-shared");
-
-        assert(buf_len(&g->bin_file_output_path) != 0);
-        soname = buf_sprintf("lib%s.so.%" ZIG_PRI_usize, buf_ptr(g->root_out_name), g->version_major);
     }
 
     if (target_requires_pie(g->zig_target) && g->out_type == OutTypeExe) {
         lj->args.append("-pie");
     }
 
+    assert(buf_len(&g->bin_file_output_path) != 0);
     lj->args.append("-o");
     lj->args.append(buf_ptr(&g->bin_file_output_path));
 
@@ -1751,13 +1730,16 @@ static void construct_linker_job_elf(LinkJob *lj) {
         }
 
         if (g->have_dynamic_link && (is_dyn_lib || g->out_type == OutTypeExe)) {
-            assert(g->dynamic_linker_path != nullptr);
+            assert(g->zig_target->dynamic_linker != nullptr);
             lj->args.append("-dynamic-linker");
-            lj->args.append(buf_ptr(g->dynamic_linker_path));
+            lj->args.append(g->zig_target->dynamic_linker);
         }
     }
 
     if (is_dyn_lib) {
+        Buf *soname = (g->override_soname == nullptr) ?
+            buf_sprintf("lib%s.so.%" ZIG_PRI_usize, buf_ptr(g->root_out_name), g->version_major) :
+            g->override_soname;
         lj->args.append("-soname");
         lj->args.append(buf_ptr(soname));
 
@@ -2026,7 +2008,7 @@ static const char *get_def_lib(CodeGen *parent, const char *name, Buf *def_in_fi
 
         ZigList<const char *> args = {};
         args.append(buf_ptr(self_exe_path));
-        args.append("cc");
+        args.append("clang");
         args.append("-x");
         args.append("c");
         args.append(buf_ptr(def_in_file));
@@ -2371,99 +2353,6 @@ static void construct_linker_job_coff(LinkJob *lj) {
     }
 }
 
-
-// Parse (([0-9]+)(.([0-9]+)(.([0-9]+)?))?)? and return the
-// grouped values as integers. Numbers which are not provided are set to 0.
-// return true if the entire string was parsed (9.2), or all groups were
-// parsed (10.3.5extrastuff).
-static bool darwin_get_release_version(const char *str, int *major, int *minor, int *micro, bool *had_extra) {
-    *had_extra = false;
-
-    *major = 0;
-    *minor = 0;
-    *micro = 0;
-
-    if (*str == '\0')
-        return false;
-
-    char *end;
-    *major = (int)strtol(str, &end, 10);
-    if (*str != '\0' && *end == '\0')
-        return true;
-    if (*end != '.')
-        return false;
-
-    str = end + 1;
-    *minor = (int)strtol(str, &end, 10);
-    if (*str != '\0' && *end == '\0')
-        return true;
-    if (*end != '.')
-        return false;
-
-    str = end + 1;
-    *micro = (int)strtol(str, &end, 10);
-    if (*str != '\0' && *end == '\0')
-        return true;
-    if (str == end)
-        return false;
-    *had_extra = true;
-    return true;
-}
-
-enum DarwinPlatformKind {
-    MacOS,
-    IPhoneOS,
-    IPhoneOSSimulator,
-};
-
-struct DarwinPlatform {
-    DarwinPlatformKind kind;
-    int major;
-    int minor;
-    int micro;
-};
-
-static void get_darwin_platform(LinkJob *lj, DarwinPlatform *platform) {
-    CodeGen *g = lj->codegen;
-
-    if (g->mmacosx_version_min) {
-        platform->kind = MacOS;
-    } else if (g->mios_version_min) {
-        platform->kind = IPhoneOS;
-    } else if (g->zig_target->os == OsMacOSX) {
-        platform->kind = MacOS;
-        g->mmacosx_version_min = buf_create_from_str("10.14");
-    } else {
-        zig_panic("unable to infer -mmacosx-version-min or -mios-version-min");
-    }
-
-    bool had_extra;
-    if (platform->kind == MacOS) {
-        if (!darwin_get_release_version(buf_ptr(g->mmacosx_version_min),
-                    &platform->major, &platform->minor, &platform->micro, &had_extra) ||
-                had_extra || platform->major != 10 || platform->minor >= 100 || platform->micro >= 100)
-        {
-            zig_panic("invalid -mmacosx-version-min");
-        }
-    } else if (platform->kind == IPhoneOS) {
-        if (!darwin_get_release_version(buf_ptr(g->mios_version_min),
-                    &platform->major, &platform->minor, &platform->micro, &had_extra) ||
-                had_extra || platform->major >= 10 || platform->minor >= 100 || platform->micro >= 100)
-        {
-            zig_panic("invalid -mios-version-min");
-        }
-    } else {
-        zig_unreachable();
-    }
-
-    if (platform->kind == IPhoneOS &&
-        (g->zig_target->arch == ZigLLVM_x86 ||
-         g->zig_target->arch == ZigLLVM_x86_64))
-    {
-        platform->kind = IPhoneOSSimulator;
-    }
-}
-
 static void construct_linker_job_macho(LinkJob *lj) {
     CodeGen *g = lj->codegen;
 
@@ -2507,25 +2396,25 @@ static void construct_linker_job_macho(LinkJob *lj) {
     lj->args.append("-arch");
     lj->args.append(get_darwin_arch_string(g->zig_target));
 
-    DarwinPlatform platform;
-    get_darwin_platform(lj, &platform);
-    switch (platform.kind) {
-        case MacOS:
+    if (g->zig_target->glibc_or_darwin_version != nullptr) {
+        if (g->zig_target->os == OsMacOSX) {
             lj->args.append("-macosx_version_min");
-            break;
-        case IPhoneOS:
-            lj->args.append("-iphoneos_version_min");
-            break;
-        case IPhoneOSSimulator:
-            lj->args.append("-ios_simulator_version_min");
-            break;
+        } else if (g->zig_target->os == OsIOS) {
+            if (g->zig_target->arch == ZigLLVM_x86 || g->zig_target->arch == ZigLLVM_x86_64) {
+                lj->args.append("-ios_simulator_version_min");
+            } else {
+                lj->args.append("-iphoneos_version_min");
+            }
+        }
+        Buf *version_string = buf_sprintf("%d.%d.%d",
+            g->zig_target->glibc_or_darwin_version->major,
+            g->zig_target->glibc_or_darwin_version->minor,
+            g->zig_target->glibc_or_darwin_version->patch);
+        lj->args.append(buf_ptr(version_string));
+
+        lj->args.append("-sdk_version");
+        lj->args.append(buf_ptr(version_string));
     }
-    Buf *version_string = buf_sprintf("%d.%d.%d", platform.major, platform.minor, platform.micro);
-    lj->args.append(buf_ptr(version_string));
-
-    lj->args.append("-sdk_version");
-    lj->args.append(buf_ptr(version_string));
-
 
     if (g->out_type == OutTypeExe) {
         lj->args.append("-pie");
