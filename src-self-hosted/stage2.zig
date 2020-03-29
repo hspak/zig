@@ -114,6 +114,7 @@ const Error = extern enum {
     InvalidAbiVersion,
     InvalidOperatingSystemVersion,
     UnknownClangOption,
+    NestedResponseFile,
 };
 
 const FILE = std.c.FILE;
@@ -898,7 +899,8 @@ const Stage2Target = extern struct {
     abi: c_int,
     os: c_int,
 
-    is_native: bool,
+    is_native_os: bool,
+    is_native_cpu: bool,
 
     glibc_or_darwin_version: ?*Stage2SemVer,
 
@@ -911,6 +913,9 @@ const Stage2Target = extern struct {
 
     dynamic_linker: ?[*:0]const u8,
     standard_dynamic_linker_path: ?[*:0]const u8,
+
+    llvm_cpu_features_asm_ptr: [*]const [*:0]const u8,
+    llvm_cpu_features_asm_len: usize,
 
     fn fromTarget(self: *Stage2Target, cross_target: CrossTarget) !void {
         const allocator = std.heap.c_allocator;
@@ -943,6 +948,12 @@ const Stage2Target = extern struct {
         var llvm_features_buffer = try std.Buffer.initSize(allocator, 0);
         defer llvm_features_buffer.deinit();
 
+        // Unfortunately we have to do the work twice, because Clang does not support
+        // the same command line parameters for CPU features when assembling code as it does
+        // when compiling C code.
+        var asm_features_list = std.ArrayList([*:0]const u8).init(allocator);
+        defer asm_features_list.deinit();
+
         for (target.cpu.arch.allFeaturesList()) |feature, index_usize| {
             const index = @intCast(Target.Cpu.Feature.Set.Index, index_usize);
             const is_enabled = target.cpu.features.isEnabled(index);
@@ -961,6 +972,21 @@ const Stage2Target = extern struct {
                 try cpu_builtin_str_buffer.append(feature.name);
                 try cpu_builtin_str_buffer.append("\",\n");
             }
+        }
+
+        switch (target.cpu.arch) {
+            .riscv32, .riscv64 => {
+                if (std.Target.riscv.featureSetHas(target.cpu.features, .relax)) {
+                    try asm_features_list.append("-mrelax");
+                } else {
+                    try asm_features_list.append("-mno-relax");
+                }
+            },
+            else => {
+                // TODO
+                // Argh, why doesn't the assembler accept the list of CPU features?!
+                // I don't see a way to do this other than hard coding everything.
+            },
         }
 
         try cpu_builtin_str_buffer.append(
@@ -1128,6 +1154,7 @@ const Stage2Target = extern struct {
             null;
 
         const cache_hash_slice = cache_hash.toOwnedSlice();
+        const asm_features = asm_features_list.toOwnedSlice();
         self.* = .{
             .arch = @enumToInt(target.cpu.arch) + 1, // skip over ZigLLVM_UnknownArch
             .vendor = 0,
@@ -1135,11 +1162,14 @@ const Stage2Target = extern struct {
             .abi = @enumToInt(target.abi),
             .llvm_cpu_name = if (target.cpu.model.llvm_name) |s| s.ptr else null,
             .llvm_cpu_features = llvm_features_buffer.toOwnedSlice().ptr,
+            .llvm_cpu_features_asm_ptr = asm_features.ptr,
+            .llvm_cpu_features_asm_len = asm_features.len,
             .cpu_builtin_str = cpu_builtin_str_buffer.toOwnedSlice().ptr,
             .os_builtin_str = os_builtin_str_buffer.toOwnedSlice().ptr,
             .cache_hash = cache_hash_slice.ptr,
             .cache_hash_len = cache_hash_slice.len,
-            .is_native = cross_target.isNative(),
+            .is_native_os = cross_target.isNativeOs(),
+            .is_native_cpu = cross_target.isNativeCpu(),
             .glibc_or_darwin_version = glibc_or_darwin_version,
             .dynamic_linker = dynamic_linker,
             .standard_dynamic_linker_path = std_dl_z,
@@ -1230,6 +1260,7 @@ pub const ClangArgIterator = extern struct {
     argv_ptr: [*]const [*:0]const u8,
     argv_len: usize,
     next_index: usize,
+    root_args: ?*Args,
 
     // ABI warning
     pub const ZigEquivalent = extern enum {
@@ -1244,6 +1275,7 @@ pub const ClangArgIterator = extern struct {
         pic,
         no_pic,
         nostdlib,
+        nostdlib_cpp,
         shared,
         rdynamic,
         wl,
@@ -1251,9 +1283,23 @@ pub const ClangArgIterator = extern struct {
         optimize,
         debug,
         sanitize,
+        linker_script,
+        verbose_cmds,
+        exceptions,
+        no_exceptions,
+        rtti,
+        no_rtti,
+        for_linker,
+        linker_input_z,
     };
 
-    fn init(argv: []const [*:0]const u8) ClangArgIterator {
+    const Args = struct {
+        next_index: usize,
+        argv_ptr: [*]const [*:0]const u8,
+        argv_len: usize,
+    };
+
+    pub fn init(argv: []const [*:0]const u8) ClangArgIterator {
         return .{
             .next_index = 2, // `zig cc foo` this points to `foo`
             .has_next = argv.len > 2,
@@ -1264,22 +1310,74 @@ pub const ClangArgIterator = extern struct {
             .other_args_len = undefined,
             .argv_ptr = argv.ptr,
             .argv_len = argv.len,
+            .root_args = null,
         };
     }
 
-    fn next(self: *ClangArgIterator) !void {
+    pub fn next(self: *ClangArgIterator) !void {
         assert(self.has_next);
         assert(self.next_index < self.argv_len);
         // In this state we know that the parameter we are looking at is a root parameter
         // rather than an argument to a parameter.
         self.other_args_ptr = self.argv_ptr + self.next_index;
         self.other_args_len = 1; // We adjust this value below when necessary.
-        const arg = mem.span(self.argv_ptr[self.next_index]);
-        self.next_index += 1;
-        defer {
-            if (self.next_index >= self.argv_len) self.has_next = false;
-        }
+        var arg = mem.span(self.argv_ptr[self.next_index]);
+        self.incrementArgIndex();
 
+        if (mem.startsWith(u8, arg, "@")) {
+            if (self.root_args != null) return error.NestedResponseFile;
+
+            // This is a "compiler response file". We must parse the file and treat its
+            // contents as command line parameters.
+            const allocator = std.heap.c_allocator;
+            const max_bytes = 10 * 1024 * 1024; // 10 MiB of command line arguments is a reasonable limit
+            const resp_file_path = arg[1..];
+            const resp_contents = fs.cwd().readFileAlloc(allocator, resp_file_path, max_bytes) catch |err| {
+                std.debug.warn("unable to read response file '{}': {}\n", .{ resp_file_path, @errorName(err) });
+                process.exit(1);
+            };
+            defer allocator.free(resp_contents);
+            // TODO is there a specification for this file format? Let's find it and make this parsing more robust
+            // at the very least I'm guessing this needs to handle quotes and `#` comments.
+            var it = mem.tokenize(resp_contents, " \t\r\n");
+            var resp_arg_list = std.ArrayList([*:0]const u8).init(allocator);
+            defer resp_arg_list.deinit();
+            {
+                errdefer {
+                    for (resp_arg_list.span()) |item| {
+                        allocator.free(mem.span(item));
+                    }
+                }
+                while (it.next()) |token| {
+                    const dupe_token = try mem.dupeZ(allocator, u8, token);
+                    errdefer allocator.free(dupe_token);
+                    try resp_arg_list.append(dupe_token);
+                }
+                const args = try allocator.create(Args);
+                errdefer allocator.destroy(args);
+                args.* = .{
+                    .next_index = self.next_index,
+                    .argv_ptr = self.argv_ptr,
+                    .argv_len = self.argv_len,
+                };
+                self.root_args = args;
+            }
+            const resp_arg_slice = resp_arg_list.toOwnedSlice();
+            self.next_index = 0;
+            self.argv_ptr = resp_arg_slice.ptr;
+            self.argv_len = resp_arg_slice.len;
+
+            if (resp_arg_slice.len == 0) {
+                self.resolveRespFileArgs();
+                return;
+            }
+
+            self.has_next = true;
+            self.other_args_ptr = self.argv_ptr + self.next_index;
+            self.other_args_len = 1; // We adjust this value below when necessary.
+            arg = mem.span(self.argv_ptr[self.next_index]);
+            self.incrementArgIndex();
+        }
         if (!mem.startsWith(u8, arg, "-")) {
             self.zig_equivalent = .positional;
             self.only_arg = arg.ptr;
@@ -1316,7 +1414,7 @@ pub const ClangArgIterator = extern struct {
                         process.exit(1);
                     }
                     self.only_arg = self.argv_ptr[self.next_index];
-                    self.next_index += 1;
+                    self.incrementArgIndex();
                     self.other_args_len += 1;
                     self.zig_equivalent = clang_arg.zig_equivalent;
 
@@ -1338,7 +1436,7 @@ pub const ClangArgIterator = extern struct {
                         process.exit(1);
                     }
                     self.second_arg = self.argv_ptr[self.next_index];
-                    self.next_index += 1;
+                    self.incrementArgIndex();
                     self.other_args_len += 1;
                     self.zig_equivalent = clang_arg.zig_equivalent;
                     break :find_clang_arg;
@@ -1350,7 +1448,7 @@ pub const ClangArgIterator = extern struct {
                     process.exit(1);
                 }
                 self.only_arg = self.argv_ptr[self.next_index];
-                self.next_index += 1;
+                self.incrementArgIndex();
                 self.other_args_len += 1;
                 self.zig_equivalent = clang_arg.zig_equivalent;
                 break :find_clang_arg;
@@ -1370,6 +1468,28 @@ pub const ClangArgIterator = extern struct {
             process.exit(1);
         }
     }
+
+    fn incrementArgIndex(self: *ClangArgIterator) void {
+        self.next_index += 1;
+        self.resolveRespFileArgs();
+    }
+
+    fn resolveRespFileArgs(self: *ClangArgIterator) void {
+        const allocator = std.heap.c_allocator;
+        if (self.next_index >= self.argv_len) {
+            if (self.root_args) |root_args| {
+                self.next_index = root_args.next_index;
+                self.argv_ptr = root_args.argv_ptr;
+                self.argv_len = root_args.argv_len;
+
+                allocator.destroy(root_args);
+                self.root_args = null;
+            }
+            if (self.next_index >= self.argv_len) {
+                self.has_next = false;
+            }
+        }
+    }
 };
 
 export fn stage2_clang_arg_iterator(
@@ -1382,7 +1502,8 @@ export fn stage2_clang_arg_iterator(
 
 export fn stage2_clang_arg_next(it: *ClangArgIterator) Error {
     it.next() catch |err| switch (err) {
-        error.UnknownClangOption => return .UnknownClangOption,
+        error.NestedResponseFile => return .NestedResponseFile,
+        error.OutOfMemory => return .OutOfMemory,
     };
     return .None;
 }

@@ -209,7 +209,7 @@ pub fn deserializer(
 ///  to the serializer struct.
 pub fn Serializer(comptime endian: builtin.Endian, comptime packing: Packing, comptime OutStreamType: type) type {
     return struct {
-        out_stream: if (packing == .Bit) BitOutStream(endian, OutStreamType) else OutStreamType,
+        out_stream: if (packing == .Bit) io.BitOutStream(endian, OutStreamType) else OutStreamType,
 
         const Self = @This();
         pub const Error = OutStreamType.Error;
@@ -562,10 +562,6 @@ fn testSerializerDeserializer(comptime endian: builtin.Endian, comptime packing:
 }
 
 test "Serializer/Deserializer generic" {
-    if (std.Target.current.os.tag == .windows) {
-        // TODO https://github.com/ziglang/zig/issues/508
-        return error.SkipZigTest;
-    }
     try testSerializerDeserializer(builtin.Endian.Big, .Byte);
     try testSerializerDeserializer(builtin.Endian.Little, .Byte);
     try testSerializerDeserializer(builtin.Endian.Big, .Bit);
