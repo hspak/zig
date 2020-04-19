@@ -107,6 +107,9 @@ enum Error {
     ErrorInvalidOperatingSystemVersion,
     ErrorUnknownClangOption,
     ErrorNestedResponseFile,
+    ErrorZigIsTheCCompiler,
+    ErrorFileBusy,
+    ErrorLocked,
 };
 
 // ABI warning
@@ -339,18 +342,20 @@ enum Stage2ClangArg {
     Stage2ClangArgShared,
     Stage2ClangArgRDynamic,
     Stage2ClangArgWL,
-    Stage2ClangArgPreprocess,
+    Stage2ClangArgPreprocessOrAsm,
     Stage2ClangArgOptimize,
     Stage2ClangArgDebug,
     Stage2ClangArgSanitize,
     Stage2ClangArgLinkerScript,
     Stage2ClangArgVerboseCmds,
-    Stage2ClangArgExceptions,
-    Stage2ClangArgNoExceptions,
-    Stage2ClangArgRtti,
-    Stage2ClangArgNoRtti,
     Stage2ClangArgForLinker,
     Stage2ClangArgLinkerInputZ,
+    Stage2ClangArgLibDir,
+    Stage2ClangArgMCpu,
+    Stage2ClangArgDepFile,
+    Stage2ClangArgFrameworkDir,
+    Stage2ClangArgFramework,
+    Stage2ClangArgNoStdLibInc,
 };
 
 // ABI warning

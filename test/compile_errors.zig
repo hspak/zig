@@ -2,6 +2,184 @@ const tests = @import("tests.zig");
 const std = @import("std");
 
 pub fn addCases(cases: *tests.CompileErrorContext) void {
+    cases.add("declaration between fields",
+        \\const S = struct {
+        \\    const foo = 2;
+        \\    const bar = 2;
+        \\    const baz = 2;
+        \\    a: usize,
+        \\    const foo1 = 2;
+        \\    const bar1 = 2;
+        \\    const baz1 = 2;
+        \\    b: usize,
+        \\};
+        \\comptime {
+        \\    _ = S;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:6:5: error: declarations are not allowed between container fields",
+    });
+
+    cases.add("non-extern function with var args",
+        \\fn foo(args: ...) void {}
+        \\export fn entry() void {
+        \\    foo();
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:1:1: error: non-extern function is variadic",
+    });
+
+    cases.addTest("invalid int casts",
+        \\export fn foo() void {
+        \\    var a: u32 = 2;
+        \\    _ = @intCast(comptime_int, a);
+        \\}
+        \\export fn bar() void {
+        \\    var a: u32 = 2;
+        \\    _ = @intToFloat(u32, a);
+        \\}
+        \\export fn baz() void {
+        \\    var a: u32 = 2;
+        \\    _ = @floatToInt(u32, a);
+        \\}
+        \\export fn qux() void {
+        \\    var a: u32 = 2;
+        \\    _ = @intCast(comptime_int, a);
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:3:32: error: expected type 'comptime_int', found 'u32'",
+        "tmp.zig:3:9: note: referenced here",
+        "tmp.zig:7:21: error: expected float type, found 'u32'",
+        "tmp.zig:7:9: note: referenced here",
+        "tmp.zig:11:26: error: expected float type, found 'u32'",
+        "tmp.zig:11:9: note: referenced here",
+        "tmp.zig:15:32: error: expected type 'comptime_int', found 'u32'",
+        "tmp.zig:15:9: note: referenced here",
+    });
+
+    cases.addTest("invalid float casts",
+        \\export fn foo() void {
+        \\    var a: f32 = 2;
+        \\    _ = @floatCast(comptime_float, a);
+        \\}
+        \\export fn bar() void {
+        \\    var a: f32 = 2;
+        \\    _ = @floatToInt(f32, a);
+        \\}
+        \\export fn baz() void {
+        \\    var a: f32 = 2;
+        \\    _ = @intToFloat(f32, a);
+        \\}
+        \\export fn qux() void {
+        \\    var a: f32 = 2;
+        \\    _ = @floatCast(comptime_float, a);
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:3:36: error: expected type 'comptime_float', found 'f32'",
+        "tmp.zig:3:9: note: referenced here",
+        "tmp.zig:7:21: error: expected integer type, found 'f32'",
+        "tmp.zig:7:9: note: referenced here",
+        "tmp.zig:11:26: error: expected int type, found 'f32'",
+        "tmp.zig:11:9: note: referenced here",
+        "tmp.zig:15:36: error: expected type 'comptime_float', found 'f32'",
+        "tmp.zig:15:9: note: referenced here",
+    });
+
+    cases.addTest("invalid assignments",
+        \\export fn entry1() void {
+        \\    var a: []const u8 = "foo";
+        \\    a[0..2] = "bar";
+        \\}
+        \\export fn entry2() void {
+        \\    var a: u8 = 2;
+        \\    a + 2 = 3;
+        \\}
+        \\export fn entry4() void {
+        \\    2 + 2 = 3;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:3:6: error: invalid left-hand side to assignment",
+        "tmp.zig:7:7: error: invalid left-hand side to assignment",
+        "tmp.zig:10:7: error: invalid left-hand side to assignment",
+    });
+
+    cases.addTest("reassign to array parameter",
+        \\fn reassign(a: [3]f32) void {
+        \\    a = [3]f32{4, 5, 6};
+        \\}
+        \\export fn entry() void {
+        \\    reassign(.{1, 2, 3});
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:15: error: cannot assign to constant",
+    });
+
+    cases.addTest("reassign to slice parameter",
+        \\pub fn reassign(s: []const u8) void {
+        \\    s = s[0..];
+        \\}
+        \\export fn entry() void {
+        \\    reassign("foo");
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:10: error: cannot assign to constant",
+    });
+
+    cases.addTest("reassign to struct parameter",
+        \\const S = struct {
+        \\    x: u32,
+        \\};
+        \\fn reassign(s: S) void {
+        \\    s = S{.x = 2};
+        \\}
+        \\export fn entry() void {
+        \\    reassign(S{.x = 3});
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:5:10: error: cannot assign to constant",
+    });
+
+    cases.addTest("reference to const data",
+        \\export fn foo() void {
+        \\    var ptr = &[_]u8{0,0,0,0};
+        \\    ptr[1] = 2;
+        \\}
+        \\export fn bar() void {
+        \\    var ptr = &@as(u32, 2);
+        \\    ptr.* = 2;
+        \\}
+        \\export fn baz() void {
+        \\    var ptr = &true;
+        \\    ptr.* = false;
+        \\}
+        \\export fn qux() void {
+        \\    const S = struct{
+        \\        x: usize,
+        \\        y: usize,
+        \\    };
+        \\    var ptr = &S{.x=1,.y=2};
+        \\    ptr.x = 2;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:3:14: error: cannot assign to constant",
+        "tmp.zig:7:13: error: cannot assign to constant",
+        "tmp.zig:11:13: error: cannot assign to constant",
+        "tmp.zig:19:13: error: cannot assign to constant",
+    });
+
+    cases.addTest("cast between ?T where T is not a pointer",
+        \\pub const fnty1 = ?fn (i8) void;
+        \\pub const fnty2 = ?fn (u64) void;
+        \\export fn entry() void {
+        \\    var a: fnty1 = undefined;
+        \\    var b: fnty2 = undefined;
+        \\    a = b;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:6:9: error: expected type '?fn(i8) void', found '?fn(u64) void'",
+        "tmp.zig:6:9: note: optional type child 'fn(u64) void' cannot cast into optional type child 'fn(i8) void'",
+    });
+
     cases.addTest("unused variable error on errdefer",
         \\fn foo() !void {
         \\    errdefer |a| unreachable;
@@ -552,15 +730,6 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         "tmp.zig:2:28: error: invalid character: ';'",
     });
 
-    cases.add("var args without c calling conv",
-        \\fn foo(args: ...) void {}
-        \\comptime {
-        \\    _ = foo;
-        \\}
-    , &[_][]const u8{
-        "tmp.zig:1:8: error: var args only allowed in functions with C calling convention",
-    });
-
     cases.add("comptime struct field, no init value",
         \\const Foo = struct {
         \\    comptime b: i32,
@@ -705,7 +874,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         "tmp.zig:11:25: error: expected type 'u32', found '@TypeOf(get_uval).ReturnType.ErrorSet!u32'",
     });
 
-    cases.add("asigning to struct or union fields that are not optionals with a function that returns an optional",
+    cases.add("assigning to struct or union fields that are not optionals with a function that returns an optional",
         \\fn maybe(is: bool) ?u8 {
         \\    if (is) return @as(u8, 10) else return null;
         \\}
@@ -933,7 +1102,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    _ = @Type(@typeInfo(struct { }));
         \\}
     , &[_][]const u8{
-        "tmp.zig:2:15: error: @Type not availble for 'TypeInfo.Struct'",
+        "tmp.zig:2:15: error: @Type not available for 'TypeInfo.Struct'",
     });
 
     cases.add("wrong type for result ptr to @asyncCall",
@@ -956,7 +1125,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    const x = 1 << &@as(u8, 10);
         \\}
     , &[_][]const u8{
-        "tmp.zig:2:21: error: shift amount has to be an integer type, but found '*u8'",
+        "tmp.zig:2:21: error: shift amount has to be an integer type, but found '*const u8'",
         "tmp.zig:2:17: note: referenced here",
     });
 
@@ -965,7 +1134,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    const x = &@as(u8, 1) << 10;
         \\}
     , &[_][]const u8{
-        "tmp.zig:2:16: error: bit shifting operation expected integer type, found '*u8'",
+        "tmp.zig:2:16: error: bit shifting operation expected integer type, found '*const u8'",
         "tmp.zig:2:27: note: referenced here",
     });
 
@@ -1188,7 +1357,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    suspend;
         \\}
     , &[_][]const u8{
-        "tmp.zig:3:5: error: expected type '*@Frame(bar)', found '*@Frame(foo)'",
+        "tmp.zig:3:13: error: expected type '*@Frame(bar)', found '*@Frame(foo)'",
     });
 
     cases.add("@Frame() of generic function",
@@ -2508,7 +2677,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         "tmp.zig:7:17: error: switch on type 'type' provides no expression parameter",
     });
 
-    cases.add("function protoype with no body",
+    cases.add("function prototype with no body",
         \\fn foo() void;
         \\export fn entry() void {
         \\    foo();
@@ -3783,14 +3952,6 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\export fn entry() void { f(); }
     , &[_][]const u8{
         "tmp.zig:1:9: error: parameter of type 'noreturn' not allowed",
-    });
-
-    cases.add("bad assignment target",
-        \\export fn f() void {
-        \\    3 = 3;
-        \\}
-    , &[_][]const u8{
-        "tmp.zig:2:9: error: cannot assign to constant",
     });
 
     cases.add("assign to constant variable",
@@ -5838,7 +5999,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    return 0x11 << x;
         \\}
     , &[_][]const u8{
-        "tmp.zig:2:17: error: LHS of shift must be an integer type, or RHS must be compile-time known",
+        "tmp.zig:2:17: error: LHS of shift must be a fixed-width integer type, or RHS must be compile-time known",
     });
 
     cases.add("shifting RHS is log2 of LHS int bit width",
@@ -5992,7 +6153,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    fn bar(self: *const Foo) void {}
         \\};
     , &[_][]const u8{
-        "tmp.zig:2:4: error: variable of type '*comptime_int' must be const or comptime",
+        "tmp.zig:2:4: error: variable of type '*const comptime_int' must be const or comptime",
         "tmp.zig:5:4: error: variable of type '(undefined)' must be const or comptime",
         "tmp.zig:8:4: error: variable of type 'comptime_int' must be const or comptime",
         "tmp.zig:11:4: error: variable of type 'comptime_float' must be const or comptime",
@@ -6805,5 +6966,348 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\}
     , &[_][]const u8{
         "tmp.zig:2:27: error: type 'u32' does not support array initialization",
+    });
+
+    cases.add("issue #2687: coerce from undefined array pointer to slice",
+        \\export fn foo1() void {
+        \\    const a: *[1]u8 = undefined;
+        \\    var b: []u8 = a;
+        \\}
+        \\export fn foo2() void {
+        \\    comptime {
+        \\        var a: *[1]u8 = undefined;
+        \\        var b: []u8 = a;
+        \\    }
+        \\}
+        \\export fn foo3() void {
+        \\    comptime {
+        \\        const a: *[1]u8 = undefined;
+        \\        var b: []u8 = a;
+        \\    }
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:3:19: error: use of undefined value here causes undefined behavior",
+        "tmp.zig:8:23: error: use of undefined value here causes undefined behavior",
+        "tmp.zig:14:23: error: use of undefined value here causes undefined behavior",
+    });
+
+    cases.add("issue #3818: bitcast from parray/slice to u16",
+        \\export fn foo1() void {
+        \\    var bytes = [_]u8{1, 2};
+        \\    const word: u16 = @bitCast(u16, bytes[0..]);
+        \\}
+        \\export fn foo2() void {
+        \\    var bytes: []const u8 = &[_]u8{1, 2};
+        \\    const word: u16 = @bitCast(u16, bytes);
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:3:42: error: unable to @bitCast from pointer type '*[2]u8'",
+        "tmp.zig:7:32: error: destination type 'u16' has size 2 but source type '[]const u8' has size 16",
+        "tmp.zig:7:37: note: referenced here",
+    });
+
+    cases.add("comptime slice-sentinel is out of bounds (unterminated)",
+        \\export fn foo_array() void {
+        \\    comptime {
+        \\        var target = [_]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        const slice = target[0..14 :0];
+        \\    }
+        \\}
+        \\export fn foo_ptr_array() void {
+        \\    comptime {
+        \\        var buf = [_]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target = &buf;
+        \\        const slice = target[0..14 :0];
+        \\    }
+        \\}
+        \\export fn foo_vector_ConstPtrSpecialBaseArray() void {
+        \\    comptime {
+        \\        var buf = [_]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*]u8 = &buf;
+        \\        const slice = target[0..14 :0];
+        \\    }
+        \\}
+        \\export fn foo_vector_ConstPtrSpecialRef() void {
+        \\    comptime {
+        \\        var buf = [_]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*]u8 = @ptrCast([*]u8, &buf);
+        \\        const slice = target[0..14 :0];
+        \\    }
+        \\}
+        \\export fn foo_cvector_ConstPtrSpecialBaseArray() void {
+        \\    comptime {
+        \\        var buf = [_]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*c]u8 = &buf;
+        \\        const slice = target[0..14 :0];
+        \\    }
+        \\}
+        \\export fn foo_cvector_ConstPtrSpecialRef() void {
+        \\    comptime {
+        \\        var buf = [_]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*c]u8 = @ptrCast([*c]u8, &buf);
+        \\        const slice = target[0..14 :0];
+        \\    }
+        \\}
+        \\export fn foo_slice() void {
+        \\    comptime {
+        \\        var buf = [_]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: []u8 = &buf;
+        \\        const slice = target[0..14 :0];
+        \\    }
+        \\}
+    , &[_][]const u8{
+        ":4:29: error: slice-sentinel is out of bounds",
+        ":11:29: error: slice-sentinel is out of bounds",
+        ":18:29: error: slice-sentinel is out of bounds",
+        ":25:29: error: slice-sentinel is out of bounds",
+        ":32:29: error: slice-sentinel is out of bounds",
+        ":39:29: error: slice-sentinel is out of bounds",
+        ":46:29: error: slice-sentinel is out of bounds",
+    });
+
+    cases.add("comptime slice-sentinel is out of bounds (terminated)",
+        \\export fn foo_array() void {
+        \\    comptime {
+        \\        var target = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        const slice = target[0..15 :1];
+        \\    }
+        \\}
+        \\export fn foo_ptr_array() void {
+        \\    comptime {
+        \\        var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target = &buf;
+        \\        const slice = target[0..15 :0];
+        \\    }
+        \\}
+        \\export fn foo_vector_ConstPtrSpecialBaseArray() void {
+        \\    comptime {
+        \\        var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*]u8 = &buf;
+        \\        const slice = target[0..15 :0];
+        \\    }
+        \\}
+        \\export fn foo_vector_ConstPtrSpecialRef() void {
+        \\    comptime {
+        \\        var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*]u8 = @ptrCast([*]u8, &buf);
+        \\        const slice = target[0..15 :0];
+        \\    }
+        \\}
+        \\export fn foo_cvector_ConstPtrSpecialBaseArray() void {
+        \\    comptime {
+        \\        var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*c]u8 = &buf;
+        \\        const slice = target[0..15 :0];
+        \\    }
+        \\}
+        \\export fn foo_cvector_ConstPtrSpecialRef() void {
+        \\    comptime {
+        \\        var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*c]u8 = @ptrCast([*c]u8, &buf);
+        \\        const slice = target[0..15 :0];
+        \\    }
+        \\}
+        \\export fn foo_slice() void {
+        \\    comptime {
+        \\        var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: []u8 = &buf;
+        \\        const slice = target[0..15 :0];
+        \\    }
+        \\}
+    , &[_][]const u8{
+        ":4:29: error: out of bounds slice",
+        ":11:29: error: out of bounds slice",
+        ":18:29: error: out of bounds slice",
+        ":25:29: error: out of bounds slice",
+        ":32:29: error: out of bounds slice",
+        ":39:29: error: out of bounds slice",
+        ":46:29: error: out of bounds slice",
+    });
+
+    cases.add("comptime slice-sentinel does not match memory at target index (unterminated)",
+        \\export fn foo_array() void {
+        \\    comptime {
+        \\        var target = [_]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        const slice = target[0..3 :0];
+        \\    }
+        \\}
+        \\export fn foo_ptr_array() void {
+        \\    comptime {
+        \\        var buf = [_]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target = &buf;
+        \\        const slice = target[0..3 :0];
+        \\    }
+        \\}
+        \\export fn foo_vector_ConstPtrSpecialBaseArray() void {
+        \\    comptime {
+        \\        var buf = [_]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*]u8 = &buf;
+        \\        const slice = target[0..3 :0];
+        \\    }
+        \\}
+        \\export fn foo_vector_ConstPtrSpecialRef() void {
+        \\    comptime {
+        \\        var buf = [_]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*]u8 = @ptrCast([*]u8, &buf);
+        \\        const slice = target[0..3 :0];
+        \\    }
+        \\}
+        \\export fn foo_cvector_ConstPtrSpecialBaseArray() void {
+        \\    comptime {
+        \\        var buf = [_]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*c]u8 = &buf;
+        \\        const slice = target[0..3 :0];
+        \\    }
+        \\}
+        \\export fn foo_cvector_ConstPtrSpecialRef() void {
+        \\    comptime {
+        \\        var buf = [_]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*c]u8 = @ptrCast([*c]u8, &buf);
+        \\        const slice = target[0..3 :0];
+        \\    }
+        \\}
+        \\export fn foo_slice() void {
+        \\    comptime {
+        \\        var buf = [_]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: []u8 = &buf;
+        \\        const slice = target[0..3 :0];
+        \\    }
+        \\}
+    , &[_][]const u8{
+        ":4:29: error: slice-sentinel does not match memory at target index",
+        ":11:29: error: slice-sentinel does not match memory at target index",
+        ":18:29: error: slice-sentinel does not match memory at target index",
+        ":25:29: error: slice-sentinel does not match memory at target index",
+        ":32:29: error: slice-sentinel does not match memory at target index",
+        ":39:29: error: slice-sentinel does not match memory at target index",
+        ":46:29: error: slice-sentinel does not match memory at target index",
+    });
+
+    cases.add("comptime slice-sentinel does not match memory at target index (terminated)",
+        \\export fn foo_array() void {
+        \\    comptime {
+        \\        var target = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        const slice = target[0..3 :0];
+        \\    }
+        \\}
+        \\export fn foo_ptr_array() void {
+        \\    comptime {
+        \\        var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target = &buf;
+        \\        const slice = target[0..3 :0];
+        \\    }
+        \\}
+        \\export fn foo_vector_ConstPtrSpecialBaseArray() void {
+        \\    comptime {
+        \\        var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*]u8 = &buf;
+        \\        const slice = target[0..3 :0];
+        \\    }
+        \\}
+        \\export fn foo_vector_ConstPtrSpecialRef() void {
+        \\    comptime {
+        \\        var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*]u8 = @ptrCast([*]u8, &buf);
+        \\        const slice = target[0..3 :0];
+        \\    }
+        \\}
+        \\export fn foo_cvector_ConstPtrSpecialBaseArray() void {
+        \\    comptime {
+        \\        var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*c]u8 = &buf;
+        \\        const slice = target[0..3 :0];
+        \\    }
+        \\}
+        \\export fn foo_cvector_ConstPtrSpecialRef() void {
+        \\    comptime {
+        \\        var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*c]u8 = @ptrCast([*c]u8, &buf);
+        \\        const slice = target[0..3 :0];
+        \\    }
+        \\}
+        \\export fn foo_slice() void {
+        \\    comptime {
+        \\        var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: []u8 = &buf;
+        \\        const slice = target[0..3 :0];
+        \\    }
+        \\}
+    , &[_][]const u8{
+        ":4:29: error: slice-sentinel does not match memory at target index",
+        ":11:29: error: slice-sentinel does not match memory at target index",
+        ":18:29: error: slice-sentinel does not match memory at target index",
+        ":25:29: error: slice-sentinel does not match memory at target index",
+        ":32:29: error: slice-sentinel does not match memory at target index",
+        ":39:29: error: slice-sentinel does not match memory at target index",
+        ":46:29: error: slice-sentinel does not match memory at target index",
+    });
+
+    cases.add("comptime slice-sentinel does not match target-sentinel",
+        \\export fn foo_array() void {
+        \\    comptime {
+        \\        var target = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        const slice = target[0..14 :255];
+        \\    }
+        \\}
+        \\export fn foo_ptr_array() void {
+        \\    comptime {
+        \\        var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target = &buf;
+        \\        const slice = target[0..14 :255];
+        \\    }
+        \\}
+        \\export fn foo_vector_ConstPtrSpecialBaseArray() void {
+        \\    comptime {
+        \\        var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*]u8 = &buf;
+        \\        const slice = target[0..14 :255];
+        \\    }
+        \\}
+        \\export fn foo_vector_ConstPtrSpecialRef() void {
+        \\    comptime {
+        \\        var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*]u8 = @ptrCast([*]u8, &buf);
+        \\        const slice = target[0..14 :255];
+        \\    }
+        \\}
+        \\export fn foo_cvector_ConstPtrSpecialBaseArray() void {
+        \\    comptime {
+        \\        var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*c]u8 = &buf;
+        \\        const slice = target[0..14 :255];
+        \\    }
+        \\}
+        \\export fn foo_cvector_ConstPtrSpecialRef() void {
+        \\    comptime {
+        \\        var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: [*c]u8 = @ptrCast([*c]u8, &buf);
+        \\        const slice = target[0..14 :255];
+        \\    }
+        \\}
+        \\export fn foo_slice() void {
+        \\    comptime {
+        \\        var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
+        \\        var target: []u8 = &buf;
+        \\        const slice = target[0..14 :255];
+        \\    }
+        \\}
+    , &[_][]const u8{
+        ":4:29: error: slice-sentinel does not match target-sentinel",
+        ":11:29: error: slice-sentinel does not match target-sentinel",
+        ":18:29: error: slice-sentinel does not match target-sentinel",
+        ":25:29: error: slice-sentinel does not match target-sentinel",
+        ":32:29: error: slice-sentinel does not match target-sentinel",
+        ":39:29: error: slice-sentinel does not match target-sentinel",
+        ":46:29: error: slice-sentinel does not match target-sentinel",
+    });
+
+    cases.add("issue #4207: coerce from non-terminated-slice to terminated-pointer",
+        \\export fn foo() [*:0]const u8 {
+        \\    var buffer: [64]u8 = undefined;
+        \\    return buffer[0..];
+        \\}
+    , &[_][]const u8{
+        ":3:18: error: expected type '[*:0]const u8', found '*[64]u8'",
+        ":3:18: note: destination pointer requires a terminating '0' sentinel",
     });
 }

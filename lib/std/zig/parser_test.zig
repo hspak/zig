@@ -1,3 +1,18 @@
+test "zig fmt: decl between fields" {
+    try testError(
+        \\const S = struct {
+        \\    const foo = 2;
+        \\    const bar = 2;
+        \\    const baz = 2;
+        \\    a: usize,
+        \\    const foo1 = 2;
+        \\    const bar1 = 2;
+        \\    const baz1 = 2;
+        \\    b: usize,
+        \\};
+    );
+}
+
 test "zig fmt: errdefer with payload" {
     try testCanonical(
         \\pub fn main() anyerror!void {
@@ -368,6 +383,35 @@ test "zig fmt: correctly move doc comments on struct fields" {
         \\    sectname: [16]u8,
         \\    /// segment this section goes in
         \\    segname: [16]u8,
+        \\};
+        \\
+    );
+}
+
+test "zig fmt: correctly space struct fields with doc comments" {
+    try testTransform(
+        \\pub const S = struct {
+        \\    /// A
+        \\    a: u8,
+        \\    /// B
+        \\    /// B (cont)
+        \\    b: u8,
+        \\
+        \\
+        \\    /// C
+        \\    c: u8,
+        \\};
+        \\
+    ,
+        \\pub const S = struct {
+        \\    /// A
+        \\    a: u8,
+        \\    /// B
+        \\    /// B (cont)
+        \\    b: u8,
+        \\
+        \\    /// C
+        \\    c: u8,
         \\};
         \\
     );
@@ -1972,11 +2016,11 @@ test "zig fmt: struct declaration" {
         \\    f1: u8,
         \\    f3: u8,
         \\
+        \\    f2: u8,
+        \\
         \\    fn method(self: *Self) Self {
         \\        return self.*;
         \\    }
-        \\
-        \\    f2: u8,
         \\};
         \\
         \\const Ps = packed struct {
@@ -2924,7 +2968,7 @@ fn testParse(source: []const u8, allocator: *mem.Allocator, anything_changed: *b
         return error.ParseError;
     }
 
-    var buffer = try std.Buffer.initSize(allocator, 0);
+    var buffer = std.ArrayList(u8).init(allocator);
     errdefer buffer.deinit();
 
     anything_changed.* = try std.zig.render(allocator, buffer.outStream(), tree);

@@ -37,6 +37,7 @@ static int print_full_usage(const char *arg0, FILE *file, int return_code) {
         "  build-obj [source]           create object from source or assembly\n"
         "  builtin                      show the source code of @import(\"builtin\")\n"
         "  cc                           use Zig as a drop-in C compiler\n"
+        "  c++                          use Zig as a drop-in C++ compiler\n"
         "  fmt                          parse files and render in canonical zig format\n"
         "  id                           print the base64-encoded compiler id\n"
         "  init-exe                     initialize a `zig build` application in the cwd\n"
@@ -260,18 +261,6 @@ static int main0(int argc, char **argv) {
     char *arg0 = argv[0];
     Error err;
 
-    if (argc == 2 && strcmp(argv[1], "BUILD_INFO") == 0) {
-        printf("%s\n%s\n%s\n%s\n%s\n%s\n%s\n",
-                ZIG_CMAKE_BINARY_DIR,
-                ZIG_CXX_COMPILER,
-                ZIG_LLVM_CONFIG_EXE,
-                ZIG_LLD_INCLUDE_PATH,
-                ZIG_LLD_LIBRARIES,
-                ZIG_CLANG_LIBRARIES,
-                ZIG_DIA_GUIDS_LIB);
-        return 0;
-    }
-
     if (argc >= 2 && (strcmp(argv[1], "clang") == 0 ||
             strcmp(argv[1], "-cc1") == 0 || strcmp(argv[1], "-cc1as") == 0))
     {
@@ -455,11 +444,17 @@ static int main0(int argc, char **argv) {
     const char *mcpu = nullptr;
     CodeModel code_model = CodeModelDefault;
     const char *override_soname = nullptr;
-    bool only_preprocess = false;
+    bool only_pp_or_asm = false;
     bool ensure_libc_on_non_freestanding = false;
     bool ensure_libcpp_on_non_freestanding = false;
-    bool cpp_rtti = true;
-    bool cpp_exceptions = true;
+    bool disable_c_depfile = false;
+    bool want_native_include_dirs = false;
+    Buf *linker_optimization = nullptr;
+    OptionalBool linker_gc_sections = OptionalBoolNull;
+    OptionalBool linker_allow_shlib_undefined = OptionalBoolNull;
+    bool linker_z_nodelete = false;
+    bool linker_z_defs = false;
+    size_t stack_size_override = 0;
 
     ZigList<const char *> llvm_argv = {0};
     llvm_argv.append("zig (LLVM option parsing)");
@@ -589,6 +584,7 @@ static int main0(int argc, char **argv) {
         strip = true;
         ensure_libc_on_non_freestanding = true;
         ensure_libcpp_on_non_freestanding = (strcmp(argv[1], "c++") == 0);
+        want_native_include_dirs = true;
 
         bool c_arg = false;
         Stage2ClangArgIterator it;
@@ -617,29 +613,37 @@ static int main0(int argc, char **argv) {
                     }
                     break;
                 case Stage2ClangArgPositional: {
-                    Buf *arg_buf = buf_create_from_str(it.only_arg);
-                    if (buf_ends_with_str(arg_buf, ".c") ||
-                        buf_ends_with_str(arg_buf, ".C") ||
-                        buf_ends_with_str(arg_buf, ".cc") ||
-                        buf_ends_with_str(arg_buf, ".cpp") ||
-                        buf_ends_with_str(arg_buf, ".cxx") ||
-                        buf_ends_with_str(arg_buf, ".s") ||
-                        buf_ends_with_str(arg_buf, ".S"))
-                    {
-                        CFile *c_file = heap::c_allocator.create<CFile>();
-                        c_file->source_path = it.only_arg;
-                        c_source_files.append(c_file);
-                    } else {
-                        objects.append(it.only_arg);
+                    FileExt file_ext = classify_file_ext(it.only_arg, strlen(it.only_arg));
+                    switch (file_ext) {
+                        case FileExtAsm:
+                        case FileExtC:
+                        case FileExtCpp:
+                        case FileExtLLVMIr:
+                        case FileExtLLVMBitCode:
+                        case FileExtHeader: {
+                            CFile *c_file = heap::c_allocator.create<CFile>();
+                            c_file->source_path = it.only_arg;
+                            c_source_files.append(c_file);
+                            break;
+                        }
+                        case FileExtUnknown:
+                            objects.append(it.only_arg);
+                            break;
                     }
                     break;
                 }
                 case Stage2ClangArgL: // -l
-                    if (strcmp(it.only_arg, "c") == 0)
+                    if (strcmp(it.only_arg, "c") == 0) {
                         have_libc = true;
-                    if (strcmp(it.only_arg, "c++") == 0)
+                        link_libs.append("c");
+                    } else if (strcmp(it.only_arg, "c++") == 0 ||
+                        strcmp(it.only_arg, "stdc++") == 0)
+                    {
                         have_libcpp = true;
-                    link_libs.append(it.only_arg);
+                        link_libs.append("c++");
+                    } else {
+                        link_libs.append(it.only_arg);
+                    }
                     break;
                 case Stage2ClangArgIgnore:
                     break;
@@ -676,8 +680,12 @@ static int main0(int argc, char **argv) {
                     }
                     break;
                 }
-                case Stage2ClangArgPreprocess:
-                    only_preprocess = true;
+                case Stage2ClangArgPreprocessOrAsm:
+                    // this handles both -E and -S
+                    only_pp_or_asm = true;
+                    for (size_t i = 0; i < it.other_args_len; i += 1) {
+                        clang_argv.append(it.other_args_ptr[i]);
+                    }
                     break;
                 case Stage2ClangArgOptimize:
                     // alright what release mode do they want?
@@ -688,7 +696,9 @@ static int main0(int argc, char **argv) {
                             strcmp(it.only_arg, "O4") == 0)
                     {
                         build_mode = BuildModeFastRelease;
-                    } else if (strcmp(it.only_arg, "Og") == 0) {
+                    } else if (strcmp(it.only_arg, "Og") == 0 ||
+                            strcmp(it.only_arg, "O0") == 0)
+                    {
                         build_mode = BuildModeDebug;
                     } else {
                         for (size_t i = 0; i < it.other_args_len; i += 1) {
@@ -722,24 +732,33 @@ static int main0(int argc, char **argv) {
                     verbose_cc = true;
                     verbose_link = true;
                     break;
-                case Stage2ClangArgExceptions:
-                    cpp_exceptions = true;
-                    break;
-                case Stage2ClangArgNoExceptions:
-                    cpp_exceptions = false;
-                    break;
-                case Stage2ClangArgRtti:
-                    cpp_rtti = true;
-                    break;
-                case Stage2ClangArgNoRtti:
-                    cpp_rtti = false;
-                    break;
                 case Stage2ClangArgForLinker:
                     linker_args.append(buf_create_from_str(it.only_arg));
                     break;
                 case Stage2ClangArgLinkerInputZ:
                     linker_args.append(buf_create_from_str("-z"));
                     linker_args.append(buf_create_from_str(it.only_arg));
+                    break;
+                case Stage2ClangArgLibDir:
+                    lib_dirs.append(it.only_arg);
+                    break;
+                case Stage2ClangArgMCpu:
+                    mcpu = it.only_arg;
+                    break;
+                case Stage2ClangArgDepFile:
+                    disable_c_depfile = true;
+                    for (size_t i = 0; i < it.other_args_len; i += 1) {
+                        clang_argv.append(it.other_args_ptr[i]);
+                    }
+                    break;
+                case Stage2ClangArgFrameworkDir:
+                    framework_dirs.append(it.only_arg);
+                    break;
+                case Stage2ClangArgFramework:
+                    frameworks.append(it.only_arg);
+                    break;
+                case Stage2ClangArgNoStdLibInc:
+                    want_native_include_dirs = false;
                     break;
             }
         }
@@ -802,6 +821,62 @@ static int main0(int argc, char **argv) {
                 buf_eql_str(arg, "-export-dynamic"))
             {
                 rdynamic = true;
+            } else if (buf_eql_str(arg, "--version-script")) {
+                i += 1;
+                if (i >= linker_args.length) {
+                    fprintf(stderr, "expected linker arg after '%s'\n", buf_ptr(arg));
+                    return EXIT_FAILURE;
+                }
+                version_script = linker_args.at(i);
+            } else if (buf_starts_with_str(arg, "-O")) {
+                linker_optimization = arg;
+            } else if (buf_eql_str(arg, "--gc-sections")) {
+                linker_gc_sections = OptionalBoolTrue;
+            } else if (buf_eql_str(arg, "--no-gc-sections")) {
+                linker_gc_sections = OptionalBoolFalse;
+            } else if (buf_eql_str(arg, "--allow-shlib-undefined") ||
+                       buf_eql_str(arg, "-allow-shlib-undefined"))
+            {
+                linker_allow_shlib_undefined = OptionalBoolTrue;
+            } else if (buf_eql_str(arg, "--no-allow-shlib-undefined") ||
+                       buf_eql_str(arg, "-no-allow-shlib-undefined"))
+            {
+                linker_allow_shlib_undefined = OptionalBoolFalse;
+            } else if (buf_eql_str(arg, "-z")) {
+                i += 1;
+                if (i >= linker_args.length) {
+                    fprintf(stderr, "expected linker arg after '%s'\n", buf_ptr(arg));
+                    return EXIT_FAILURE;
+                }
+                Buf *z_arg = linker_args.at(i);
+                if (buf_eql_str(z_arg, "nodelete")) {
+                    linker_z_nodelete = true;
+                } else if (buf_eql_str(z_arg, "defs")) {
+                    linker_z_defs = true;
+                } else {
+                    fprintf(stderr, "warning: unsupported linker arg: -z %s\n", buf_ptr(z_arg));
+                }
+            } else if (buf_eql_str(arg, "--major-image-version")) {
+                i += 1;
+                if (i >= linker_args.length) {
+                    fprintf(stderr, "expected linker arg after '%s'\n", buf_ptr(arg));
+                    return EXIT_FAILURE;
+                }
+                ver_major = atoi(buf_ptr(linker_args.at(i)));
+            } else if (buf_eql_str(arg, "--minor-image-version")) {
+                i += 1;
+                if (i >= linker_args.length) {
+                    fprintf(stderr, "expected linker arg after '%s'\n", buf_ptr(arg));
+                    return EXIT_FAILURE;
+                }
+                ver_minor = atoi(buf_ptr(linker_args.at(i)));
+            } else if (buf_eql_str(arg, "--stack")) {
+                i += 1;
+                if (i >= linker_args.length) {
+                    fprintf(stderr, "expected linker arg after '%s'\n", buf_ptr(arg));
+                    return EXIT_FAILURE;
+                }
+                stack_size_override = atoi(buf_ptr(linker_args.at(i)));
             } else {
                 fprintf(stderr, "warning: unsupported linker arg: %s\n", buf_ptr(arg));
             }
@@ -811,7 +886,7 @@ static int main0(int argc, char **argv) {
             build_mode = BuildModeSafeRelease;
         }
 
-        if (only_preprocess) {
+        if (only_pp_or_asm) {
             cmd = CmdBuild;
             out_type = OutTypeObj;
             emit_bin = false;
@@ -841,6 +916,7 @@ static int main0(int argc, char **argv) {
             }
             if (emit_bin_override_path == nullptr) {
                 emit_bin_override_path = "a.out";
+                enable_cache = CacheOptOn;
             }
         } else {
             cmd = CmdBuild;
@@ -948,11 +1024,15 @@ static int main0(int argc, char **argv) {
             } else if (arg[1] == 'l' && arg[2] != 0) {
                 // alias for --library
                 const char *l = &arg[2];
-                if (strcmp(l, "c") == 0)
+                if (strcmp(l, "c") == 0) {
                     have_libc = true;
-                if (strcmp(l, "c++") == 0)
+                    link_libs.append("c");
+                } else if (strcmp(l, "c++") == 0 || strcmp(l, "stdc++") == 0) {
                     have_libcpp = true;
-                link_libs.append(l);
+                    link_libs.append("c++");
+                } else {
+                    link_libs.append(l);
+                }
             } else if (arg[1] == 'I' && arg[2] != 0) {
                 clang_argv.append("-I");
                 clang_argv.append(&arg[2]);
@@ -1091,11 +1171,15 @@ static int main0(int argc, char **argv) {
                 } else if (strcmp(arg, "-F") == 0) {
                     framework_dirs.append(argv[i]);
                 } else if (strcmp(arg, "--library") == 0 || strcmp(arg, "-l") == 0) {
-                    if (strcmp(argv[i], "c") == 0)
+                    if (strcmp(argv[i], "c") == 0) {
                         have_libc = true;
-                    if (strcmp(argv[i], "c++") == 0)
+                        link_libs.append("c");
+                    } else if (strcmp(argv[i], "c++") == 0 || strcmp(argv[i], "stdc++") == 0) {
                         have_libcpp = true;
-                    link_libs.append(argv[i]);
+                        link_libs.append("c++");
+                    } else {
+                        link_libs.append(argv[i]);
+                    }
                 } else if (strcmp(arg, "--forbid-library") == 0) {
                     forbidden_link_libs.append(argv[i]);
                 } else if (strcmp(arg, "--object") == 0) {
@@ -1329,8 +1413,6 @@ static int main0(int argc, char **argv) {
             LinkLib *link_lib = codegen_add_link_lib(g, buf_create_from_str(link_libs.at(i)));
             link_lib->provided_explicitly = true;
         }
-        g->cpp_rtti = cpp_rtti;
-        g->cpp_exceptions = cpp_exceptions;
         g->subsystem = subsystem;
         g->valgrind_support = valgrind_support;
         g->want_pic = want_pic;
@@ -1369,15 +1451,17 @@ static int main0(int argc, char **argv) {
                 return print_error_usage(arg0);
             }
 
-            bool any_non_c_link_libs = false;
+            bool any_system_lib_dependencies = false;
             for (size_t i = 0; i < link_libs.length; i += 1) {
-                if (!target_is_libc_lib_name(&target, link_libs.at(i))) {
-                    any_non_c_link_libs = true;
+                if (!target_is_libc_lib_name(&target, link_libs.at(i)) &&
+                    !target_is_libcpp_lib_name(&target, link_libs.at(i)))
+                {
+                    any_system_lib_dependencies = true;
                     break;
                 }
             }
 
-            if (target.is_native_os && any_non_c_link_libs) {
+            if (target.is_native_os && (any_system_lib_dependencies || want_native_include_dirs)) {
                 Error err;
                 Stage2NativePaths paths;
                 if ((err = stage2_detect_native_paths(&paths))) {
@@ -1477,8 +1561,6 @@ static int main0(int argc, char **argv) {
             }
             CodeGen *g = codegen_create(main_pkg_path, zig_root_source_file, &target, out_type, build_mode,
                     override_lib_dir, libc, cache_dir_buf, cmd == CmdTest, root_progress_node);
-            g->cpp_rtti = cpp_rtti;
-            g->cpp_exceptions = cpp_exceptions;
             if (llvm_argv.length >= 2) codegen_set_llvm_argv(g, llvm_argv.items + 1, llvm_argv.length - 2);
             g->valgrind_support = valgrind_support;
             g->link_eh_frame_hdr = link_eh_frame_hdr;
@@ -1522,6 +1604,14 @@ static int main0(int argc, char **argv) {
             g->system_linker_hack = system_linker_hack;
             g->function_sections = function_sections;
             g->code_model = code_model;
+            g->disable_c_depfile = disable_c_depfile;
+
+            g->linker_optimization = linker_optimization;
+            g->linker_gc_sections = linker_gc_sections;
+            g->linker_allow_shlib_undefined = linker_allow_shlib_undefined;
+            g->linker_z_nodelete = linker_z_nodelete;
+            g->linker_z_defs = linker_z_defs;
+            g->stack_size_override = stack_size_override;
 
             if (override_soname) {
                 g->override_soname = buf_create_from_str(override_soname);
@@ -1611,7 +1701,7 @@ static int main0(int argc, char **argv) {
 #endif
                         Buf *dest_path = buf_create_from_str(emit_bin_override_path);
                         Buf *source_path;
-                        if (only_preprocess) {
+                        if (only_pp_or_asm) {
                             source_path = buf_alloc();
                             Buf *pp_only_basename = buf_create_from_str(
                                     c_source_files.at(0)->preprocessor_only_basename);
@@ -1625,7 +1715,7 @@ static int main0(int argc, char **argv) {
                                     buf_ptr(dest_path), err_str(err));
                             return main_exit(root_progress_node, EXIT_FAILURE);
                         }
-                    } else if (only_preprocess) {
+                    } else if (only_pp_or_asm) {
 #if defined(ZIG_OS_WINDOWS)
                         buf_replace(g->c_artifact_dir, '/', '\\');
 #endif
