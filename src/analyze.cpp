@@ -106,7 +106,7 @@ static ScopeExpr *find_expr_scope(Scope *scope) {
             case ScopeIdDecls:
             case ScopeIdFnDef:
             case ScopeIdCompTime:
-            case ScopeIdNoAsync:
+            case ScopeIdNoSuspend:
             case ScopeIdVarDecl:
             case ScopeIdCImport:
             case ScopeIdSuspend:
@@ -227,9 +227,9 @@ Scope *create_comptime_scope(CodeGen *g, AstNode *node, Scope *parent) {
     return &scope->base;
 }
 
-Scope *create_noasync_scope(CodeGen *g, AstNode *node, Scope *parent) {
-    ScopeNoAsync *scope = heap::c_allocator.create<ScopeNoAsync>();
-    init_scope(g, &scope->base, ScopeIdNoAsync, node, parent);
+Scope *create_nosuspend_scope(CodeGen *g, AstNode *node, Scope *parent) {
+    ScopeNoSuspend *scope = heap::c_allocator.create<ScopeNoSuspend>();
+    init_scope(g, &scope->base, ScopeIdNoSuspend, node, parent);
     return &scope->base;
 }
 
@@ -1528,8 +1528,6 @@ ZigType *get_generic_fn_type(CodeGen *g, FnTypeId *fn_type_id) {
 }
 
 CallingConvention cc_from_fn_proto(AstNodeFnProto *fn_proto) {
-    if (fn_proto->is_async)
-        return CallingConventionAsync;
     // Compatible with the C ABI
     if (fn_proto->is_extern || fn_proto->is_export)
         return CallingConventionC;
@@ -1893,50 +1891,30 @@ static ZigType *analyze_fn_type(CodeGen *g, AstNode *proto_node, Scope *child_sc
             }
         }
 
-        switch (type_entry->id) {
-            case ZigTypeIdInvalid:
-                zig_unreachable();
-            case ZigTypeIdUnreachable:
-            case ZigTypeIdUndefined:
-            case ZigTypeIdNull:
-            case ZigTypeIdOpaque:
+        if(!is_valid_param_type(type_entry)){
+            if(type_entry->id == ZigTypeIdOpaque){
+                add_node_error(g, param_node->data.param_decl.type,
+                    buf_sprintf("parameter of opaque type '%s' not allowed", buf_ptr(&type_entry->name)));
+            } else {
                 add_node_error(g, param_node->data.param_decl.type,
                     buf_sprintf("parameter of type '%s' not allowed", buf_ptr(&type_entry->name)));
-                return g->builtin_types.entry_invalid;
-            case ZigTypeIdComptimeFloat:
-            case ZigTypeIdComptimeInt:
-            case ZigTypeIdEnumLiteral:
-            case ZigTypeIdBoundFn:
-            case ZigTypeIdMetaType:
-            case ZigTypeIdVoid:
-            case ZigTypeIdBool:
-            case ZigTypeIdInt:
-            case ZigTypeIdFloat:
-            case ZigTypeIdPointer:
-            case ZigTypeIdArray:
-            case ZigTypeIdStruct:
-            case ZigTypeIdOptional:
-            case ZigTypeIdErrorUnion:
-            case ZigTypeIdErrorSet:
-            case ZigTypeIdEnum:
-            case ZigTypeIdUnion:
-            case ZigTypeIdFn:
-            case ZigTypeIdVector:
-            case ZigTypeIdFnFrame:
-            case ZigTypeIdAnyFrame:
-                switch (type_requires_comptime(g, type_entry)) {
-                    case ReqCompTimeNo:
-                        break;
-                    case ReqCompTimeYes:
-                        add_node_error(g, param_node->data.param_decl.type,
-                            buf_sprintf("parameter of type '%s' must be declared comptime",
-                            buf_ptr(&type_entry->name)));
-                        return g->builtin_types.entry_invalid;
-                    case ReqCompTimeInvalid:
-                        return g->builtin_types.entry_invalid;
-                }
-                break;
+            }
+
+            return g->builtin_types.entry_invalid;
         }
+
+        switch (type_requires_comptime(g, type_entry)) {
+            case ReqCompTimeNo:
+                break;
+            case ReqCompTimeYes:
+                add_node_error(g, param_node->data.param_decl.type,
+                    buf_sprintf("parameter of type '%s' must be declared comptime",
+                    buf_ptr(&type_entry->name)));
+                return g->builtin_types.entry_invalid;
+            case ReqCompTimeInvalid:
+                return g->builtin_types.entry_invalid;
+        }
+
         FnTypeParamInfo *param_info = &fn_type_id.param_info[fn_type_id.next_param_index];
         param_info->type = type_entry;
         param_info->is_noalias = param_node->data.param_decl.is_noalias;
@@ -2003,43 +1981,12 @@ static ZigType *analyze_fn_type(CodeGen *g, AstNode *proto_node, Scope *child_sc
         }
     }
 
-    switch (fn_type_id.return_type->id) {
-        case ZigTypeIdInvalid:
-        case ZigTypeIdUndefined:
-        case ZigTypeIdNull:
-        case ZigTypeIdOpaque:
-            zig_unreachable();
-
-        case ZigTypeIdComptimeFloat:
-        case ZigTypeIdComptimeInt:
-        case ZigTypeIdEnumLiteral:
-        case ZigTypeIdBoundFn:
-        case ZigTypeIdMetaType:
-        case ZigTypeIdUnreachable:
-        case ZigTypeIdVoid:
-        case ZigTypeIdBool:
-        case ZigTypeIdInt:
-        case ZigTypeIdFloat:
-        case ZigTypeIdPointer:
-        case ZigTypeIdArray:
-        case ZigTypeIdStruct:
-        case ZigTypeIdOptional:
-        case ZigTypeIdErrorUnion:
-        case ZigTypeIdErrorSet:
-        case ZigTypeIdEnum:
-        case ZigTypeIdUnion:
-        case ZigTypeIdFn:
-        case ZigTypeIdVector:
-        case ZigTypeIdFnFrame:
-        case ZigTypeIdAnyFrame:
-            switch (type_requires_comptime(g, fn_type_id.return_type)) {
-                case ReqCompTimeInvalid:
-                    return g->builtin_types.entry_invalid;
-                case ReqCompTimeYes:
-                    return get_generic_fn_type(g, &fn_type_id);
-                case ReqCompTimeNo:
-                    break;
-            }
+    switch (type_requires_comptime(g, fn_type_id.return_type)) {
+        case ReqCompTimeInvalid:
+            return g->builtin_types.entry_invalid;
+        case ReqCompTimeYes:
+            return get_generic_fn_type(g, &fn_type_id);
+        case ReqCompTimeNo:
             break;
     }
 
@@ -2052,6 +1999,20 @@ bool is_valid_return_type(ZigType* type) {
         case ZigTypeIdUndefined:
         case ZigTypeIdNull:
         case ZigTypeIdOpaque:
+            return false;
+        default:
+            return true;
+    }
+    zig_unreachable();
+}
+
+bool is_valid_param_type(ZigType* type) {
+    switch (type->id) {
+        case ZigTypeIdInvalid:
+        case ZigTypeIdUndefined:
+        case ZigTypeIdNull:
+        case ZigTypeIdOpaque:
+        case ZigTypeIdUnreachable:
             return false;
         default:
             return true;
@@ -3771,7 +3732,7 @@ void scan_decls(CodeGen *g, ScopeDecls *decls_scope, AstNode *node) {
         case NodeTypeCompTime:
             preview_comptime_decl(g, node, decls_scope);
             break;
-        case NodeTypeNoAsync:
+        case NodeTypeNoSuspend:
         case NodeTypeParamDecl:
         case NodeTypeReturnExpr:
         case NodeTypeDefer:
@@ -4689,7 +4650,7 @@ void add_async_error_notes(CodeGen *g, ErrorMsg *msg, ZigFn *fn) {
 static Error analyze_callee_async(CodeGen *g, ZigFn *fn, ZigFn *callee, AstNode *call_node,
         bool must_not_be_async, CallModifier modifier)
 {
-    if (modifier == CallModifierNoAsync)
+    if (modifier == CallModifierNoSuspend)
         return ErrorNone;
     bool callee_is_async = false;
     switch (callee->type_entry->data.fn.fn_type_id.cc) {
@@ -4812,7 +4773,7 @@ static void analyze_fn_async(CodeGen *g, ZigFn *fn, bool resolve_frame) {
     }
     for (size_t i = 0; i < fn->await_list.length; i += 1) {
         IrInstGenAwait *await = fn->await_list.at(i);
-        if (await->is_noasync) continue;
+        if (await->is_nosuspend) continue;
         switch (analyze_callee_async(g, fn, await->target_fn, await->base.base.source_node, must_not_be_async,
                     CallModifierNone))
         {
@@ -6239,7 +6200,7 @@ static void mark_suspension_point(Scope *scope) {
             case ScopeIdDecls:
             case ScopeIdFnDef:
             case ScopeIdCompTime:
-            case ScopeIdNoAsync:
+            case ScopeIdNoSuspend:
             case ScopeIdCImport:
             case ScopeIdSuspend:
             case ScopeIdTypeOf:
@@ -6472,7 +6433,7 @@ static Error resolve_async_frame(CodeGen *g, ZigType *frame_type) {
     // The funtion call result of foo() must be spilled.
     for (size_t i = 0; i < fn->await_list.length; i += 1) {
         IrInstGenAwait *await = fn->await_list.at(i);
-        if (await->is_noasync) {
+        if (await->is_nosuspend) {
             continue;
         }
         if (await->base.value->special != ConstValSpecialRuntime) {

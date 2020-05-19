@@ -125,7 +125,7 @@ ScopeLoop *create_loop_scope(CodeGen *g, AstNode *node, Scope *parent);
 ScopeSuspend *create_suspend_scope(CodeGen *g, AstNode *node, Scope *parent);
 ScopeFnDef *create_fndef_scope(CodeGen *g, AstNode *node, Scope *parent, ZigFn *fn_entry);
 Scope *create_comptime_scope(CodeGen *g, AstNode *node, Scope *parent);
-Scope *create_noasync_scope(CodeGen *g, AstNode *node, Scope *parent);
+Scope *create_nosuspend_scope(CodeGen *g, AstNode *node, Scope *parent);
 Scope *create_runtime_scope(CodeGen *g, AstNode *node, Scope *parent, IrInstSrc *is_comptime);
 Scope *create_typeof_scope(CodeGen *g, AstNode *node, Scope *parent);
 ScopeExpr *create_expr_scope(CodeGen *g, AstNode *node, Scope *parent);
@@ -269,6 +269,7 @@ void resolve_llvm_types_fn(CodeGen *g, ZigFn *fn);
 bool fn_is_async(ZigFn *fn);
 CallingConvention cc_from_fn_proto(AstNodeFnProto *fn_proto);
 bool is_valid_return_type(ZigType* type);
+bool is_valid_param_type(ZigType* type);
 
 Error type_val_resolve_abi_align(CodeGen *g, AstNode *source_node, ZigValue *type_val, uint32_t *abi_align);
 Error type_val_resolve_abi_size(CodeGen *g, AstNode *source_node, ZigValue *type_val,

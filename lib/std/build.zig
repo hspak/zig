@@ -105,6 +105,7 @@ pub const Builder = struct {
         Bool,
         Int,
         Float,
+        Enum,
         String,
         List,
     };
@@ -284,11 +285,11 @@ pub const Builder = struct {
         return run_step;
     }
 
-    fn dupe(self: *Builder, bytes: []const u8) []u8 {
+    pub fn dupe(self: *Builder, bytes: []const u8) []u8 {
         return mem.dupe(self.allocator, u8, bytes) catch unreachable;
     }
 
-    fn dupePath(self: *Builder, bytes: []const u8) []u8 {
+    pub fn dupePath(self: *Builder, bytes: []const u8) []u8 {
         const the_copy = self.dupe(bytes);
         for (the_copy) |*byte| {
             switch (byte.*) {
@@ -450,6 +451,27 @@ pub const Builder = struct {
             },
             TypeId.Int => panic("TODO integer options to build script", .{}),
             TypeId.Float => panic("TODO float options to build script", .{}),
+            TypeId.Enum => switch (entry.value.value) {
+                UserValue.Flag => {
+                    warn("Expected -D{} to be a string, but received a boolean.\n", .{name});
+                    self.markInvalidUserInput();
+                    return null;
+                },
+                UserValue.Scalar => |s| {
+                    if (std.meta.stringToEnum(T, s)) |enum_lit| {
+                        return enum_lit;
+                    } else {
+                        warn("Expected -D{} to be of type {}.\n", .{ name, @typeName(T) });
+                        self.markInvalidUserInput();
+                        return null;
+                    }
+                },
+                UserValue.List => {
+                    warn("Expected -D{} to be a string, but received a list.\n", .{name});
+                    self.markInvalidUserInput();
+                    return null;
+                },
+            },
             TypeId.String => switch (entry.value.value) {
                 UserValue.Flag => {
                     warn("Expected -D{} to be a string, but received a boolean.\n", .{name});
@@ -681,6 +703,7 @@ pub const Builder = struct {
             .Int => .Int,
             .Float => .Float,
             .Bool => .Bool,
+            .Enum => .Enum,
             else => switch (T) {
                 []const u8 => .String,
                 []const []const u8 => .List,
@@ -698,6 +721,7 @@ pub const Builder = struct {
             .Bool => "bool",
             .Int => "int",
             .Float => "float",
+            .Enum => "enum",
             .String => "string",
             .List => "list",
         };
@@ -717,7 +741,7 @@ pub const Builder = struct {
         return self.invalid_user_input;
     }
 
-    fn spawnChild(self: *Builder, argv: []const []const u8) !void {
+    pub fn spawnChild(self: *Builder, argv: []const []const u8) !void {
         return self.spawnChildEnvMap(null, self.env_map, argv);
     }
 
@@ -843,7 +867,7 @@ pub const Builder = struct {
         }) catch unreachable;
     }
 
-    fn updateFile(self: *Builder, source_path: []const u8, dest_path: []const u8) !void {
+    pub fn updateFile(self: *Builder, source_path: []const u8, dest_path: []const u8) !void {
         if (self.verbose) {
             warn("cp {} {} ", .{ source_path, dest_path });
         }
@@ -855,7 +879,7 @@ pub const Builder = struct {
         };
     }
 
-    fn pathFromRoot(self: *Builder, rel_path: []const u8) []u8 {
+    pub fn pathFromRoot(self: *Builder, rel_path: []const u8) []u8 {
         return fs.path.resolve(self.allocator, &[_][]const u8{ self.build_root, rel_path }) catch unreachable;
     }
 
@@ -985,7 +1009,7 @@ pub const Builder = struct {
         self.search_prefixes.append(search_prefix) catch unreachable;
     }
 
-    fn getInstallPath(self: *Builder, dir: InstallDir, dest_rel_path: []const u8) []const u8 {
+    pub fn getInstallPath(self: *Builder, dir: InstallDir, dest_rel_path: []const u8) []const u8 {
         const base_dir = switch (dir) {
             .Prefix => self.install_path,
             .Bin => self.exe_dir,
@@ -1037,6 +1061,8 @@ pub const Builder = struct {
 };
 
 test "builder.findProgram compiles" {
+    if (builtin.os.tag == .wasi) return error.SkipZigTest;
+
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -1132,6 +1158,7 @@ pub const LibExeObjStep = struct {
     name_prefix: []const u8,
     filter: ?[]const u8,
     single_threaded: bool,
+    test_evented_io: bool = false,
     code_model: builtin.CodeModel = .default,
 
     root_src: ?FileSource,
@@ -1677,6 +1704,16 @@ pub const LibExeObjStep = struct {
 
     pub fn addBuildOption(self: *LibExeObjStep, comptime T: type, name: []const u8, value: T) void {
         const out = self.build_options_contents.outStream();
+        switch (@typeInfo(T)) {
+            .Enum => |enum_info| {
+                out.print("const {} = enum {{\n", .{@typeName(T)}) catch unreachable;
+                inline for (enum_info.fields) |field| {
+                    out.print("    {},\n", .{field.name}) catch unreachable;
+                }
+                out.print("}};\n", .{}) catch unreachable;
+            },
+            else => {},
+        }
         out.print("pub const {} = {};\n", .{ name, value }) catch unreachable;
     }
 
@@ -1775,6 +1812,22 @@ pub const LibExeObjStep = struct {
         }
     }
 
+    fn makePackageCmd(self: *LibExeObjStep, pkg: Pkg, zig_args: *ArrayList([]const u8)) error{OutOfMemory}!void {
+        const builder = self.builder;
+
+        try zig_args.append("--pkg-begin");
+        try zig_args.append(pkg.name);
+        try zig_args.append(builder.pathFromRoot(pkg.path));
+
+        if (pkg.dependencies) |dependencies| {
+            for (dependencies) |sub_pkg| {
+                try self.makePackageCmd(sub_pkg, zig_args);
+            }
+        }
+
+        try zig_args.append("--pkg-end");
+    }
+
     fn make(step: *Step) !void {
         const self = @fieldParentPtr(LibExeObjStep, "step", step);
         const builder = self.builder;
@@ -1862,6 +1915,10 @@ pub const LibExeObjStep = struct {
         if (self.filter) |filter| {
             try zig_args.append("--test-filter");
             try zig_args.append(filter);
+        }
+
+        if (self.test_evented_io) {
+            try zig_args.append("--test-evented-io");
         }
 
         if (self.name_prefix.len != 0) {
@@ -2034,24 +2091,14 @@ pub const LibExeObjStep = struct {
             .wasmtime => |bin_name| if (self.enable_wasmtime) {
                 try zig_args.append("--test-cmd");
                 try zig_args.append(bin_name);
+                try zig_args.append("--test-cmd");
+                try zig_args.append("--dir=.");
                 try zig_args.append("--test-cmd-bin");
             },
         }
+
         for (self.packages.span()) |pkg| {
-            try zig_args.append("--pkg-begin");
-            try zig_args.append(pkg.name);
-            try zig_args.append(builder.pathFromRoot(pkg.path));
-
-            if (pkg.dependencies) |dependencies| {
-                for (dependencies) |sub_pkg| {
-                    try zig_args.append("--pkg-begin");
-                    try zig_args.append(sub_pkg.name);
-                    try zig_args.append(builder.pathFromRoot(sub_pkg.path));
-                    try zig_args.append("--pkg-end");
-                }
-            }
-
-            try zig_args.append("--pkg-end");
+            try self.makePackageCmd(pkg, &zig_args);
         }
 
         for (self.include_dirs.span()) |include_dir| {

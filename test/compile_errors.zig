@@ -2,6 +2,29 @@ const tests = @import("tests.zig");
 const std = @import("std");
 
 pub fn addCases(cases: *tests.CompileErrorContext) void {
+    cases.add("call assigned to constant",
+        \\const Foo = struct {
+        \\    x: i32,
+        \\};
+        \\fn foo() Foo {
+        \\    return .{ .x = 42 };
+        \\}
+        \\fn bar(val: var) Foo {
+        \\    return .{ .x = val };
+        \\}
+        \\export fn entry() void {
+        \\    const baz: Foo = undefined;
+        \\    baz = foo();
+        \\}
+        \\export fn entry1() void {
+        \\    const baz: Foo = undefined;
+        \\    baz = bar(42);
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:12:14: error: cannot assign to constant",
+        "tmp.zig:16:14: error: cannot assign to constant",
+    });
+
     cases.add("invalid pointer syntax",
         \\export fn foo() void {
         \\    var guid: *:0 const u8 = undefined;
@@ -243,9 +266,9 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         "tmp.zig:17:17: error: RHS of shift is too large for LHS type",
     });
 
-    cases.addTest("combination of noasync and async",
+    cases.addTest("combination of nosuspend and async",
         \\export fn entry() void {
-        \\    noasync {
+        \\    nosuspend {
         \\        const bar = async foo();
         \\        suspend;
         \\        resume bar;
@@ -253,9 +276,9 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\}
         \\fn foo() void {}
     , &[_][]const u8{
-        "tmp.zig:3:21: error: async call in noasync scope",
-        "tmp.zig:4:9: error: suspend in noasync scope",
-        "tmp.zig:5:9: error: resume in noasync scope",
+        "tmp.zig:3:21: error: async call in nosuspend scope",
+        "tmp.zig:4:9: error: suspend in nosuspend scope",
+        "tmp.zig:5:9: error: resume in nosuspend scope",
     });
 
     cases.add("atomicrmw with bool op not .Xchg",
@@ -779,7 +802,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     });
 
     cases.add("exported async function",
-        \\export async fn foo() void {}
+        \\export fn foo() callconv(.Async) void {}
     , &[_][]const u8{
         "tmp.zig:1:1: error: exported function cannot be async",
     });
@@ -1258,11 +1281,11 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
 
     cases.add("bad alignment in @asyncCall",
         \\export fn entry() void {
-        \\    var ptr: async fn () void = func;
+        \\    var ptr: fn () callconv(.Async) void = func;
         \\    var bytes: [64]u8 = undefined;
         \\    _ = @asyncCall(&bytes, {}, ptr);
         \\}
-        \\async fn func() void {}
+        \\fn func() callconv(.Async) void {}
     , &[_][]const u8{
         "tmp.zig:4:21: error: expected type '[]align(16) u8', found '*[64]u8'",
     });
@@ -1408,7 +1431,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\export fn entry() void {
         \\    _ = async amain();
         \\}
-        \\async fn amain() void {
+        \\fn amain() callconv(.Async) void {
         \\    other();
         \\}
         \\fn other() void {
@@ -1424,7 +1447,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\export fn entry() void {
         \\    _ = async amain();
         \\}
-        \\async fn amain() void {
+        \\fn amain() callconv(.Async) void {
         \\    var x: [@sizeOf(@Frame(amain))]u8 = undefined;
         \\}
     , &[_][]const u8{
@@ -1451,7 +1474,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    var ptr = afunc;
         \\    _ = ptr();
         \\}
-        \\async fn afunc() void {}
+        \\fn afunc() callconv(.Async) void {}
     , &[_][]const u8{
         "tmp.zig:6:12: error: function is not comptime-known; @asyncCall required",
     });
@@ -1462,7 +1485,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    _ = async ptr();
         \\}
         \\
-        \\async fn afunc() void { }
+        \\fn afunc() callconv(.Async) void { }
     , &[_][]const u8{
         "tmp.zig:3:15: error: function is not comptime-known; @asyncCall required",
     });
@@ -3051,7 +3074,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\export fn entry() void {
         \\    _ = async foo();
         \\}
-        \\async fn foo() void {
+        \\fn foo() void {
         \\    suspend {
         \\        suspend {
         \\        }
@@ -3099,7 +3122,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\export fn entry() void {
         \\    _ = async amain();
         \\}
-        \\async fn amain() void {
+        \\fn amain() callconv(.Async) void {
         \\    return error.ShouldBeCompileError;
         \\}
     , &[_][]const u8{
@@ -3569,7 +3592,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     });
 
     cases.add("attempt to use 0 bit type in extern fn",
-        \\extern fn foo(ptr: extern fn(*void) void) void;
+        \\extern fn foo(ptr: fn(*void) callconv(.C) void) void;
         \\
         \\export fn entry() void {
         \\    foo(bar);
@@ -3580,7 +3603,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    bar(&{});
         \\}
     , &[_][]const u8{
-        "tmp.zig:1:30: error: parameter of type '*void' has 0 bits; not allowed in function with calling convention 'C'",
+        "tmp.zig:1:23: error: parameter of type '*void' has 0 bits; not allowed in function with calling convention 'C'",
         "tmp.zig:7:11: error: parameter of type '*void' has 0 bits; not allowed in function with calling convention 'C'",
     });
 
@@ -5352,6 +5375,50 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         break :x tc;
     });
 
+    cases.addCase(x: {
+        const tc = cases.create("multiple files with private member instance function (canonical invocation) error",
+            \\const Foo = @import("foo.zig",).Foo;
+            \\
+            \\export fn callPrivFunction() void {
+            \\    var foo = Foo{};
+            \\    Foo.privateFunction(foo);
+            \\}
+        , &[_][]const u8{
+            "tmp.zig:5:8: error: 'privateFunction' is private",
+            "foo.zig:2:5: note: declared here",
+        });
+
+        tc.addSourceFile("foo.zig",
+            \\pub const Foo = struct {
+            \\    fn privateFunction(self: *Foo) void { }
+            \\};
+        );
+
+        break :x tc;
+    });
+
+    cases.addCase(x: {
+        const tc = cases.create("multiple files with private member instance function error",
+            \\const Foo = @import("foo.zig",).Foo;
+            \\
+            \\export fn callPrivFunction() void {
+            \\    var foo = Foo{};
+            \\    foo.privateFunction();
+            \\}
+        , &[_][]const u8{
+            "tmp.zig:5:8: error: 'privateFunction' is private",
+            "foo.zig:2:5: note: declared here",
+        });
+
+        tc.addSourceFile("foo.zig",
+            \\pub const Foo = struct {
+            \\    fn privateFunction(self: *Foo) void { }
+            \\};
+        );
+
+        break :x tc;
+    });
+
     cases.add("container init with non-type",
         \\const zero: i32 = 0;
         \\const a = zero{1};
@@ -6979,6 +7046,32 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         "tmp.zig:2:1: note: function declared here",
     });
 
+    cases.add("function parameter is opaque",
+        \\const FooType = @OpaqueType();
+        \\export fn entry1() void {
+        \\    const someFuncPtr: fn (FooType) void = undefined;
+        \\}
+        \\
+        \\export fn entry2() void {
+        \\    const someFuncPtr: fn (@TypeOf(null)) void = undefined;
+        \\}
+        \\
+        \\fn foo(p: FooType) void {}
+        \\export fn entry3() void {
+        \\    _ = foo;
+        \\}
+        \\
+        \\fn bar(p: @TypeOf(null)) void {}
+        \\export fn entry4() void {
+        \\    _ = bar;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:3:28: error: parameter of opaque type 'FooType' not allowed",
+        "tmp.zig:7:28: error: parameter of type '(null)' not allowed",
+        "tmp.zig:10:11: error: parameter of opaque type 'FooType' not allowed",
+        "tmp.zig:15:11: error: parameter of type '(null)' not allowed",
+    });
+
     cases.add( // fixed bug #2032
         "compile diagnostic string for top level decl type",
         \\export fn entry() void {
@@ -7329,5 +7422,27 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     , &[_][]const u8{
         ":3:18: error: expected type '[*:0]const u8', found '*[64]u8'",
         ":3:18: note: destination pointer requires a terminating '0' sentinel",
+    });
+
+    cases.add("issue #5221: invalid struct init type referenced by @typeInfo and passed into function",
+        \\fn ignore(comptime param: var) void {}
+        \\
+        \\export fn foo() void {
+        \\    const MyStruct = struct {
+        \\        wrong_type: []u8 = "foo",
+        \\    };
+        \\
+        \\    comptime ignore(@typeInfo(MyStruct).Struct.fields[0]);
+        \\}
+    , &[_][]const u8{
+        ":5:28: error: expected type '[]u8', found '*const [3:0]u8'",
+    });
+
+    cases.add("integer underflow error",
+        \\export fn entry() void {
+        \\    _ = @intToPtr(*c_void, ~@as(usize, @import("std").math.maxInt(usize)) - 1);
+        \\}
+    , &[_][]const u8{
+        ":2:75: error: operation caused overflow",
     });
 }
