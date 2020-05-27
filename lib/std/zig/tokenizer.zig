@@ -3,20 +3,21 @@ const mem = std.mem;
 
 pub const Token = struct {
     id: Id,
-    start: usize,
-    end: usize,
+    loc: Loc,
+
+    pub const Loc = struct {
+        start: usize,
+        end: usize,
+    };
 
     pub const Keyword = struct {
         bytes: []const u8,
         id: Id,
-        hash: u32,
 
         fn init(bytes: []const u8, id: Id) Keyword {
-            @setEvalBranchQuota(2000);
             return .{
                 .bytes = bytes,
                 .id = id,
-                .hash = std.hash_map.hashString(bytes),
             };
         }
     };
@@ -75,15 +76,49 @@ pub const Token = struct {
         Keyword.init("while", .Keyword_while),
     };
 
-    // TODO perfect hash at comptime
     pub fn getKeyword(bytes: []const u8) ?Id {
-        var hash = std.hash_map.hashString(bytes);
-        for (keywords) |kw| {
-            if (kw.hash == hash and mem.eql(u8, kw.bytes, bytes)) {
-                return kw.id;
+        const precomputed = comptime blk: {
+            @setEvalBranchQuota(2000);
+            var sorted_keywords = keywords;
+            const lenAsc = (struct {
+                fn lenAsc(a: Keyword, b: Keyword) bool {
+                    return a.bytes.len < b.bytes.len;
+                }
+            }).lenAsc;
+            std.sort.sort(Keyword, &sorted_keywords, lenAsc);
+            const min_len = sorted_keywords[0].bytes.len;
+            const max_len = sorted_keywords[sorted_keywords.len - 1].bytes.len;
+            var len_indexes: [max_len + 1]usize = undefined;
+            var len: usize = 0;
+            var kw_i: usize = 0;
+            while (len <= max_len) : (len += 1) {
+                // find the first keyword len == len
+                while (len > sorted_keywords[kw_i].bytes.len) {
+                    kw_i += 1;
+                }
+                len_indexes[len] = kw_i;
             }
+            break :blk .{
+                .min_len = min_len,
+                .max_len = max_len,
+                .sorted_keywords = sorted_keywords,
+                .len_indexes = len_indexes,
+            };
+        };
+        if (bytes.len < precomputed.min_len or bytes.len > precomputed.max_len)
+            return null;
+
+        var i = precomputed.len_indexes[bytes.len];
+        while (true) {
+            const kw = precomputed.sorted_keywords[i];
+            if (kw.bytes.len != bytes.len)
+                return null;
+            if (mem.eql(u8, kw.bytes, bytes))
+                return kw.id;
+            i += 1;
+            if (i >= precomputed.sorted_keywords.len)
+                return null;
         }
-        return null;
     }
 
     pub const Id = enum {
@@ -426,8 +461,10 @@ pub const Tokenizer = struct {
         var state: State = .start;
         var result = Token{
             .id = .Eof,
-            .start = self.index,
-            .end = undefined,
+            .loc = .{
+                .start = self.index,
+                .end = undefined,
+            },
         };
         var seen_escape_digits: usize = undefined;
         var remaining_code_units: usize = undefined;
@@ -436,7 +473,7 @@ pub const Tokenizer = struct {
             switch (state) {
                 .start => switch (c) {
                     ' ', '\n', '\t', '\r' => {
-                        result.start = self.index + 1;
+                        result.loc.start = self.index + 1;
                     },
                     '"' => {
                         state = .string_literal;
@@ -686,7 +723,7 @@ pub const Tokenizer = struct {
                 .identifier => switch (c) {
                     'a'...'z', 'A'...'Z', '_', '0'...'9' => {},
                     else => {
-                        if (Token.getKeyword(self.buffer[result.start..self.index])) |id| {
+                        if (Token.getKeyword(self.buffer[result.loc.start..self.index])) |id| {
                             result.id = id;
                         }
                         break;
@@ -1313,7 +1350,7 @@ pub const Tokenizer = struct {
                 => {},
 
                 .identifier => {
-                    if (Token.getKeyword(self.buffer[result.start..self.index])) |id| {
+                    if (Token.getKeyword(self.buffer[result.loc.start..self.index])) |id| {
                         result.id = id;
                     }
                 },
@@ -1420,7 +1457,7 @@ pub const Tokenizer = struct {
             }
         }
 
-        result.end = self.index;
+        result.loc.end = self.index;
         return result;
     }
 
@@ -1430,8 +1467,10 @@ pub const Tokenizer = struct {
         if (invalid_length == 0) return;
         self.pending_invalid_token = .{
             .id = .Invalid,
-            .start = self.index,
-            .end = self.index + invalid_length,
+            .loc = .{
+                .start = self.index,
+                .end = self.index + invalid_length,
+            },
         };
     }
 
