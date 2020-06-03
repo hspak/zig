@@ -442,6 +442,16 @@ pub const Module = struct {
 
     const InstPtrTable = std.AutoHashMap(*Inst, struct { index: usize, fn_body: ?*Module.Body });
 
+    /// TODO Look into making a table to speed this up.
+    pub fn findDecl(self: Module, name: []const u8) ?*Inst {
+        for (self.decls) |decl| {
+            if (mem.eql(u8, decl.name, name)) {
+                return decl;
+            }
+        }
+        return null;
+    }
+
     /// The allocator is used for temporary storage, but this function always returns
     /// with no resources allocated.
     pub fn writeToStream(self: Module, allocator: *Allocator, stream: var) !void {
@@ -954,14 +964,24 @@ const Parser = struct {
                 self.i = src;
                 return self.fail("unrecognized identifier: {}", .{bad_name});
             } else {
-                const name = try self.arena.allocator.create(Inst.Str);
-                name.* = .{
+                const name_array = try self.arena.allocator.create(Inst.Str);
+                name_array.* = .{
                     .base = .{
                         .name = try self.generateName(),
                         .src = src,
                         .tag = Inst.Str.base_tag,
                     },
                     .positionals = .{ .bytes = ident },
+                    .kw_args = .{},
+                };
+                const name = try self.arena.allocator.create(Inst.Ref);
+                name.* = .{
+                    .base = .{
+                        .name = try self.generateName(),
+                        .src = src,
+                        .tag = Inst.Ref.base_tag,
+                    },
+                    .positionals = .{ .operand = &name_array.base },
                     .kw_args = .{},
                 };
                 const declref = try self.arena.allocator.create(Inst.DeclRef);
@@ -974,7 +994,17 @@ const Parser = struct {
                     .positionals = .{ .name = &name.base },
                     .kw_args = .{},
                 };
-                return &declref.base;
+                const deref = try self.arena.allocator.create(Inst.Deref);
+                deref.* = .{
+                    .base = .{
+                        .name = try self.generateName(),
+                        .src = src,
+                        .tag = Inst.Deref.base_tag,
+                    },
+                    .positionals = .{ .ptr = &declref.base },
+                    .kw_args = .{},
+                };
+                return &deref.base;
             }
         };
         if (local_ref) {

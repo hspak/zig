@@ -9,11 +9,7 @@ const meta = @import("../meta.zig");
 
 pub const TraitFn = fn (type) bool;
 
-//////Trait generators
-
-// TODO convert to tuples when #4335 is done
-pub const TraitList = []const TraitFn;
-pub fn multiTrait(comptime traits: TraitList) TraitFn {
+pub fn multiTrait(comptime traits: var) TraitFn {
     const Closure = struct {
         pub fn trait(comptime T: type) bool {
             inline for (traits) |t|
@@ -39,7 +35,7 @@ test "std.meta.trait.multiTrait" {
         }
     };
 
-    const isVector = multiTrait(&[_]TraitFn{
+    const isVector = multiTrait(.{
         hasFn("add"),
         hasField("x"),
         hasField("y"),
@@ -344,4 +340,79 @@ test "std.meta.trait.isContainer" {
     testing.expect(isContainer(TestUnion));
     testing.expect(isContainer(TestEnum));
     testing.expect(!isContainer(u8));
+}
+
+pub fn hasDecls(comptime T: type, comptime names: var) bool {
+    inline for (names) |name| {
+        if (!@hasDecl(T, name))
+            return false;
+    }
+    return true;
+}
+
+test "std.meta.trait.hasDecls" {
+    const TestStruct1 = struct {};
+    const TestStruct2 = struct {
+        pub var a: u32;
+        pub var b: u32;
+        c: bool,
+        pub fn useless() void {}
+    };
+
+    const tuple = .{ "a", "b", "c" };
+
+    testing.expect(!hasDecls(TestStruct1, .{"a"}));
+    testing.expect(hasDecls(TestStruct2, .{ "a", "b" }));
+    testing.expect(hasDecls(TestStruct2, .{ "a", "b", "useless" }));
+    testing.expect(!hasDecls(TestStruct2, .{ "a", "b", "c" }));
+    testing.expect(!hasDecls(TestStruct2, tuple));
+}
+
+pub fn hasFields(comptime T: type, comptime names: var) bool {
+    inline for (names) |name| {
+        if (!@hasField(T, name))
+            return false;
+    }
+    return true;
+}
+
+test "std.meta.trait.hasFields" {
+    const TestStruct1 = struct {};
+    const TestStruct2 = struct {
+        a: u32,
+        b: u32,
+        c: bool,
+        pub fn useless() void {}
+    };
+
+    const tuple = .{ "a", "b", "c" };
+
+    testing.expect(!hasFields(TestStruct1, .{"a"}));
+    testing.expect(hasFields(TestStruct2, .{ "a", "b" }));
+    testing.expect(hasFields(TestStruct2, .{ "a", "b", "c" }));
+    testing.expect(hasFields(TestStruct2, tuple));
+    testing.expect(!hasFields(TestStruct2, .{ "a", "b", "useless" }));
+}
+
+pub fn hasFunctions(comptime T: type, comptime names: var) bool {
+    inline for (names) |name| {
+        if (!hasFn(name)(T))
+            return false;
+    }
+    return true;
+}
+
+test "std.meta.trait.hasFunctions" {
+    const TestStruct1 = struct {};
+    const TestStruct2 = struct {
+        pub fn a() void {}
+        fn b() void {}
+    };
+
+    const tuple = .{ "a", "b", "c" };
+
+    testing.expect(!hasFunctions(TestStruct1, .{"a"}));
+    testing.expect(hasFunctions(TestStruct2, .{ "a", "b" }));
+    testing.expect(!hasFunctions(TestStruct2, .{ "a", "b", "c" }));
+    testing.expect(!hasFunctions(TestStruct2, tuple));
 }
