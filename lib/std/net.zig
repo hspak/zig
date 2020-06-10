@@ -573,7 +573,15 @@ pub fn tcpConnectToHost(allocator: *mem.Allocator, name: []const u8, port: u16) 
 
     if (list.addrs.len == 0) return error.UnknownHostName;
 
-    return tcpConnectToAddress(list.addrs[0]);
+    for (list.addrs) |addr| {
+        return tcpConnectToAddress(addr) catch |err| switch (err) {
+            error.ConnectionRefused => {
+                continue;
+            },
+            else => return err,
+        };
+    }
+    return std.os.ConnectError.ConnectionRefused;
 }
 
 pub fn tcpConnectToAddress(address: Address) !fs.File {
@@ -828,7 +836,7 @@ fn linuxLookupName(
         key |= (MAXADDRS - @intCast(i32, i)) << DAS_ORDER_SHIFT;
         addr.sortkey = key;
     }
-    std.sort.sort(LookupAddr, addrs.span(), addrCmpLessThan);
+    std.sort.sort(LookupAddr, addrs.span(), {}, addrCmpLessThan);
 }
 
 const Policy = struct {
@@ -945,7 +953,7 @@ fn IN6_IS_ADDR_SITELOCAL(a: [16]u8) bool {
 }
 
 // Parameters `b` and `a` swapped to make this descending.
-fn addrCmpLessThan(b: LookupAddr, a: LookupAddr) bool {
+fn addrCmpLessThan(context: void, b: LookupAddr, a: LookupAddr) bool {
     return a.sortkey < b.sortkey;
 }
 
