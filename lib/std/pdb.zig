@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2015-2020 Zig Contributors
+// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
+// The MIT license requires this copyright notice to be included in all copies
+// and substantial portions of the software.
 const builtin = @import("builtin");
 const std = @import("std.zig");
 const io = std.io;
@@ -469,7 +474,7 @@ pub const Pdb = struct {
 
     msf: Msf,
 
-    pub fn openFile(self: *Pdb, coff_ptr: *coff.Coff, file_name: []u8) !void {
+    pub fn openFile(self: *Pdb, coff_ptr: *coff.Coff, file_name: []const u8) !void {
         self.in_file = try fs.cwd().openFile(file_name, .{ .intended_io_mode = .blocking });
         self.allocator = coff_ptr.allocator;
         self.coff = coff_ptr;
@@ -631,7 +636,7 @@ const MsfStream = struct {
     blocks: []u32 = undefined,
     block_size: u32 = undefined,
 
-    pub const Error = @TypeOf(read).ReturnType.ErrorSet;
+    pub const Error = @typeInfo(@typeInfo(@TypeOf(read)).Fn.return_type.?).ErrorUnion.error_set;
 
     fn init(block_size: u32, file: File, blocks: []u32) MsfStream {
         const stream = MsfStream{
