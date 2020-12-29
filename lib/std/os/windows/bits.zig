@@ -24,6 +24,11 @@ pub const STD_OUTPUT_HANDLE = maxInt(DWORD) - 11 + 1;
 /// The standard error device. Initially, this is the active console screen buffer, CONOUT$.
 pub const STD_ERROR_HANDLE = maxInt(DWORD) - 12 + 1;
 
+pub const WINAPI: builtin.CallingConvention = if (builtin.arch == .i386)
+    .Stdcall
+else
+    .C;
+
 pub const BOOL = c_int;
 pub const BOOLEAN = BYTE;
 pub const BYTE = u8;
@@ -32,16 +37,16 @@ pub const UCHAR = u8;
 pub const FLOAT = f32;
 pub const HANDLE = *c_void;
 pub const HCRYPTPROV = ULONG_PTR;
-pub const HBRUSH = *@Type(.Opaque);
-pub const HCURSOR = *@Type(.Opaque);
-pub const HICON = *@Type(.Opaque);
-pub const HINSTANCE = *@Type(.Opaque);
-pub const HMENU = *@Type(.Opaque);
-pub const HMODULE = *@Type(.Opaque);
-pub const HWND = *@Type(.Opaque);
-pub const HDC = *@Type(.Opaque);
-pub const HGLRC = *@Type(.Opaque);
-pub const FARPROC = *@Type(.Opaque);
+pub const HBRUSH = *opaque {};
+pub const HCURSOR = *opaque {};
+pub const HICON = *opaque {};
+pub const HINSTANCE = *opaque {};
+pub const HMENU = *opaque {};
+pub const HMODULE = *opaque {};
+pub const HWND = *opaque {};
+pub const HDC = *opaque {};
+pub const HGLRC = *opaque {};
+pub const FARPROC = *opaque {};
 pub const INT = c_int;
 pub const LPBYTE = *BYTE;
 pub const LPCH = *CHAR;
@@ -60,6 +65,7 @@ pub const SIZE_T = usize;
 pub const TCHAR = if (UNICODE) WCHAR else u8;
 pub const UINT = c_uint;
 pub const ULONG_PTR = usize;
+pub const LONG_PTR = isize;
 pub const DWORD_PTR = ULONG_PTR;
 pub const UNICODE = false;
 pub const WCHAR = u16;
@@ -81,7 +87,7 @@ pub const WPARAM = usize;
 pub const LPARAM = ?*c_void;
 pub const LRESULT = ?*c_void;
 
-pub const va_list = *@Type(.Opaque);
+pub const va_list = *opaque {};
 
 pub const TRUE = 1;
 pub const FALSE = 0;
@@ -1149,7 +1155,7 @@ pub const EXCEPTION_POINTERS = extern struct {
     ContextRecord: PCONTEXT,
 };
 
-pub const VECTORED_EXCEPTION_HANDLER = fn (ExceptionInfo: *EXCEPTION_POINTERS) callconv(.Stdcall) c_long;
+pub const VECTORED_EXCEPTION_HANDLER = fn (ExceptionInfo: *EXCEPTION_POINTERS) callconv(WINAPI) c_long;
 
 pub const OBJECT_ATTRIBUTES = extern struct {
     Length: ULONG,
@@ -1175,10 +1181,10 @@ pub const UNICODE_STRING = extern struct {
     Buffer: [*]WCHAR,
 };
 
-const ACTIVATION_CONTEXT_DATA = @Type(.Opaque);
-const ASSEMBLY_STORAGE_MAP = @Type(.Opaque);
-const FLS_CALLBACK_INFO = @Type(.Opaque);
-const RTL_BITMAP = @Type(.Opaque);
+const ACTIVATION_CONTEXT_DATA = opaque {};
+const ASSEMBLY_STORAGE_MAP = opaque {};
+const FLS_CALLBACK_INFO = opaque {};
+const RTL_BITMAP = opaque {};
 pub const PRTL_BITMAP = *RTL_BITMAP;
 const KAFFINITY = usize;
 
@@ -1596,3 +1602,7 @@ pub const MOUNTMGR_MOUNT_POINTS = extern struct {
     MountPoints: [1]MOUNTMGR_MOUNT_POINT,
 };
 pub const IOCTL_MOUNTMGR_QUERY_POINTS: ULONG = 0x6d0008;
+
+pub const SD_RECEIVE = 0;
+pub const SD_SEND = 1;
+pub const SD_BOTH = 2;

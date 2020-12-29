@@ -46,11 +46,18 @@ ZigType *get_opaque_type(CodeGen *g, Scope *scope, AstNode *source_node, const c
 ZigType *get_test_fn_type(CodeGen *g);
 ZigType *get_any_frame_type(CodeGen *g, ZigType *result_type);
 bool handle_is_ptr(CodeGen *g, ZigType *type_entry);
+Error emit_error_unless_callconv_allowed_for_target(CodeGen *g, AstNode *source_node, CallingConvention cc);
 
 bool type_has_bits(CodeGen *g, ZigType *type_entry);
 Error type_has_bits2(CodeGen *g, ZigType *type_entry, bool *result);
 
-Error type_allowed_in_extern(CodeGen *g, ZigType *type_entry, bool *result);
+enum ExternPosition {
+    ExternPositionFunctionParameter,
+    ExternPositionFunctionReturn,
+    ExternPositionOther, // array element, struct field, optional element, etc
+};
+
+Error type_allowed_in_extern(CodeGen *g, ZigType *type_entry, ExternPosition position, bool *result);
 bool ptr_allows_addr_zero(ZigType *ptr_type);
 
 // Deprecated, use `type_is_nonnull_ptr2`
@@ -73,6 +80,7 @@ ZigVar *find_variable(CodeGen *g, Scope *orig_context, Buf *name, ScopeFnDef **c
 Tld *find_decl(CodeGen *g, Scope *scope, Buf *name);
 Tld *find_container_decl(CodeGen *g, ScopeDecls *decls_scope, Buf *name);
 void resolve_top_level_decl(CodeGen *g, Tld *tld, AstNode *source_node, bool allow_lazy);
+void resolve_container_usingnamespace_decls(CodeGen *g, ScopeDecls *decls_scope);
 
 ZigType *get_src_ptr_type(ZigType *type);
 uint32_t get_ptr_align(CodeGen *g, ZigType *type);

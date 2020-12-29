@@ -200,6 +200,8 @@ const char* ir_inst_src_type_str(IrInstSrcId id) {
             return "SrcCmpxchg";
         case IrInstSrcIdFence:
             return "SrcFence";
+        case IrInstSrcIdReduce:
+            return "SrcReduce";
         case IrInstSrcIdTruncate:
             return "SrcTruncate";
         case IrInstSrcIdIntCast:
@@ -312,6 +314,8 @@ const char* ir_inst_src_type_str(IrInstSrcId id) {
             return "SrcArgType";
         case IrInstSrcIdExport:
             return "SrcExport";
+        case IrInstSrcIdExtern:
+            return "SrcExtern";
         case IrInstSrcIdErrorReturnTrace:
             return "SrcErrorReturnTrace";
         case IrInstSrcIdErrorUnion:
@@ -436,6 +440,8 @@ const char* ir_inst_gen_type_str(IrInstGenId id) {
             return "GenCmpxchg";
         case IrInstGenIdFence:
             return "GenFence";
+        case IrInstGenIdReduce:
+            return "GenReduce";
         case IrInstGenIdTruncate:
             return "GenTruncate";
         case IrInstGenIdBoolNot:
@@ -536,12 +542,12 @@ const char* ir_inst_gen_type_str(IrInstGenId id) {
             return "GenBinaryNot";
         case IrInstGenIdNegation:
             return "GenNegation";
-        case IrInstGenIdNegationWrapping:
-            return "GenNegationWrapping";
         case IrInstGenIdWasmMemorySize:
             return "GenWasmMemorySize";
         case IrInstGenIdWasmMemoryGrow:
             return "GenWasmMemoryGrow";
+        case IrInstGenIdExtern:
+            return "GenExtrern";
     }
     zig_unreachable();
 }
@@ -1140,15 +1146,9 @@ static void ir_print_binary_not(IrPrintGen *irp, IrInstGenBinaryNot *instruction
 }
 
 static void ir_print_negation(IrPrintGen *irp, IrInstGenNegation *instruction) {
-    fprintf(irp->f, "-");
+    fprintf(irp->f, instruction->wrapping ? "-%%" : "-");
     ir_print_other_inst_gen(irp, instruction->operand);
 }
-
-static void ir_print_negation_wrapping(IrPrintGen *irp, IrInstGenNegationWrapping *instruction) {
-    fprintf(irp->f, "-%%");
-    ir_print_other_inst_gen(irp, instruction->operand);
-}
-
 
 static void ir_print_field_ptr(IrPrintSrc *irp, IrInstSrcFieldPtr *instruction) {
     if (instruction->field_name_buffer) {
@@ -1584,6 +1584,14 @@ static void ir_print_fence(IrPrintSrc *irp, IrInstSrcFence *instruction) {
     fprintf(irp->f, ")");
 }
 
+static void ir_print_reduce(IrPrintSrc *irp, IrInstSrcReduce *instruction) {
+    fprintf(irp->f, "@reduce(");
+    ir_print_other_inst_src(irp, instruction->op);
+    fprintf(irp->f, ", ");
+    ir_print_other_inst_src(irp, instruction->value);
+    fprintf(irp->f, ")");
+}
+
 static const char *atomic_order_str(AtomicOrder order) {
     switch (order) {
         case AtomicOrderUnordered: return "Unordered";
@@ -1598,6 +1606,25 @@ static const char *atomic_order_str(AtomicOrder order) {
 
 static void ir_print_fence(IrPrintGen *irp, IrInstGenFence *instruction) {
     fprintf(irp->f, "fence %s", atomic_order_str(instruction->order));
+}
+
+static const char *reduce_op_str(ReduceOp op) {
+    switch (op) {
+        case ReduceOp_and: return "And";
+        case ReduceOp_or: return "Or";
+        case ReduceOp_xor: return "Xor";
+        case ReduceOp_min: return "Min";
+        case ReduceOp_max: return "Max";
+        case ReduceOp_add: return "Add";
+        case ReduceOp_mul: return "Mul";
+    }
+    zig_unreachable();
+}
+
+static void ir_print_reduce(IrPrintGen *irp, IrInstGenReduce *instruction) {
+    fprintf(irp->f, "@reduce(.%s, ", reduce_op_str(instruction->op));
+    ir_print_other_inst_gen(irp, instruction->value);
+    fprintf(irp->f, ")");
 }
 
 static void ir_print_truncate(IrPrintSrc *irp, IrInstSrcTruncate *instruction) {
@@ -2341,6 +2368,18 @@ static void ir_print_export(IrPrintSrc *irp, IrInstSrcExport *instruction) {
     fprintf(irp->f, ")");
 }
 
+static void ir_print_extern(IrPrintGen *irp, IrInstGenExtern *instruction) {
+    fprintf(irp->f, "@extern(...)");
+}
+
+static void ir_print_extern(IrPrintSrc *irp, IrInstSrcExtern *instruction) {
+    fprintf(irp->f, "@extern(");
+    ir_print_other_inst_src(irp, instruction->type);
+    fprintf(irp->f, ",");
+    ir_print_other_inst_src(irp, instruction->options);
+    fprintf(irp->f, ")");
+}
+
 static void ir_print_error_return_trace(IrPrintSrc *irp, IrInstSrcErrorReturnTrace *instruction) {
     fprintf(irp->f, "@errorReturnTrace(");
     switch (instruction->optional) {
@@ -2749,6 +2788,9 @@ static void ir_print_inst_src(IrPrintSrc *irp, IrInstSrc *instruction, bool trai
         case IrInstSrcIdFence:
             ir_print_fence(irp, (IrInstSrcFence *)instruction);
             break;
+        case IrInstSrcIdReduce:
+            ir_print_reduce(irp, (IrInstSrcReduce *)instruction);
+            break;
         case IrInstSrcIdTruncate:
             ir_print_truncate(irp, (IrInstSrcTruncate *)instruction);
             break;
@@ -2916,6 +2958,9 @@ static void ir_print_inst_src(IrPrintSrc *irp, IrInstSrc *instruction, bool trai
             break;
         case IrInstSrcIdExport:
             ir_print_export(irp, (IrInstSrcExport *)instruction);
+            break;
+        case IrInstSrcIdExtern:
+            ir_print_extern(irp, (IrInstSrcExtern*)instruction);
             break;
         case IrInstSrcIdErrorReturnTrace:
             ir_print_error_return_trace(irp, (IrInstSrcErrorReturnTrace *)instruction);
@@ -3097,6 +3142,9 @@ static void ir_print_inst_gen(IrPrintGen *irp, IrInstGen *instruction, bool trai
         case IrInstGenIdFence:
             ir_print_fence(irp, (IrInstGenFence *)instruction);
             break;
+        case IrInstGenIdReduce:
+            ir_print_reduce(irp, (IrInstGenReduce *)instruction);
+            break;
         case IrInstGenIdTruncate:
             ir_print_truncate(irp, (IrInstGenTruncate *)instruction);
             break;
@@ -3259,15 +3307,16 @@ static void ir_print_inst_gen(IrPrintGen *irp, IrInstGen *instruction, bool trai
         case IrInstGenIdNegation:
             ir_print_negation(irp, (IrInstGenNegation *)instruction);
             break;
-        case IrInstGenIdNegationWrapping:
-            ir_print_negation_wrapping(irp, (IrInstGenNegationWrapping *)instruction);
-            break;
         case IrInstGenIdWasmMemorySize:
             ir_print_wasm_memory_size(irp, (IrInstGenWasmMemorySize *)instruction);
             break;
         case IrInstGenIdWasmMemoryGrow:
             ir_print_wasm_memory_grow(irp, (IrInstGenWasmMemoryGrow *)instruction);
             break;
+        case IrInstGenIdExtern:
+            ir_print_extern(irp, (IrInstGenExtern *)instruction);
+            break;
+
     }
     fprintf(irp->f, "\n");
 }

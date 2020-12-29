@@ -22,8 +22,6 @@ const maxInt = std.math.maxInt;
 const File = std.fs.File;
 const windows = std.os.windows;
 
-pub const leb = @import("debug/leb128.zig");
-
 pub const runtime_safety = switch (builtin.mode) {
     .Debug, .ReleaseSafe => true,
     .ReleaseFast, .ReleaseSmall => false,
@@ -276,9 +274,8 @@ pub fn panicExtra(trace: ?*const builtin.StackTrace, first_trace_addr: ?usize, c
                 // and call abort()
 
                 // Sleep forever without hammering the CPU
-                var event = std.ResetEvent.init();
+                var event: std.StaticResetEvent = .{};
                 event.wait();
-
                 unreachable;
             }
         },
@@ -327,9 +324,9 @@ pub fn writeStackTrace(
 }
 
 pub const StackIterator = struct {
-    // Skip every frame before this address is found
+    // Skip every frame before this address is found.
     first_address: ?usize,
-    // Last known value of the frame pointer register
+    // Last known value of the frame pointer register.
     fp: usize,
 
     pub fn init(first_address: ?usize, fp: ?usize) StackIterator {
@@ -339,14 +336,19 @@ pub const StackIterator = struct {
         };
     }
 
-    // On some architectures such as x86 the frame pointer is the address where
-    // the previous fp is stored, while on some other architectures such as
-    // RISC-V it points to the "top" of the frame, just above where the previous
-    // fp and the return address are stored.
+    // Negative offset of the saved BP wrt the frame pointer.
     const fp_offset = if (builtin.arch.isRISCV())
+        // On RISC-V the frame pointer points to the top of the saved register
+        // area, on pretty much every other architecture it points to the stack
+        // slot where the previous frame pointer is saved.
         2 * @sizeOf(usize)
     else
         0;
+    // Positive offset of the saved PC wrt the frame pointer.
+    const pc_offset = if (builtin.arch == .powerpc64le)
+        2 * @sizeOf(usize)
+    else
+        @sizeOf(usize);
 
     pub fn next(self: *StackIterator) ?usize {
         var address = self.next_internal() orelse return null;
@@ -364,7 +366,7 @@ pub const StackIterator = struct {
     fn next_internal(self: *StackIterator) ?usize {
         const fp = math.sub(usize, self.fp, fp_offset) catch return null;
 
-        // Sanity check
+        // Sanity check.
         if (fp == 0 or !mem.isAligned(fp, @alignOf(usize)))
             return null;
 
@@ -373,11 +375,14 @@ pub const StackIterator = struct {
         // Sanity check: the stack grows down thus all the parent frames must be
         // be at addresses that are greater (or equal) than the previous one.
         // A zero frame pointer often signals this is the last frame, that case
-        // is gracefully handled by the next call to next_internal
+        // is gracefully handled by the next call to next_internal.
         if (new_fp != 0 and new_fp < self.fp)
             return null;
 
-        const new_pc = @intToPtr(*const usize, fp + @sizeOf(usize)).*;
+        const new_pc = @intToPtr(
+            *const usize,
+            math.add(usize, fp, pc_offset) catch return null,
+        ).*;
 
         self.fp = new_fp;
 
@@ -654,10 +659,11 @@ pub fn openSelfDebugInfo(allocator: *mem.Allocator) anyerror!DebugInfo {
             .freebsd,
             .netbsd,
             .dragonfly,
-            .macosx,
+            .openbsd,
+            .macos,
             .windows,
             => return DebugInfo.init(allocator),
-            else => @compileError("openSelfDebugInfo unsupported for this platform"),
+            else => return error.UnsupportedDebugInfo,
         }
     }
 }
@@ -736,7 +742,7 @@ fn readCoffDebugInfo(allocator: *mem.Allocator, coff_file: File) !ModuleDebugInf
             for (present) |_| {
                 const name_offset = try pdb_stream.inStream().readIntLittle(u32);
                 const name_index = try pdb_stream.inStream().readIntLittle(u32);
-                const name = mem.spanZ(@ptrCast([*:0]u8, name_bytes.ptr + name_offset));
+                const name = mem.spanZ(std.meta.assumeSentinel(name_bytes.ptr + name_offset, 0));
                 if (mem.eql(u8, name, "/names")) {
                     break :str_tab_index name_index;
                 }
@@ -884,7 +890,7 @@ pub fn readElfDebugInfo(allocator: *mem.Allocator, elf_file: File) !ModuleDebugI
         for (shdrs) |*shdr| {
             if (shdr.sh_type == elf.SHT_NULL) continue;
 
-            const name = std.mem.span(@ptrCast([*:0]const u8, header_strings[shdr.sh_name..].ptr));
+            const name = std.mem.span(std.meta.assumeSentinel(header_strings[shdr.sh_name..].ptr, 0));
             if (mem.eql(u8, name, ".debug_info")) {
                 opt_debug_info = try chopSlice(mapped_mem, shdr.sh_offset, shdr.sh_size);
             } else if (mem.eql(u8, name, ".debug_abbrev")) {
@@ -1320,7 +1326,7 @@ const SymbolInfo = struct {
 };
 
 pub const ModuleDebugInfo = switch (builtin.os.tag) {
-    .macosx, .ios, .watchos, .tvos => struct {
+    .macos, .ios, .watchos, .tvos => struct {
         base_address: usize,
         mapped_memory: []const u8,
         symbols: []const MachoSymbol,
@@ -1423,7 +1429,7 @@ pub const ModuleDebugInfo = switch (builtin.os.tag) {
             return di;
         }
 
-        fn getSymbolAtAddress(self: *@This(), address: usize) !SymbolInfo {
+        pub fn getSymbolAtAddress(self: *@This(), address: usize) !SymbolInfo {
             nosuspend {
                 // Translate the VA into an address into this object
                 const relocated_address = address - self.base_address;
@@ -1492,7 +1498,7 @@ pub const ModuleDebugInfo = switch (builtin.os.tag) {
             return self.coff.allocator;
         }
 
-        fn getSymbolAtAddress(self: *@This(), address: usize) !SymbolInfo {
+        pub fn getSymbolAtAddress(self: *@This(), address: usize) !SymbolInfo {
             // Translate the VA into an address into this object
             const relocated_address = address - self.base_address;
 
@@ -1500,7 +1506,7 @@ pub const ModuleDebugInfo = switch (builtin.os.tag) {
             const mod_index = for (self.sect_contribs) |sect_contrib| {
                 if (sect_contrib.Section > self.coff.sections.items.len) continue;
                 // Remember that SectionContribEntry.Section is 1-based.
-                coff_section = &self.coff.sections.span()[sect_contrib.Section - 1];
+                coff_section = &self.coff.sections.items[sect_contrib.Section - 1];
 
                 const vaddr_start = coff_section.header.virtual_address + sect_contrib.Offset;
                 const vaddr_end = vaddr_start + sect_contrib.Size;
@@ -1640,12 +1646,12 @@ pub const ModuleDebugInfo = switch (builtin.os.tag) {
             };
         }
     },
-    .linux, .netbsd, .freebsd, .dragonfly => struct {
+    .linux, .netbsd, .freebsd, .dragonfly, .openbsd => struct {
         base_address: usize,
         dwarf: DW.DwarfInfo,
         mapped_memory: []const u8,
 
-        fn getSymbolAtAddress(self: *@This(), address: usize) !SymbolInfo {
+        pub fn getSymbolAtAddress(self: *@This(), address: usize) !SymbolInfo {
             // Translate the VA into an address into this object
             const relocated_address = address - self.base_address;
 
@@ -1689,6 +1695,7 @@ fn getDebugInfoAllocator() *mem.Allocator {
 pub const have_segfault_handling_support = switch (builtin.os.tag) {
     .linux, .netbsd => true,
     .windows => true,
+    .freebsd, .openbsd => @hasDecl(os, "ucontext_t"),
     else => false,
 };
 pub const enable_segfault_handler: bool = if (@hasDecl(root, "enable_segfault_handler"))
@@ -1714,7 +1721,7 @@ pub fn attachSegfaultHandler() void {
         return;
     }
     var act = os.Sigaction{
-        .sigaction = handleSegfaultLinux,
+        .handler = .{ .sigaction = handleSegfaultLinux },
         .mask = os.empty_sigset,
         .flags = (os.SA_SIGINFO | os.SA_RESTART | os.SA_RESETHAND),
     };
@@ -1733,7 +1740,7 @@ fn resetSegfaultHandler() void {
         return;
     }
     var act = os.Sigaction{
-        .sigaction = os.SIG_DFL,
+        .handler = .{ .sigaction = os.SIG_DFL },
         .mask = os.empty_sigset,
         .flags = 0,
     };
@@ -1750,15 +1757,23 @@ fn handleSegfaultLinux(sig: i32, info: *const os.siginfo_t, ctx_ptr: ?*const c_v
 
     const addr = switch (builtin.os.tag) {
         .linux => @ptrToInt(info.fields.sigfault.addr),
+        .freebsd => @ptrToInt(info.addr),
         .netbsd => @ptrToInt(info.info.reason.fault.addr),
+        .openbsd => @ptrToInt(info.data.fault.addr),
         else => unreachable,
     };
-    switch (sig) {
-        os.SIGSEGV => std.debug.warn("Segmentation fault at address 0x{x}\n", .{addr}),
-        os.SIGILL => std.debug.warn("Illegal instruction at address 0x{x}\n", .{addr}),
-        os.SIGBUS => std.debug.warn("Bus error at address 0x{x}\n", .{addr}),
-        else => unreachable,
+
+    // Don't use std.debug.print() as stderr_mutex may still be locked.
+    nosuspend {
+        const stderr = io.getStdErr().writer();
+        _ = switch (sig) {
+            os.SIGSEGV => stderr.print("Segmentation fault at address 0x{x}\n", .{addr}),
+            os.SIGILL => stderr.print("Illegal instruction at address 0x{x}\n", .{addr}),
+            os.SIGBUS => stderr.print("Bus error at address 0x{x}\n", .{addr}),
+            else => unreachable,
+        } catch os.abort();
     }
+
     switch (builtin.arch) {
         .i386 => {
             const ctx = @ptrCast(*const os.ucontext_t, @alignCast(@alignOf(os.ucontext_t), ctx_ptr));
@@ -1768,8 +1783,18 @@ fn handleSegfaultLinux(sig: i32, info: *const os.siginfo_t, ctx_ptr: ?*const c_v
         },
         .x86_64 => {
             const ctx = @ptrCast(*const os.ucontext_t, @alignCast(@alignOf(os.ucontext_t), ctx_ptr));
-            const ip = @intCast(usize, ctx.mcontext.gregs[os.REG_RIP]);
-            const bp = @intCast(usize, ctx.mcontext.gregs[os.REG_RBP]);
+            const ip = switch (builtin.os.tag) {
+                .linux, .netbsd => @intCast(usize, ctx.mcontext.gregs[os.REG_RIP]),
+                .freebsd => @intCast(usize, ctx.mcontext.rip),
+                .openbsd => @intCast(usize, ctx.sc_rip),
+                else => unreachable,
+            };
+            const bp = switch (builtin.os.tag) {
+                .linux, .netbsd => @intCast(usize, ctx.mcontext.gregs[os.REG_RBP]),
+                .openbsd => @intCast(usize, ctx.sc_rbp),
+                .freebsd => @intCast(usize, ctx.mcontext.rbp),
+                else => unreachable,
+            };
             dumpStackTraceFromBase(bp, ip);
         },
         .arm => {
@@ -1794,7 +1819,7 @@ fn handleSegfaultLinux(sig: i32, info: *const os.siginfo_t, ctx_ptr: ?*const c_v
     os.abort();
 }
 
-fn handleSegfaultWindows(info: *windows.EXCEPTION_POINTERS) callconv(.Stdcall) c_long {
+fn handleSegfaultWindows(info: *windows.EXCEPTION_POINTERS) callconv(windows.WINAPI) c_long {
     switch (info.ExceptionRecord.ExceptionCode) {
         windows.EXCEPTION_DATATYPE_MISALIGNMENT => handleSegfaultWindowsExtra(info, 0, "Unaligned Memory Access"),
         windows.EXCEPTION_ACCESS_VIOLATION => handleSegfaultWindowsExtra(info, 1, null),
@@ -1809,11 +1834,15 @@ fn handleSegfaultWindowsExtra(info: *windows.EXCEPTION_POINTERS, comptime msg: u
     const exception_address = @ptrToInt(info.ExceptionRecord.ExceptionAddress);
     if (@hasDecl(windows, "CONTEXT")) {
         const regs = info.ContextRecord.getRegs();
-        switch (msg) {
-            0 => std.debug.warn("{}\n", .{format.?}),
-            1 => std.debug.warn("Segmentation fault at address 0x{x}\n", .{info.ExceptionRecord.ExceptionInformation[1]}),
-            2 => std.debug.warn("Illegal instruction at address 0x{x}\n", .{regs.ip}),
-            else => unreachable,
+        // Don't use std.debug.print() as stderr_mutex may still be locked.
+        nosuspend {
+            const stderr = io.getStdErr().writer();
+            _ = switch (msg) {
+                0 => stderr.print("{s}\n", .{format.?}),
+                1 => stderr.print("Segmentation fault at address 0x{x}\n", .{info.ExceptionRecord.ExceptionInformation[1]}),
+                2 => stderr.print("Illegal instruction at address 0x{x}\n", .{regs.ip}),
+                else => unreachable,
+            } catch os.abort();
         }
 
         dumpStackTraceFromBase(regs.bp, regs.ip);
@@ -1833,9 +1862,4 @@ pub fn dumpStackPointerAddr(prefix: []const u8) void {
         : [argc] "={rsp}" (-> usize)
     );
     std.debug.warn("{} sp = 0x{x}\n", .{ prefix, sp });
-}
-
-// Reference everything so it gets tested.
-test "" {
-    _ = leb;
 }

@@ -1,5 +1,5 @@
 const std = @import("std");
-const llvm = @import("llvm.zig");
+const llvm = @import("llvm_bindings.zig");
 
 pub const ArchOsAbi = struct {
     arch: std.Target.Cpu.Arch,
@@ -14,6 +14,7 @@ pub const available_libcs = [_]ArchOsAbi{
     .{ .arch = .aarch64, .os = .linux, .abi = .gnu },
     .{ .arch = .aarch64, .os = .linux, .abi = .musl },
     .{ .arch = .aarch64, .os = .windows, .abi = .gnu },
+    .{ .arch = .aarch64, .os = .macos, .abi = .gnu },
     .{ .arch = .armeb, .os = .linux, .abi = .gnueabi },
     .{ .arch = .armeb, .os = .linux, .abi = .gnueabihf },
     .{ .arch = .armeb, .os = .linux, .abi = .musleabi },
@@ -54,11 +55,15 @@ pub const available_libcs = [_]ArchOsAbi{
     .{ .arch = .x86_64, .os = .linux, .abi = .gnux32 },
     .{ .arch = .x86_64, .os = .linux, .abi = .musl },
     .{ .arch = .x86_64, .os = .windows, .abi = .gnu },
+    .{ .arch = .x86_64, .os = .macos, .abi = .gnu },
 };
 
 pub fn libCGenericName(target: std.Target) [:0]const u8 {
-    if (target.os.tag == .windows)
-        return "mingw";
+    switch (target.os.tag) {
+        .windows => return "mingw",
+        .macos, .ios, .tvos, .watchos => return "darwin",
+        else => {},
+    }
     switch (target.abi) {
         .gnu,
         .gnuabin32,
@@ -98,6 +103,7 @@ pub fn archMuslName(arch: std.Target.Cpu.Arch) [:0]const u8 {
         .i386 => return "i386",
         .x86_64 => return "x86_64",
         .riscv64 => return "riscv64",
+        .wasm32, .wasm64 => return "wasm",
         else => unreachable,
     }
 }
@@ -123,27 +129,27 @@ pub fn cannotDynamicLink(target: std.Target) bool {
 /// since this is the stable syscall interface.
 pub fn osRequiresLibC(target: std.Target) bool {
     return switch (target.os.tag) {
-        .freebsd, .netbsd, .dragonfly, .macosx, .ios, .watchos, .tvos => true,
+        .freebsd, .netbsd, .dragonfly, .openbsd, .macos, .ios, .watchos, .tvos => true,
         else => false,
     };
 }
 
 pub fn libcNeedsLibUnwind(target: std.Target) bool {
     return switch (target.os.tag) {
-        .windows,
-        .macosx,
+        .macos,
         .ios,
         .watchos,
         .tvos,
         .freestanding,
         => false,
 
+        .windows => target.abi != .msvc,
         else => true,
     };
 }
 
 pub fn requiresPIE(target: std.Target) bool {
-    return target.isAndroid() or target.isDarwin();
+    return target.isAndroid() or target.isDarwin() or target.os.tag == .openbsd;
 }
 
 /// This function returns whether non-pic code is completely invalid on the given target.
@@ -161,7 +167,7 @@ pub fn supports_fpic(target: std.Target) bool {
 }
 
 pub fn libc_needs_crti_crtn(target: std.Target) bool {
-    return !(target.cpu.arch.isRISCV() or target.isAndroid());
+    return !(target.cpu.arch.isRISCV() or target.isAndroid() or target.os.tag == .openbsd);
 }
 
 pub fn isSingleThreaded(target: std.Target) bool {
@@ -197,7 +203,7 @@ pub fn osToLLVM(os_tag: std.Target.Os.Tag) llvm.OSType {
         .kfreebsd => .KFreeBSD,
         .linux => .Linux,
         .lv2 => .Lv2,
-        .macosx => .MacOSX,
+        .macos => .MacOSX,
         .netbsd => .NetBSD,
         .openbsd => .OpenBSD,
         .solaris => .Solaris,
@@ -319,8 +325,6 @@ pub fn is_libc_lib_name(target: std.Target, name: []const u8) bool {
             return true;
         if (eqlIgnoreCase(ignore_case, name, "dl"))
             return true;
-        if (eqlIgnoreCase(ignore_case, name, "util"))
-            return true;
     }
 
     if (target.os.tag.isDarwin() and eqlIgnoreCase(ignore_case, name, "System"))
@@ -339,4 +343,12 @@ pub fn is_libcpp_lib_name(target: std.Target, name: []const u8) bool {
 
 pub fn hasDebugInfo(target: std.Target) bool {
     return !target.cpu.arch.isWasm();
+}
+
+pub fn defaultCompilerRtOptimizeMode(target: std.Target) std.builtin.Mode {
+    if (target.cpu.arch.isWasm() and target.os.tag == .freestanding) {
+        return .ReleaseSmall;
+    } else {
+        return .ReleaseFast;
+    }
 }

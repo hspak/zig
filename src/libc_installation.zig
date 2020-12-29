@@ -14,8 +14,6 @@ const log = std.log.scoped(.libc_installation);
 
 usingnamespace @import("windows_sdk.zig");
 
-// TODO https://github.com/ziglang/zig/issues/6345
-
 /// See the render function implementation for documentation of the fields.
 pub const LibCInstallation = struct {
     include_dir: ?[]const u8 = null,
@@ -196,7 +194,7 @@ pub const LibCInstallation = struct {
                 errdefer batch.wait() catch {};
                 batch.add(&async self.findNativeIncludeDirPosix(args));
                 switch (Target.current.os.tag) {
-                    .freebsd, .netbsd => self.crt_dir = try std.mem.dupeZ(args.allocator, u8, "/usr/lib"),
+                    .freebsd, .netbsd, .openbsd => self.crt_dir = try std.mem.dupeZ(args.allocator, u8, "/usr/lib"),
                     .linux, .dragonfly => batch.add(&async self.findNativeCrtDirPosix(args)),
                     else => {},
                 }
@@ -342,7 +340,7 @@ pub const LibCInstallation = struct {
             result_buf.shrink(0);
             try result_buf.outStream().print("{}\\Include\\{}\\ucrt", .{ search.path, search.version });
 
-            var dir = fs.cwd().openDir(result_buf.span(), .{}) catch |err| switch (err) {
+            var dir = fs.cwd().openDir(result_buf.items, .{}) catch |err| switch (err) {
                 error.FileNotFound,
                 error.NotDir,
                 error.NoDevice,
@@ -388,7 +386,7 @@ pub const LibCInstallation = struct {
             result_buf.shrink(0);
             try result_buf.outStream().print("{}\\Lib\\{}\\ucrt\\{}", .{ search.path, search.version, arch_sub_dir });
 
-            var dir = fs.cwd().openDir(result_buf.span(), .{}) catch |err| switch (err) {
+            var dir = fs.cwd().openDir(result_buf.items, .{}) catch |err| switch (err) {
                 error.FileNotFound,
                 error.NotDir,
                 error.NoDevice,
@@ -443,7 +441,7 @@ pub const LibCInstallation = struct {
             const stream = result_buf.outStream();
             try stream.print("{}\\Lib\\{}\\um\\{}", .{ search.path, search.version, arch_sub_dir });
 
-            var dir = fs.cwd().openDir(result_buf.span(), .{}) catch |err| switch (err) {
+            var dir = fs.cwd().openDir(result_buf.items, .{}) catch |err| switch (err) {
                 error.FileNotFound,
                 error.NotDir,
                 error.NoDevice,

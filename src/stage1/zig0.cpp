@@ -18,6 +18,11 @@
 #include "buffer.hpp"
 #include "os.hpp"
 
+// This is the only file allowed to include config.h because config.h is
+// only produced when building with cmake. When using the zig build system,
+// zig0.cpp is never touched.
+#include "config.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -261,6 +266,7 @@ int main(int argc, char **argv) {
     TargetSubsystem subsystem = TargetSubsystemAuto;
     const char *override_lib_dir = nullptr;
     const char *mcpu = nullptr;
+    bool single_threaded = false;
 
     for (int i = 1; i < argc; i += 1) {
         char *arg = argv[i];
@@ -276,6 +282,8 @@ int main(int argc, char **argv) {
                 optimize_mode = BuildModeSafeRelease;
             } else if (strcmp(arg, "-OReleaseSmall") == 0) {
                 optimize_mode = BuildModeSmallRelease;
+            } else if (strcmp(arg, "--single-threaded") == 0) {
+                single_threaded = true;
             } else if (strcmp(arg, "--help") == 0) {
                 return print_full_usage(arg0, stdout, EXIT_SUCCESS);
             } else if (strcmp(arg, "--strip") == 0) {
@@ -430,6 +438,16 @@ int main(int argc, char **argv) {
         return print_error_usage(arg0);
     }
 
+    if (override_lib_dir == nullptr) {
+        fprintf(stderr, "missing --override-lib-dir\n");
+        return print_error_usage(arg0);
+    }
+
+    if (emit_bin_path == nullptr) {
+        fprintf(stderr, "missing -femit-bin=\n");
+        return print_error_usage(arg0);
+    }
+
     ZigStage1 *stage1 = zig_stage1_create(optimize_mode,
         nullptr, 0,
         in_file, strlen(in_file),
@@ -454,6 +472,7 @@ int main(int argc, char **argv) {
     stage1->link_libcpp = link_libcpp;
     stage1->subsystem = subsystem;
     stage1->pic = true;
+    stage1->is_single_threaded = single_threaded;
 
     zig_stage1_build_object(stage1);
 
@@ -526,4 +545,12 @@ const char *stage2_add_link_lib(struct ZigStage1 *stage1,
         const char *symbol_name_ptr, size_t symbol_name_len)
 {
     return nullptr;
+}
+
+const char *stage2_version_string(void) {
+    return ZIG_VERSION_STRING;
+}
+
+struct Stage2SemVer stage2_version(void) {
+    return {ZIG_VERSION_MAJOR, ZIG_VERSION_MINOR, ZIG_VERSION_PATCH};
 }

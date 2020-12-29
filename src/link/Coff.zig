@@ -16,21 +16,25 @@ const link = @import("../link.zig");
 const build_options = @import("build_options");
 const Cache = @import("../Cache.zig");
 const mingw = @import("../mingw.zig");
+const llvm_backend = @import("../llvm_backend.zig");
 
 const allocation_padding = 4 / 3;
 const minimum_text_block_size = 64 * allocation_padding;
 
 const section_alignment = 4096;
 const file_alignment = 512;
-const image_base = 0x400_000;
+const default_image_base = 0x400_000;
 const section_table_size = 2 * 40;
 comptime {
-    assert(mem.isAligned(image_base, section_alignment));
+    assert(mem.isAligned(default_image_base, section_alignment));
 }
 
 pub const base_tag: link.File.Tag = .coff;
 
 const msdos_stub = @embedFile("msdos-stub.bin");
+
+/// If this is not null, an object file is created by LLVM and linked with LLD afterwards.
+llvm_ir_module: ?*llvm_backend.LLVMIRModule = null,
 
 base: link.File,
 ptr_width: PtrWidth,
@@ -55,7 +59,7 @@ offset_table: std.ArrayListUnmanaged(u64) = .{},
 /// Free list of offset table indices
 offset_table_free_list: std.ArrayListUnmanaged(u32) = .{},
 
-/// Virtual address of the entry point procedure relative to `image_base`
+/// Virtual address of the entry point procedure relative to image base.
 entry_addr: ?u32 = null,
 
 /// Absolute virtual address of the text section when the executable is loaded in memory.
@@ -121,8 +125,13 @@ pub const SrcFn = void;
 pub fn openPath(allocator: *Allocator, sub_path: []const u8, options: link.Options) !*Coff {
     assert(options.object_format == .coff);
 
-    if (options.use_llvm) return error.LLVM_BackendIsTODO_ForCoff; // TODO
-    if (options.use_lld) return error.LLD_LinkingIsTODO_ForCoff; // TODO
+    if (build_options.have_llvm and options.use_llvm) {
+        const self = try createEmpty(allocator, options);
+        errdefer self.base.destroy();
+
+        self.llvm_ir_module = try llvm_backend.LLVMIRModule.create(allocator, sub_path, options);
+        return self;
+    }
 
     const file = try options.emit.?.directory.handle.createFile(sub_path, .{
         .truncate = false,
@@ -183,14 +192,14 @@ pub fn openPath(allocator: *Allocator, sub_path: []const u8, options: link.Optio
 
     self.section_data_offset = mem.alignForwardGeneric(u32, self.section_table_offset + section_table_size, file_alignment);
     const section_data_relative_virtual_address = mem.alignForwardGeneric(u32, self.section_table_offset + section_table_size, section_alignment);
-    self.offset_table_virtual_address = image_base + section_data_relative_virtual_address;
+    self.offset_table_virtual_address = default_image_base + section_data_relative_virtual_address;
     self.offset_table_size = default_offset_table_size;
     self.section_table_offset = section_table_offset;
-    self.text_section_virtual_address = image_base + section_data_relative_virtual_address + section_alignment;
+    self.text_section_virtual_address = default_image_base + section_data_relative_virtual_address + section_alignment;
     self.text_section_size = default_size_of_code;
 
     // Size of file when loaded in memory
-    const size_of_image = mem.alignForwardGeneric(u32, self.text_section_virtual_address - image_base + default_size_of_code, section_alignment);
+    const size_of_image = mem.alignForwardGeneric(u32, self.text_section_virtual_address - default_image_base + default_size_of_code, section_alignment);
 
     mem.writeIntLittle(u16, hdr_data[index..][0..2], optional_header_size);
     index += 2;
@@ -234,11 +243,11 @@ pub fn openPath(allocator: *Allocator, sub_path: []const u8, options: link.Optio
             index += 4;
 
             // Image base address
-            mem.writeIntLittle(u32, hdr_data[index..][0..4], image_base);
+            mem.writeIntLittle(u32, hdr_data[index..][0..4], default_image_base);
             index += 4;
         } else {
             // Image base address
-            mem.writeIntLittle(u64, hdr_data[index..][0..8], image_base);
+            mem.writeIntLittle(u64, hdr_data[index..][0..8], default_image_base);
             index += 8;
         }
 
@@ -328,7 +337,7 @@ pub fn openPath(allocator: *Allocator, sub_path: []const u8, options: link.Optio
         mem.writeIntLittle(u32, hdr_data[index..][0..4], default_offset_table_size);
         index += 4;
         // Virtual address (u32)
-        mem.writeIntLittle(u32, hdr_data[index..][0..4], self.offset_table_virtual_address - image_base);
+        mem.writeIntLittle(u32, hdr_data[index..][0..4], self.offset_table_virtual_address - default_image_base);
         index += 4;
     } else {
         mem.set(u8, hdr_data[index..][0..8], 0);
@@ -354,7 +363,7 @@ pub fn openPath(allocator: *Allocator, sub_path: []const u8, options: link.Optio
         mem.writeIntLittle(u32, hdr_data[index..][0..4], default_size_of_code);
         index += 4;
         // Virtual address (u32)
-        mem.writeIntLittle(u32, hdr_data[index..][0..4], self.text_section_virtual_address - image_base);
+        mem.writeIntLittle(u32, hdr_data[index..][0..4], self.text_section_virtual_address - default_image_base);
         index += 4;
     } else {
         mem.set(u8, hdr_data[index..][0..8], 0);
@@ -404,6 +413,8 @@ pub fn createEmpty(gpa: *Allocator, options: link.Options) !*Coff {
 }
 
 pub fn allocateDeclIndexes(self: *Coff, decl: *Module.Decl) !void {
+    if (self.llvm_ir_module) |_| return;
+
     try self.offset_table.ensureCapacity(self.base.allocator, self.offset_table.items.len + 1);
 
     if (self.offset_table_free_list.popOrNull()) |i| {
@@ -601,7 +612,7 @@ fn writeOffsetTableEntry(self: *Coff, index: usize) !void {
 
             // Write .text new virtual address
             self.text_section_virtual_address = self.text_section_virtual_address + va_offset;
-            mem.writeIntLittle(u32, buf[0..4], self.text_section_virtual_address - image_base);
+            mem.writeIntLittle(u32, buf[0..4], self.text_section_virtual_address - default_image_base);
             try self.base.file.?.pwriteAll(buf[0..4], self.section_table_offset + 40 + 12);
 
             // Fix the VAs in the offset table
@@ -647,6 +658,9 @@ pub fn updateDecl(self: *Coff, module: *Module, decl: *Module.Decl) !void {
     // TODO Implement exports
     const tracy = trace(@src());
     defer tracy.end();
+
+    if (build_options.have_llvm)
+        if (self.llvm_ir_module) |llvm_ir_module| return try llvm_ir_module.updateDecl(module, decl);
 
     var code_buffer = std.ArrayList(u8).init(self.base.allocator);
     defer code_buffer.deinit();
@@ -698,12 +712,16 @@ pub fn updateDecl(self: *Coff, module: *Module, decl: *Module.Decl) !void {
 }
 
 pub fn freeDecl(self: *Coff, decl: *Module.Decl) void {
+    if (self.llvm_ir_module) |_| return;
+
     // Appending to free lists is allowed to fail because the free lists are heuristics based anyway.
     self.freeTextBlock(&decl.link.coff);
     self.offset_table_free_list.append(self.base.allocator, decl.link.coff.offset_table_index) catch {};
 }
 
 pub fn updateDeclExports(self: *Coff, module: *Module, decl: *const Module.Decl, exports: []const *Module.Export) !void {
+    if (self.llvm_ir_module) |_| return;
+
     for (exports) |exp| {
         if (exp.options.section) |section_name| {
             if (!mem.eql(u8, section_name, ".text")) {
@@ -716,7 +734,7 @@ pub fn updateDeclExports(self: *Coff, module: *Module, decl: *const Module.Decl,
             }
         }
         if (mem.eql(u8, exp.options.name, "_start")) {
-            self.entry_addr = decl.link.coff.getVAddr(self.*) - image_base;
+            self.entry_addr = decl.link.coff.getVAddr(self.*) - default_image_base;
         } else {
             try module.failed_exports.ensureCapacity(module.gpa, module.failed_exports.items().len + 1);
             module.failed_exports.putAssumeCapacityNoClobber(
@@ -744,6 +762,9 @@ pub fn flushModule(self: *Coff, comp: *Compilation) !void {
     const tracy = trace(@src());
     defer tracy.end();
 
+    if (build_options.have_llvm)
+        if (self.llvm_ir_module) |llvm_ir_module| return try llvm_ir_module.flushModule(comp);
+
     if (self.text_section_size_dirty) {
         // Write the new raw size in the .text header
         var buf: [4]u8 = undefined;
@@ -754,7 +775,7 @@ pub fn flushModule(self: *Coff, comp: *Compilation) !void {
     }
 
     if (self.base.options.output_mode == .Exe and self.size_of_image_dirty) {
-        const new_size_of_image = mem.alignForwardGeneric(u32, self.text_section_virtual_address - image_base + self.text_section_size, section_alignment);
+        const new_size_of_image = mem.alignForwardGeneric(u32, self.text_section_virtual_address - default_image_base + self.text_section_size, section_alignment);
         var buf: [4]u8 = undefined;
         mem.writeIntLittle(u32, &buf, new_size_of_image);
         try self.base.file.?.pwriteAll(&buf, self.optional_header_offset + 56);
@@ -811,7 +832,7 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
     const is_lib = self.base.options.output_mode == .Lib;
     const is_dyn_lib = self.base.options.link_mode == .Dynamic and is_lib;
     const is_exe_or_dyn_lib = is_dyn_lib or self.base.options.output_mode == .Exe;
-    const link_in_crt = self.base.options.link_libc and self.base.options.output_mode == .Exe;
+    const link_in_crt = self.base.options.link_libc and is_exe_or_dyn_lib;
     const target = self.base.options.target;
 
     // See link/Elf.zig for comments on how this mechanism works.
@@ -832,9 +853,10 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
         }
         try man.addOptionalFile(module_obj_path);
         man.hash.addOptional(self.base.options.stack_size_override);
+        man.hash.addOptional(self.base.options.image_base_override);
         man.hash.addListOfBytes(self.base.options.extra_lld_args);
         man.hash.addListOfBytes(self.base.options.lib_dirs);
-        man.hash.add(self.base.options.is_compiler_rt_or_libc);
+        man.hash.add(self.base.options.skip_linker_dependencies);
         if (self.base.options.link_libc) {
             man.hash.add(self.base.options.libc_installation != null);
             if (self.base.options.libc_installation) |libc_installation| {
@@ -853,8 +875,12 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
         _ = try man.hit();
         digest = man.final();
         var prev_digest_buf: [digest.len]u8 = undefined;
-        const prev_digest: []u8 = directory.handle.readLink(id_symlink_basename, &prev_digest_buf) catch |err| blk: {
-            log.debug("COFF LLD new_digest={} readlink error: {}", .{ digest, @errorName(err) });
+        const prev_digest: []u8 = Cache.readSmallFile(
+            directory.handle,
+            id_symlink_basename,
+            &prev_digest_buf,
+        ) catch |err| blk: {
+            log.debug("COFF LLD new_digest={} error: {}", .{ digest, @errorName(err) });
             // Handle this as a cache miss.
             break :blk prev_digest_buf[0..0];
         };
@@ -902,8 +928,10 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
         // Create an LLD command line and invoke it.
         var argv = std.ArrayList([]const u8).init(self.base.allocator);
         defer argv.deinit();
-        // Even though we're calling LLD as a library it thinks the first argument is its own exe name.
-        try argv.append("lld");
+        // We will invoke ourselves as a child process to gain access to LLD.
+        // This is necessary because LLD does not behave properly as a library -
+        // it calls exit() and does not reset all global data between invocations.
+        try argv.appendSlice(&[_][]const u8{ comp.self_exe_path.?, "lld-link" });
 
         try argv.append("-ERRORLIMIT:0");
         try argv.append("-NOLOGO");
@@ -913,6 +941,9 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
         if (self.base.options.output_mode == .Exe) {
             const stack_size = self.base.options.stack_size_override orelse 16777216;
             try argv.append(try allocPrint(arena, "-STACK:{d}", .{stack_size}));
+        }
+        if (self.base.options.image_base_override) |image_base| {
+            try argv.append(try std.fmt.allocPrint(arena, "-BASE:{d}", .{image_base}));
         }
 
         if (target.cpu.arch == .i386) {
@@ -1046,6 +1077,11 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
 
                         if (is_dyn_lib) {
                             try argv.append(try comp.get_libc_crt_file(arena, "dllcrt2.o"));
+                            if (target.cpu.arch == .i386) {
+                                try argv.append("-ALTERNATENAME:__DllMainCRTStartup@12=_DllMainCRTStartup@12");
+                            } else {
+                                try argv.append("-ALTERNATENAME:_DllMainCRTStartup=DllMainCRTStartup");
+                            }
                         } else {
                             try argv.append(try comp.get_libc_crt_file(arena, "crt2.o"));
                         }
@@ -1089,17 +1125,13 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
                     try argv.append("-NODEFAULTLIB");
                     if (!is_lib) {
                         if (self.base.options.module) |module| {
-                            if (module.stage1_flags.have_winmain) {
-                                try argv.append("-ENTRY:WinMain");
-                            } else if (module.stage1_flags.have_wwinmain) {
-                                try argv.append("-ENTRY:wWinMain");
-                            } else if (module.stage1_flags.have_wwinmain_crt_startup) {
-                                try argv.append("-ENTRY:wWinMainCRTStartup");
-                            } else {
+                            if (module.stage1_flags.have_winmain_crt_startup) {
                                 try argv.append("-ENTRY:WinMainCRTStartup");
+                            } else {
+                                try argv.append("-ENTRY:wWinMainCRTStartup");
                             }
                         } else {
-                            try argv.append("-ENTRY:WinMainCRTStartup");
+                            try argv.append("-ENTRY:wWinMainCRTStartup");
                         }
                     }
                 }
@@ -1113,10 +1145,15 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
             try argv.append(comp.libunwind_static_lib.?.full_object_path);
         }
 
-        // compiler-rt and libc
-        if (is_exe_or_dyn_lib and !self.base.options.is_compiler_rt_or_libc) {
+        // TODO: remove when stage2 can build compiler_rt.zig, c.zig and ssp.zig
+        // compiler-rt, libc and libssp
+        if (is_exe_or_dyn_lib and !self.base.options.skip_linker_dependencies and build_options.is_stage1) {
             if (!self.base.options.link_libc) {
                 try argv.append(comp.libc_static_lib.?.full_object_path);
+            }
+            // MinGW doesn't provide libssp symbols
+            if (target.abi.isGnu()) {
+                try argv.append(comp.libssp_static_lib.?.full_object_path);
             }
             // MSVC compiler_rt is missing some stuff, so we build it unconditionally but
             // and rely on weak linkage to allow MSVC compiler_rt functions to override ours.
@@ -1133,57 +1170,77 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
         }
 
         if (self.base.options.verbose_link) {
-            Compilation.dump_argv(argv.items);
+            // Skip over our own name so that the LLD linker name is the first argv item.
+            Compilation.dump_argv(argv.items[1..]);
         }
 
-        const new_argv = try arena.allocSentinel(?[*:0]const u8, argv.items.len, null);
-        for (argv.items) |arg, i| {
-            new_argv[i] = try arena.dupeZ(u8, arg);
-        }
+        // Sadly, we must run LLD as a child process because it does not behave
+        // properly as a library.
+        const child = try std.ChildProcess.init(argv.items, arena);
+        defer child.deinit();
 
-        var stderr_context: LLDContext = .{
-            .coff = self,
-            .data = std.ArrayList(u8).init(self.base.allocator),
-        };
-        defer stderr_context.data.deinit();
-        var stdout_context: LLDContext = .{
-            .coff = self,
-            .data = std.ArrayList(u8).init(self.base.allocator),
-        };
-        defer stdout_context.data.deinit();
-        const llvm = @import("../llvm.zig");
-        const ok = llvm.Link(
-            .COFF,
-            new_argv.ptr,
-            new_argv.len,
-            append_diagnostic,
-            @ptrToInt(&stdout_context),
-            @ptrToInt(&stderr_context),
-        );
-        if (stderr_context.oom or stdout_context.oom) return error.OutOfMemory;
-        if (stdout_context.data.items.len != 0) {
-            std.log.warn("unexpected LLD stdout: {}", .{stdout_context.data.items});
-        }
-        if (!ok) {
-            // TODO parse this output and surface with the Compilation API rather than
-            // directly outputting to stderr here.
-            std.debug.print("{}", .{stderr_context.data.items});
-            return error.LLDReportedFailure;
-        }
-        if (stderr_context.data.items.len != 0) {
-            std.log.warn("unexpected LLD stderr: {}", .{stderr_context.data.items});
+        if (comp.clang_passthrough_mode) {
+            child.stdin_behavior = .Inherit;
+            child.stdout_behavior = .Inherit;
+            child.stderr_behavior = .Inherit;
+
+            const term = child.spawnAndWait() catch |err| {
+                log.err("unable to spawn {s}: {s}", .{ argv.items[0], @errorName(err) });
+                return error.UnableToSpawnSelf;
+            };
+            switch (term) {
+                .Exited => |code| {
+                    if (code != 0) {
+                        // TODO https://github.com/ziglang/zig/issues/6342
+                        std.process.exit(1);
+                    }
+                },
+                else => std.process.abort(),
+            }
+        } else {
+            child.stdin_behavior = .Ignore;
+            child.stdout_behavior = .Ignore;
+            child.stderr_behavior = .Pipe;
+
+            try child.spawn();
+
+            const stderr = try child.stderr.?.reader().readAllAlloc(arena, 10 * 1024 * 1024);
+
+            const term = child.wait() catch |err| {
+                log.err("unable to spawn {s}: {s}", .{ argv.items[0], @errorName(err) });
+                return error.UnableToSpawnSelf;
+            };
+
+            switch (term) {
+                .Exited => |code| {
+                    if (code != 0) {
+                        // TODO parse this output and surface with the Compilation API rather than
+                        // directly outputting to stderr here.
+                        std.debug.print("{s}", .{stderr});
+                        return error.LLDReportedFailure;
+                    }
+                },
+                else => {
+                    log.err("{s} terminated with stderr:\n{s}", .{ argv.items[0], stderr });
+                    return error.LLDCrashed;
+                },
+            }
+
+            if (stderr.len != 0) {
+                log.warn("unexpected LLD stderr:\n{s}", .{stderr});
+            }
         }
     }
 
     if (!self.base.options.disable_lld_caching) {
-        // Update the dangling symlink with the digest. If it fails we can continue; it only
+        // Update the file with the digest. If it fails we can continue; it only
         // means that the next invocation will have an unnecessary cache miss.
-        directory.handle.symLink(&digest, id_symlink_basename, .{}) catch |err| {
-            std.log.warn("failed to save linking hash digest symlink: {}", .{@errorName(err)});
+        Cache.writeSmallFile(directory.handle, id_symlink_basename, &digest) catch |err| {
+            log.warn("failed to save linking hash digest file: {}", .{@errorName(err)});
         };
         // Again failure here only means an unnecessary cache miss.
         man.writeManifest() catch |err| {
-            std.log.warn("failed to write cache manifest when linking: {}", .{@errorName(err)});
+            log.warn("failed to write cache manifest when linking: {}", .{@errorName(err)});
         };
         // We hang on to this lock so that the output file path can be used without
         // other processes clobbering it.
@@ -1191,21 +1248,8 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
     }
 }
 
-const LLDContext = struct {
-    data: std.ArrayList(u8),
-    coff: *Coff,
-    oom: bool = false,
-};
-
-fn append_diagnostic(context: usize, ptr: [*]const u8, len: usize) callconv(.C) void {
-    const lld_context = @intToPtr(*LLDContext, context);
-    const msg = ptr[0..len];
-    lld_context.data.appendSlice(msg) catch |err| switch (err) {
-        error.OutOfMemory => lld_context.oom = true,
-    };
-}
-
 pub fn getDeclVAddr(self: *Coff, decl: *const Module.Decl) u64 {
+    assert(self.llvm_ir_module == null);
     return self.text_section_virtual_address + decl.link.coff.text_offset;
 }
 
@@ -1214,6 +1258,9 @@ pub fn updateDeclLineNumber(self: *Coff, module: *Module, decl: *Module.Decl) !v
 }
 
 pub fn deinit(self: *Coff) void {
+    if (build_options.have_llvm)
+        if (self.llvm_ir_module) |ir_module| ir_module.deinit(self.base.allocator);
+
     self.text_block_free_list.deinit(self.base.allocator);
     self.offset_table.deinit(self.base.allocator);
     self.offset_table_free_list.deinit(self.base.allocator);

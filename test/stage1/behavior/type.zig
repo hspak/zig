@@ -31,12 +31,12 @@ test "Type.NoReturn" {
 }
 
 test "Type.Int" {
-    testing.expect(u1 == @Type(TypeInfo{ .Int = TypeInfo.Int{ .is_signed = false, .bits = 1 } }));
-    testing.expect(i1 == @Type(TypeInfo{ .Int = TypeInfo.Int{ .is_signed = true, .bits = 1 } }));
-    testing.expect(u8 == @Type(TypeInfo{ .Int = TypeInfo.Int{ .is_signed = false, .bits = 8 } }));
-    testing.expect(i8 == @Type(TypeInfo{ .Int = TypeInfo.Int{ .is_signed = true, .bits = 8 } }));
-    testing.expect(u64 == @Type(TypeInfo{ .Int = TypeInfo.Int{ .is_signed = false, .bits = 64 } }));
-    testing.expect(i64 == @Type(TypeInfo{ .Int = TypeInfo.Int{ .is_signed = true, .bits = 64 } }));
+    testing.expect(u1 == @Type(TypeInfo{ .Int = TypeInfo.Int{ .signedness = .unsigned, .bits = 1 } }));
+    testing.expect(i1 == @Type(TypeInfo{ .Int = TypeInfo.Int{ .signedness = .signed, .bits = 1 } }));
+    testing.expect(u8 == @Type(TypeInfo{ .Int = TypeInfo.Int{ .signedness = .unsigned, .bits = 8 } }));
+    testing.expect(i8 == @Type(TypeInfo{ .Int = TypeInfo.Int{ .signedness = .signed, .bits = 8 } }));
+    testing.expect(u64 == @Type(TypeInfo{ .Int = TypeInfo.Int{ .signedness = .unsigned, .bits = 64 } }));
+    testing.expect(i64 == @Type(TypeInfo{ .Int = TypeInfo.Int{ .signedness = .signed, .bits = 64 } }));
     testTypes(&[_]type{ u8, u32, i64 });
 }
 
@@ -190,8 +190,17 @@ test "Type.ErrorUnion" {
 }
 
 test "Type.Opaque" {
-    testing.expect(@Type(.Opaque) != @Type(.Opaque));
-    testing.expect(@typeInfo(@Type(.Opaque)) == .Opaque);
+    const Opaque = @Type(.{
+        .Opaque = .{
+            .decls = &[_]TypeInfo.Declaration{},
+        },
+    });
+    testing.expect(Opaque != opaque {});
+    testing.expectEqualSlices(
+        TypeInfo.Declaration,
+        &[_]TypeInfo.Declaration{},
+        @typeInfo(Opaque).Opaque.decls,
+    );
 }
 
 test "Type.Vector" {
@@ -415,4 +424,31 @@ test "Type.Union from regular enum" {
     });
     _ = T;
     _ = @typeInfo(T).Union;
+}
+
+test "Type.Fn" {
+    // wasm doesn't support align attributes on functions
+    if (builtin.arch == .wasm32 or builtin.arch == .wasm64) return error.SkipZigTest;
+
+    const foo = struct {
+        fn func(a: usize, b: bool) align(4) callconv(.C) usize {
+            return 0;
+        }
+    }.func;
+    const Foo = @Type(@typeInfo(@TypeOf(foo)));
+    const foo_2: Foo = foo;
+}
+
+test "Type.BoundFn" {
+    // wasm doesn't support align attributes on functions
+    if (builtin.arch == .wasm32 or builtin.arch == .wasm64) return error.SkipZigTest;
+
+    const TestStruct = packed struct {
+        pub fn foo(self: *const @This()) align(4) callconv(.Unspecified) void {}
+    };
+    const test_instance: TestStruct = undefined;
+    testing.expect(std.meta.eql(
+        @typeName(@TypeOf(test_instance.foo)),
+        @typeName(@Type(@typeInfo(@TypeOf(test_instance.foo)))),
+    ));
 }

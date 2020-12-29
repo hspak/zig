@@ -12,6 +12,7 @@ pub const Token = tokenizer.Token;
 pub const Tokenizer = tokenizer.Tokenizer;
 pub const parse = @import("c/parse.zig").parse;
 pub const ast = @import("c/ast.zig");
+pub const builtins = @import("c/builtins.zig");
 
 test "" {
     _ = tokenizer;
@@ -22,7 +23,7 @@ pub usingnamespace @import("os/bits.zig");
 pub usingnamespace switch (std.Target.current.os.tag) {
     .linux => @import("c/linux.zig"),
     .windows => @import("c/windows.zig"),
-    .macosx, .ios, .tvos, .watchos => @import("c/darwin.zig"),
+    .macos, .ios, .tvos, .watchos => @import("c/darwin.zig"),
     .freebsd, .kfreebsd => @import("c/freebsd.zig"),
     .netbsd => @import("c/netbsd.zig"),
     .dragonfly => @import("c/dragonfly.zig"),
@@ -80,6 +81,7 @@ pub extern "c" fn fread(ptr: [*]u8, size_of_type: usize, item_count: usize, stre
 pub extern "c" fn printf(format: [*:0]const u8, ...) c_int;
 pub extern "c" fn abort() noreturn;
 pub extern "c" fn exit(code: c_int) noreturn;
+pub extern "c" fn _exit(code: c_int) noreturn;
 pub extern "c" fn isatty(fd: fd_t) c_int;
 pub extern "c" fn close(fd: fd_t) c_int;
 pub extern "c" fn lseek(fd: fd_t, offset: off_t, whence: c_int) off_t;
@@ -122,13 +124,13 @@ pub extern "c" fn readlink(noalias path: [*:0]const u8, noalias buf: [*]u8, bufs
 pub extern "c" fn readlinkat(dirfd: fd_t, noalias path: [*:0]const u8, noalias buf: [*]u8, bufsize: usize) isize;
 
 pub usingnamespace switch (builtin.os.tag) {
-    .macosx, .ios, .watchos, .tvos => struct {
+    .macos, .ios, .watchos, .tvos => struct {
         pub const realpath = @"realpath$DARWIN_EXTSN";
-        pub const fstatat = @"fstatat$INODE64";
+        pub const fstatat = _fstatat;
     },
     else => struct {
         pub extern "c" fn realpath(noalias file_name: [*:0]const u8, noalias resolved_name: [*]u8) ?[*:0]u8;
-        pub extern "c" fn fstatat(dirfd: fd_t, path: [*:0]const u8, stat_buf: *Stat, flags: u32) c_int;
+        pub extern "c" fn fstatat(dirfd: fd_t, path: [*:0]const u8, stat_buf: *libc_stat, flags: u32) c_int;
     },
 };
 
@@ -145,13 +147,14 @@ pub extern "c" fn ioctl(fd: fd_t, request: c_int, ...) c_int;
 pub extern "c" fn uname(buf: *utsname) c_int;
 
 pub extern "c" fn gethostname(name: [*]u8, len: usize) c_int;
+pub extern "c" fn shutdown(socket: fd_t, how: c_int) c_int;
 pub extern "c" fn bind(socket: fd_t, address: ?*const sockaddr, address_len: socklen_t) c_int;
 pub extern "c" fn socketpair(domain: c_uint, sock_type: c_uint, protocol: c_uint, sv: *[2]fd_t) c_int;
 pub extern "c" fn listen(sockfd: fd_t, backlog: c_uint) c_int;
 pub extern "c" fn getsockname(sockfd: fd_t, noalias addr: *sockaddr, noalias addrlen: *socklen_t) c_int;
 pub extern "c" fn connect(sockfd: fd_t, sock_addr: *const sockaddr, addrlen: socklen_t) c_int;
-pub extern "c" fn accept(sockfd: fd_t, addr: *sockaddr, addrlen: *socklen_t) c_int;
-pub extern "c" fn accept4(sockfd: fd_t, addr: *sockaddr, addrlen: *socklen_t, flags: c_uint) c_int;
+pub extern "c" fn accept(sockfd: fd_t, addr: ?*sockaddr, addrlen: ?*socklen_t) c_int;
+pub extern "c" fn accept4(sockfd: fd_t, addr: ?*sockaddr, addrlen: ?*socklen_t, flags: c_uint) c_int;
 pub extern "c" fn getsockopt(sockfd: fd_t, level: u32, optname: u32, optval: ?*c_void, optlen: *socklen_t) c_int;
 pub extern "c" fn setsockopt(sockfd: fd_t, level: u32, optname: u32, optval: ?*const c_void, optlen: socklen_t) c_int;
 pub extern "c" fn send(sockfd: fd_t, buf: *const c_void, len: usize, flags: u32) isize;
@@ -189,47 +192,47 @@ pub usingnamespace switch (builtin.os.tag) {
         pub const sigprocmask = __sigprocmask14;
         pub const stat = __stat50;
     },
-    .macosx, .ios, .watchos, .tvos => struct {
+    .macos, .ios, .watchos, .tvos => struct {
         // XXX: close -> close$NOCANCEL
         // XXX: getdirentries -> _getdirentries64
         pub extern "c" fn clock_getres(clk_id: c_int, tp: *timespec) c_int;
         pub extern "c" fn clock_gettime(clk_id: c_int, tp: *timespec) c_int;
-        pub const fstat = @"fstat$INODE64";
+        pub const fstat = _fstat;
         pub extern "c" fn getrusage(who: c_int, usage: *rusage) c_int;
         pub extern "c" fn gettimeofday(noalias tv: ?*timeval, noalias tz: ?*timezone) c_int;
         pub extern "c" fn nanosleep(rqtp: *const timespec, rmtp: ?*timespec) c_int;
         pub extern "c" fn sched_yield() c_int;
-        pub extern "c" fn sigaction(sig: c_int, noalias act: *const Sigaction, noalias oact: ?*Sigaction) c_int;
+        pub extern "c" fn sigaction(sig: c_int, noalias act: ?*const Sigaction, noalias oact: ?*Sigaction) c_int;
         pub extern "c" fn sigprocmask(how: c_int, noalias set: ?*const sigset_t, noalias oset: ?*sigset_t) c_int;
         pub extern "c" fn socket(domain: c_uint, sock_type: c_uint, protocol: c_uint) c_int;
-        pub extern "c" fn stat(noalias path: [*:0]const u8, noalias buf: *Stat) c_int;
+        pub extern "c" fn stat(noalias path: [*:0]const u8, noalias buf: *libc_stat) c_int;
     },
     .windows => struct {
         // TODO: copied the else case and removed the socket function (because its in ws2_32)
         //       need to verify which of these is actually supported on windows
         pub extern "c" fn clock_getres(clk_id: c_int, tp: *timespec) c_int;
         pub extern "c" fn clock_gettime(clk_id: c_int, tp: *timespec) c_int;
-        pub extern "c" fn fstat(fd: fd_t, buf: *Stat) c_int;
+        pub extern "c" fn fstat(fd: fd_t, buf: *libc_stat) c_int;
         pub extern "c" fn getrusage(who: c_int, usage: *rusage) c_int;
         pub extern "c" fn gettimeofday(noalias tv: ?*timeval, noalias tz: ?*timezone) c_int;
         pub extern "c" fn nanosleep(rqtp: *const timespec, rmtp: ?*timespec) c_int;
         pub extern "c" fn sched_yield() c_int;
-        pub extern "c" fn sigaction(sig: c_int, noalias act: *const Sigaction, noalias oact: ?*Sigaction) c_int;
+        pub extern "c" fn sigaction(sig: c_int, noalias act: ?*const Sigaction, noalias oact: ?*Sigaction) c_int;
         pub extern "c" fn sigprocmask(how: c_int, noalias set: ?*const sigset_t, noalias oset: ?*sigset_t) c_int;
-        pub extern "c" fn stat(noalias path: [*:0]const u8, noalias buf: *Stat) c_int;
+        pub extern "c" fn stat(noalias path: [*:0]const u8, noalias buf: *libc_stat) c_int;
     },
     else => struct {
         pub extern "c" fn clock_getres(clk_id: c_int, tp: *timespec) c_int;
         pub extern "c" fn clock_gettime(clk_id: c_int, tp: *timespec) c_int;
-        pub extern "c" fn fstat(fd: fd_t, buf: *Stat) c_int;
+        pub extern "c" fn fstat(fd: fd_t, buf: *libc_stat) c_int;
         pub extern "c" fn getrusage(who: c_int, usage: *rusage) c_int;
         pub extern "c" fn gettimeofday(noalias tv: ?*timeval, noalias tz: ?*timezone) c_int;
         pub extern "c" fn nanosleep(rqtp: *const timespec, rmtp: ?*timespec) c_int;
         pub extern "c" fn sched_yield() c_int;
-        pub extern "c" fn sigaction(sig: c_int, noalias act: *const Sigaction, noalias oact: ?*Sigaction) c_int;
+        pub extern "c" fn sigaction(sig: c_int, noalias act: ?*const Sigaction, noalias oact: ?*Sigaction) c_int;
         pub extern "c" fn sigprocmask(how: c_int, noalias set: ?*const sigset_t, noalias oset: ?*sigset_t) c_int;
         pub extern "c" fn socket(domain: c_uint, sock_type: c_uint, protocol: c_uint) c_int;
-        pub extern "c" fn stat(noalias path: [*:0]const u8, noalias buf: *Stat) c_int;
+        pub extern "c" fn stat(noalias path: [*:0]const u8, noalias buf: *libc_stat) c_int;
     },
 };
 
@@ -245,22 +248,9 @@ pub extern "c" fn setregid(rgid: gid_t, egid: gid_t) c_int;
 pub extern "c" fn setresuid(ruid: uid_t, euid: uid_t, suid: uid_t) c_int;
 pub extern "c" fn setresgid(rgid: gid_t, egid: gid_t, sgid: gid_t) c_int;
 
-pub extern "c" fn aligned_alloc(alignment: usize, size: usize) ?*c_void;
 pub extern "c" fn malloc(usize) ?*c_void;
-
-pub usingnamespace switch (builtin.os.tag) {
-    .linux, .freebsd, .kfreebsd, .netbsd, .openbsd => struct {
-        pub extern "c" fn malloc_usable_size(?*const c_void) usize;
-    },
-    .macosx, .ios, .watchos, .tvos => struct {
-        pub extern "c" fn malloc_size(?*const c_void) usize;
-    },
-    else => struct {},
-};
-
 pub extern "c" fn realloc(?*c_void, usize) ?*c_void;
-pub extern "c" fn free(*c_void) void;
-pub extern "c" fn posix_memalign(memptr: **c_void, alignment: usize, size: usize) c_int;
+pub extern "c" fn free(?*c_void) void;
 
 pub extern "c" fn futimes(fd: fd_t, times: *[2]timeval) c_int;
 pub extern "c" fn utimes(path: [*:0]const u8, times: *[2]timeval) c_int;
@@ -271,10 +261,23 @@ pub extern "c" fn futimens(fd: fd_t, times: *const [2]timespec) c_int;
 pub extern "c" fn pthread_create(noalias newthread: *pthread_t, noalias attr: ?*const pthread_attr_t, start_routine: fn (?*c_void) callconv(.C) ?*c_void, noalias arg: ?*c_void) c_int;
 pub extern "c" fn pthread_attr_init(attr: *pthread_attr_t) c_int;
 pub extern "c" fn pthread_attr_setstack(attr: *pthread_attr_t, stackaddr: *c_void, stacksize: usize) c_int;
+pub extern "c" fn pthread_attr_setstacksize(attr: *pthread_attr_t, stacksize: usize) c_int;
 pub extern "c" fn pthread_attr_setguardsize(attr: *pthread_attr_t, guardsize: usize) c_int;
 pub extern "c" fn pthread_attr_destroy(attr: *pthread_attr_t) c_int;
 pub extern "c" fn pthread_self() pthread_t;
 pub extern "c" fn pthread_join(thread: pthread_t, arg_return: ?*?*c_void) c_int;
+pub extern "c" fn pthread_atfork(
+    prepare: ?fn () callconv(.C) void,
+    parent: ?fn () callconv(.C) void,
+    child: ?fn () callconv(.C) void,
+) c_int;
+pub extern "c" fn sem_init(sem: *sem_t, pshared: c_int, value: c_uint) c_int;
+pub extern "c" fn sem_destroy(sem: *sem_t) c_int;
+pub extern "c" fn sem_post(sem: *sem_t) c_int;
+pub extern "c" fn sem_wait(sem: *sem_t) c_int;
+pub extern "c" fn sem_trywait(sem: *sem_t) c_int;
+pub extern "c" fn sem_timedwait(sem: *sem_t, abs_timeout: *const timespec) c_int;
+pub extern "c" fn sem_getvalue(sem: *sem_t, sval: *c_int) c_int;
 
 pub extern "c" fn kqueue() c_int;
 pub extern "c" fn kevent(
@@ -308,6 +311,7 @@ pub extern "c" fn getnameinfo(
 pub extern "c" fn gai_strerror(errcode: EAI) [*:0]const u8;
 
 pub extern "c" fn poll(fds: [*]pollfd, nfds: nfds_t, timeout: c_int) c_int;
+pub extern "c" fn ppoll(fds: [*]pollfd, nfds: nfds_t, timeout: ?*const timespec, sigmask: ?*const sigset_t) c_int;
 
 pub extern "c" fn dn_expand(
     msg: [*:0]const u8,
@@ -320,6 +324,7 @@ pub extern "c" fn dn_expand(
 pub const PTHREAD_MUTEX_INITIALIZER = pthread_mutex_t{};
 pub extern "c" fn pthread_mutex_lock(mutex: *pthread_mutex_t) c_int;
 pub extern "c" fn pthread_mutex_unlock(mutex: *pthread_mutex_t) c_int;
+pub extern "c" fn pthread_mutex_trylock(mutex: *pthread_mutex_t) c_int;
 pub extern "c" fn pthread_mutex_destroy(mutex: *pthread_mutex_t) c_int;
 
 pub const PTHREAD_COND_INITIALIZER = pthread_cond_t{};
@@ -329,8 +334,8 @@ pub extern "c" fn pthread_cond_signal(cond: *pthread_cond_t) c_int;
 pub extern "c" fn pthread_cond_broadcast(cond: *pthread_cond_t) c_int;
 pub extern "c" fn pthread_cond_destroy(cond: *pthread_cond_t) c_int;
 
-pub const pthread_t = *@Type(.Opaque);
-pub const FILE = @Type(.Opaque);
+pub const pthread_t = *opaque {};
+pub const FILE = opaque {};
 
 pub extern "c" fn dlopen(path: [*:0]const u8, mode: c_int) ?*c_void;
 pub extern "c" fn dlclose(handle: *c_void) c_int;
@@ -342,3 +347,18 @@ pub extern "c" fn fsync(fd: c_int) c_int;
 pub extern "c" fn fdatasync(fd: c_int) c_int;
 
 pub extern "c" fn prctl(option: c_int, ...) c_int;
+
+pub extern "c" fn getrlimit(resource: rlimit_resource, rlim: *rlimit) c_int;
+pub extern "c" fn setrlimit(resource: rlimit_resource, rlim: *const rlimit) c_int;
+
+pub extern "c" fn fmemopen(noalias buf: ?*c_void, size: usize, noalias mode: [*:0]const u8) ?*FILE;
+
+pub const max_align_t = if (std.Target.current.abi == .msvc)
+    f64
+else if (std.Target.current.isDarwin())
+    c_longdouble
+else
+    extern struct {
+        a: c_longlong,
+        b: c_longdouble,
+    };

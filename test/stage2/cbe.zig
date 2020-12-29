@@ -19,6 +19,12 @@ pub fn addCases(ctx: *TestContext) !void {
         \\}
         \\
     );
+    ctx.h("simple header", linux_x64,
+        \\export fn start() void{}
+    ,
+        \\void start(void);
+        \\
+    );
     ctx.c("less empty start function", linux_x64,
         \\fn main() noreturn {
         \\    unreachable;
@@ -145,6 +151,167 @@ pub fn addCases(ctx: *TestContext) !void {
         \\    __asm volatile ("syscall" :: ""(rax_constant), ""(rdi_constant));
         \\    zig_unreachable();
         \\}
+        \\
+    );
+    ctx.c("exit with u8 arithmetic", linux_x64,
+        \\export fn _start() noreturn {
+        \\    exitMath(1);
+        \\}
+        \\
+        \\fn exitMath(a: u8) noreturn {
+        \\    exit(0 + a - a);
+        \\}
+        \\
+        \\fn exit(code: u8) noreturn {
+        \\    asm volatile ("syscall"
+        \\        :
+        \\        : [number] "{rax}" (231),
+        \\          [arg1] "{rdi}" (code)
+        \\    );
+        \\    unreachable;
+        \\}
+        \\
+    ,
+        \\#include <stddef.h>
+        \\#include <stdint.h>
+        \\
+        \\zig_noreturn void exitMath(uint8_t arg0);
+        \\zig_noreturn void exit(uint8_t arg0);
+        \\
+        \\const char *const exit__anon_0 = "{rax}";
+        \\const char *const exit__anon_1 = "{rdi}";
+        \\const char *const exit__anon_2 = "syscall";
+        \\
+        \\zig_noreturn void _start(void) {
+        \\    exitMath(1);
+        \\}
+        \\
+        \\zig_noreturn void exitMath(uint8_t arg0) {
+        \\    const uint8_t __temp_0 = 0 + arg0;
+        \\    const uint8_t __temp_1 = __temp_0 - arg0;
+        \\    exit(__temp_1);
+        \\}
+        \\
+        \\zig_noreturn void exit(uint8_t arg0) {
+        \\    const size_t __temp_0 = (size_t)arg0;
+        \\    register size_t rax_constant __asm__("rax") = 231;
+        \\    register size_t rdi_constant __asm__("rdi") = __temp_0;
+        \\    __asm volatile ("syscall" :: ""(rax_constant), ""(rdi_constant));
+        \\    zig_unreachable();
+        \\}
+        \\
+    );
+    ctx.c("exit with u8 arithmetic inverted", linux_x64,
+        \\export fn _start() noreturn {
+        \\    exitMath(1);
+        \\}
+        \\
+        \\fn exitMath(a: u8) noreturn {
+        \\    exit(a + 0 - a);
+        \\}
+        \\
+        \\fn exit(code: u8) noreturn {
+        \\    asm volatile ("syscall"
+        \\        :
+        \\        : [number] "{rax}" (231),
+        \\          [arg1] "{rdi}" (code)
+        \\    );
+        \\    unreachable;
+        \\}
+        \\
+    ,
+        \\#include <stddef.h>
+        \\#include <stdint.h>
+        \\
+        \\zig_noreturn void exitMath(uint8_t arg0);
+        \\zig_noreturn void exit(uint8_t arg0);
+        \\
+        \\const char *const exit__anon_0 = "{rax}";
+        \\const char *const exit__anon_1 = "{rdi}";
+        \\const char *const exit__anon_2 = "syscall";
+        \\
+        \\zig_noreturn void _start(void) {
+        \\    exitMath(1);
+        \\}
+        \\
+        \\zig_noreturn void exitMath(uint8_t arg0) {
+        \\    const uint8_t __temp_0 = arg0 + 0;
+        \\    const uint8_t __temp_1 = __temp_0 - arg0;
+        \\    exit(__temp_1);
+        \\}
+        \\
+        \\zig_noreturn void exit(uint8_t arg0) {
+        \\    const size_t __temp_0 = (size_t)arg0;
+        \\    register size_t rax_constant __asm__("rax") = 231;
+        \\    register size_t rdi_constant __asm__("rdi") = __temp_0;
+        \\    __asm volatile ("syscall" :: ""(rax_constant), ""(rdi_constant));
+        \\    zig_unreachable();
+        \\}
+        \\
+    );
+    ctx.h("header with single param function", linux_x64,
+        \\export fn start(a: u8) void{}
+    ,
+        \\#include <stdint.h>
+        \\
+        \\void start(uint8_t arg0);
+        \\
+    );
+    ctx.h("header with multiple param function", linux_x64,
+        \\export fn start(a: u8, b: u8, c: u8) void{}
+    ,
+        \\#include <stdint.h>
+        \\
+        \\void start(uint8_t arg0, uint8_t arg1, uint8_t arg2);
+        \\
+    );
+    ctx.h("header with u32 param function", linux_x64,
+        \\export fn start(a: u32) void{}
+    ,
+        \\#include <stdint.h>
+        \\
+        \\void start(uint32_t arg0);
+        \\
+    );
+    ctx.h("header with usize param function", linux_x64,
+        \\export fn start(a: usize) void{}
+    ,
+        \\#include <stddef.h>
+        \\
+        \\void start(size_t arg0);
+        \\
+    );
+    ctx.h("header with bool param function", linux_x64,
+        \\export fn start(a: bool) void{}
+    ,
+        \\void start(bool arg0);
+        \\
+    );
+    ctx.h("header with noreturn function", linux_x64,
+        \\export fn start() noreturn {
+        \\    unreachable;
+        \\}
+    ,
+        \\zig_noreturn void start(void);
+        \\
+    );
+    ctx.h("header with multiple functions", linux_x64,
+        \\export fn a() void{}
+        \\export fn b() void{}
+        \\export fn c() void{}
+    ,
+        \\void a(void);
+        \\void b(void);
+        \\void c(void);
+        \\
+    );
+    ctx.h("header with multiple includes", linux_x64,
+        \\export fn start(a: u32, b: usize) void{}
+    ,
+        \\#include <stddef.h>
+        \\#include <stdint.h>
+        \\
+        \\void start(uint32_t arg0, size_t arg1);
         \\
     );
 }

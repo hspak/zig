@@ -36,7 +36,7 @@ pub fn main() anyerror!void {
         }
         std.testing.log_level = .warn;
 
-        var test_node = root_node.start(test_fn.name, null);
+        var test_node = root_node.start(test_fn.name, 0);
         test_node.activate();
         progress.refresh();
         if (progress.terminal == null) {
@@ -86,7 +86,7 @@ pub fn main() anyerror!void {
         std.debug.print("{} errors were logged.\n", .{log_err_count});
     }
     if (leaks != 0) {
-        std.debug.print("{} tests leaked memory.\n", .{ok_count});
+        std.debug.print("{} tests leaked memory.\n", .{leaks});
     }
     if (leaks != 0 or log_err_count != 0) {
         std.process.exit(1);

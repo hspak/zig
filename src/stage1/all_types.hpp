@@ -18,11 +18,6 @@
 #include "target.hpp"
 #include "tokenizer.hpp"
 
-#ifndef NDEBUG
-#define DBG_MACRO_NO_WARNING
-#include <dbg.h>
-#endif
-
 struct AstNode;
 struct ZigFn;
 struct Scope;
@@ -77,7 +72,6 @@ enum PtrLen {
 enum CallingConvention {
     CallingConventionUnspecified,
     CallingConventionC,
-    CallingConventionCold,
     CallingConventionNaked,
     CallingConventionAsync,
     CallingConventionInterrupt,
@@ -344,9 +338,22 @@ struct ConstArgTuple {
 };
 
 enum ConstValSpecial {
+    // The value is only available at runtime. However there may be runtime hints
+    // narrowing the possible values down via the `data.rh_*` fields.
     ConstValSpecialRuntime,
+    // The value is comptime-known and resolved. The `data.x_*` fields can be
+    // accessed.
     ConstValSpecialStatic,
+    // The value is comptime-known to be `undefined`.
     ConstValSpecialUndef,
+    // The value is comptime-known, but not yet resolved. The lazy value system
+    // helps avoid dependency loops by providing answers to certain questions
+    // about values without forcing them to be resolved. For example, the
+    // equation `@sizeOf(Foo) == 0` can be resolved without forcing the struct
+    // layout of `Foo` because we can know whether `Foo` is zero bits without
+    // performing field layout.
+    // A `ZigValue` can be converted from Lazy to Static/Undef by calling the
+    // appropriate resolve function.
     ConstValSpecialLazy,
 };
 
@@ -490,6 +497,8 @@ struct LazyValueErrUnionType {
 
 struct ZigValue {
     ZigType *type;
+    // This field determines how the value is stored. It must be checked
+    // before accessing the `data` union.
     ConstValSpecial special;
     uint32_t llvm_align;
     ConstParent parent;
@@ -809,7 +818,6 @@ enum BinOpType {
     BinOpTypeAssignBitAnd,
     BinOpTypeAssignBitXor,
     BinOpTypeAssignBitOr,
-    BinOpTypeAssignMergeErrorSets,
     BinOpTypeBoolOr,
     BinOpTypeBoolAnd,
     BinOpTypeCmpEq,
@@ -1059,6 +1067,7 @@ enum ContainerKind {
     ContainerKindStruct,
     ContainerKindEnum,
     ContainerKindUnion,
+    ContainerKindOpaque,
 };
 
 enum ContainerLayout {
@@ -1456,6 +1465,7 @@ struct ZigTypeEnum {
     ContainerLayout layout;
     ResolveStatus resolve_status;
 
+    bool has_explicit_tag_type;
     bool non_exhaustive;
     bool resolve_loop_flag;
 };
@@ -1575,7 +1585,10 @@ enum OnePossibleValue {
 };
 
 struct ZigTypeOpaque {
+    AstNode *decl_node;
     Buf *bare_name;
+
+    ScopeDecls *decls_scope;
 };
 
 struct ZigTypeFnFrame {
@@ -1809,6 +1822,7 @@ enum BuiltinFnId {
     BuiltinFnIdThis,
     BuiltinFnIdSetAlignStack,
     BuiltinFnIdExport,
+    BuiltinFnIdExtern,
     BuiltinFnIdErrorReturnTrace,
     BuiltinFnIdAtomicRmw,
     BuiltinFnIdAtomicLoad,
@@ -1825,6 +1839,7 @@ enum BuiltinFnId {
     BuiltinFnIdWasmMemorySize,
     BuiltinFnIdWasmMemoryGrow,
     BuiltinFnIdSrc,
+    BuiltinFnIdReduce,
 };
 
 struct BuiltinFnEntry {
@@ -2176,12 +2191,14 @@ struct CodeGen {
     bool is_test_build;
     bool is_single_threaded;
     bool have_pic;
+    bool have_pie;
     bool link_mode_dynamic;
     bool dll_export_fns;
     bool have_stack_probing;
     bool function_sections;
     bool test_is_evented;
     bool valgrind_enabled;
+    bool tsan_enabled;
 
     Buf *root_out_name;
     Buf *test_filter;
@@ -2440,6 +2457,17 @@ enum AtomicOrder {
     AtomicOrderSeqCst,
 };
 
+// synchronized with code in define_builtin_compile_vars
+enum ReduceOp {
+    ReduceOp_and,
+    ReduceOp_or,
+    ReduceOp_xor,
+    ReduceOp_min,
+    ReduceOp_max,
+    ReduceOp_add,
+    ReduceOp_mul,
+};
+
 // synchronized with the code in define_builtin_compile_vars
 enum AtomicRmwOp {
     AtomicRmwOp_xchg,
@@ -2549,6 +2577,7 @@ enum IrInstSrcId {
     IrInstSrcIdEmbedFile,
     IrInstSrcIdCmpxchg,
     IrInstSrcIdFence,
+    IrInstSrcIdReduce,
     IrInstSrcIdTruncate,
     IrInstSrcIdIntCast,
     IrInstSrcIdFloatCast,
@@ -2607,6 +2636,7 @@ enum IrInstSrcId {
     IrInstSrcIdSetAlignStack,
     IrInstSrcIdArgType,
     IrInstSrcIdExport,
+    IrInstSrcIdExtern,
     IrInstSrcIdErrorReturnTrace,
     IrInstSrcIdErrorUnion,
     IrInstSrcIdAtomicRmw,
@@ -2643,7 +2673,6 @@ enum IrInstGenId {
     IrInstGenIdPhi,
     IrInstGenIdBinaryNot,
     IrInstGenIdNegation,
-    IrInstGenIdNegationWrapping,
     IrInstGenIdBinOp,
     IrInstGenIdLoadPtr,
     IrInstGenIdStorePtr,
@@ -2671,6 +2700,7 @@ enum IrInstGenId {
     IrInstGenIdErrName,
     IrInstGenIdCmpxchg,
     IrInstGenIdFence,
+    IrInstGenIdReduce,
     IrInstGenIdTruncate,
     IrInstGenIdShuffleVector,
     IrInstGenIdSplat,
@@ -2724,6 +2754,7 @@ enum IrInstGenId {
     IrInstGenIdConst,
     IrInstGenIdWasmMemorySize,
     IrInstGenIdWasmMemoryGrow,
+    IrInstGenIdExtern,
 };
 
 // Common fields between IrInstSrc and IrInstGen. This allows future passes
@@ -2921,11 +2952,7 @@ struct IrInstGenBinaryNot {
 struct IrInstGenNegation {
     IrInstGen base;
     IrInstGen *operand;
-};
-
-struct IrInstGenNegationWrapping {
-    IrInstGen base;
-    IrInstGen *operand;
+    bool wrapping;
 };
 
 enum IrBinOp {
@@ -3518,6 +3545,20 @@ struct IrInstGenFence {
     IrInstGen base;
 
     AtomicOrder order;
+};
+
+struct IrInstSrcReduce {
+    IrInstSrc base;
+
+    IrInstSrc *op;
+    IrInstSrc *value;
+};
+
+struct IrInstGenReduce {
+    IrInstGen base;
+
+    ReduceOp op;
+    IrInstGen *value;
 };
 
 struct IrInstSrcTruncate {
@@ -4122,6 +4163,21 @@ struct IrInstSrcExport {
 
     IrInstSrc *target;
     IrInstSrc *options;
+};
+
+struct IrInstSrcExtern {
+    IrInstSrc base;
+
+    IrInstSrc *type;
+    IrInstSrc *options;
+};
+
+struct IrInstGenExtern {
+    IrInstGen base;
+
+    Buf *name;
+    GlobalLinkageId linkage;
+    bool is_thread_local;
 };
 
 enum IrInstErrorReturnTraceOptional {

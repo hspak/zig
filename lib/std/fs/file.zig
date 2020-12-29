@@ -394,7 +394,7 @@ pub const File = struct {
         var array_list = try std.ArrayListAligned(u8, alignment).initCapacity(allocator, initial_cap);
         defer array_list.deinit();
 
-        self.reader().readAllArrayList(&array_list, max_bytes) catch |err| switch (err) {
+        self.reader().readAllArrayListAligned(alignment, &array_list, max_bytes) catch |err| switch (err) {
             error.StreamTooLong => return error.FileTooBig,
             else => |e| return e,
         };
@@ -615,7 +615,7 @@ pub const File = struct {
         }
     }
 
-    pub fn pwritev(self: File, iovecs: []os.iovec_const, offset: usize) PWriteError!usize {
+    pub fn pwritev(self: File, iovecs: []os.iovec_const, offset: u64) PWriteError!usize {
         if (is_windows) {
             // TODO improve this to use WriteFileScatter
             if (iovecs.len == 0) return @as(usize, 0);
@@ -632,11 +632,11 @@ pub const File = struct {
 
     /// The `iovecs` parameter is mutable because this function needs to mutate the fields in
     /// order to handle partial writes from the underlying OS layer.
-    pub fn pwritevAll(self: File, iovecs: []os.iovec_const, offset: usize) PWriteError!void {
+    pub fn pwritevAll(self: File, iovecs: []os.iovec_const, offset: u64) PWriteError!void {
         if (iovecs.len == 0) return;
 
         var i: usize = 0;
-        var off: usize = 0;
+        var off: u64 = 0;
         while (true) {
             var amt = try self.pwritev(iovecs[i..], offset + off);
             off += amt;
@@ -652,14 +652,16 @@ pub const File = struct {
 
     pub const CopyRangeError = os.CopyFileRangeError;
 
-    pub fn copyRange(in: File, in_offset: u64, out: File, out_offset: u64, len: usize) CopyRangeError!usize {
-        return os.copy_file_range(in.handle, in_offset, out.handle, out_offset, len, 0);
+    pub fn copyRange(in: File, in_offset: u64, out: File, out_offset: u64, len: u64) CopyRangeError!u64 {
+        const adjusted_len = math.cast(usize, len) catch math.maxInt(usize);
+        const result = try os.copy_file_range(in.handle, in_offset, out.handle, out_offset, adjusted_len, 0);
+        return result;
     }
 
     /// Returns the number of bytes copied. If the number read is smaller than `buffer.len`, it
     /// means the in file reached the end. Reaching the end of a file is not an error condition.
-    pub fn copyRangeAll(in: File, in_offset: u64, out: File, out_offset: u64, len: usize) CopyRangeError!usize {
-        var total_bytes_copied: usize = 0;
+    pub fn copyRangeAll(in: File, in_offset: u64, out: File, out_offset: u64, len: u64) CopyRangeError!u64 {
+        var total_bytes_copied: u64 = 0;
         var in_off = in_offset;
         var out_off = out_offset;
         while (total_bytes_copied < len) {
@@ -688,10 +690,56 @@ pub const File = struct {
         header_count: usize = 0,
     };
 
-    pub const WriteFileError = os.SendFileError;
+    pub const WriteFileError = ReadError || WriteError;
 
-    /// TODO integrate with async I/O
     pub fn writeFileAll(self: File, in_file: File, args: WriteFileOptions) WriteFileError!void {
+        return self.writeFileAllSendfile(in_file, args) catch |err| switch (err) {
+            error.Unseekable,
+            error.FastOpenAlreadyInProgress,
+            error.MessageTooBig,
+            error.FileDescriptorNotASocket,
+            error.NetworkUnreachable,
+            error.NetworkSubsystemFailed,
+            => return self.writeFileAllUnseekable(in_file, args),
+
+            else => |e| return e,
+        };
+    }
+
+    /// Does not try seeking in either of the File parameters.
+    /// See `writeFileAll` as an alternative to calling this.
+    pub fn writeFileAllUnseekable(self: File, in_file: File, args: WriteFileOptions) WriteFileError!void {
+        const headers = args.headers_and_trailers[0..args.header_count];
+        const trailers = args.headers_and_trailers[args.header_count..];
+
+        try self.writevAll(headers);
+
+        var buffer: [4096]u8 = undefined;
+        {
+            var index: usize = 0;
+            // Skip in_offset bytes.
+            while (index < args.in_offset) {
+                const ask = math.min(buffer.len, args.in_offset - index);
+                const amt = try in_file.read(buffer[0..ask]);
+                index += amt;
+            }
+        }
+        const in_len = args.in_len orelse math.maxInt(u64);
+        var index: usize = 0;
+        while (index < in_len) {
+            const ask = math.min(buffer.len, in_len - index);
+            const amt = try in_file.read(buffer[0..ask]);
+            if (amt == 0) break;
+            index += try self.write(buffer[0..amt]);
+        }
+
+        try self.writevAll(trailers);
+    }
+
+    /// Low level function which can fail for OS-specific reasons.
+    /// See `writeFileAll` as an alternative to calling this.
+    /// TODO integrate with async I/O
+    fn writeFileAllSendfile(self: File, in_file: File, args: WriteFileOptions) os.SendFileError!void {
         const count = blk: {
             if (args.in_len) |l| {
                 if (l == 0) {

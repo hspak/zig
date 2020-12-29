@@ -234,7 +234,7 @@ const test_targets = blk: {
         TestTarget{
             .target = .{
                 .cpu_arch = .x86_64,
-                .os_tag = .macosx,
+                .os_tag = .macos,
                 .abi = .gnu,
             },
             // https://github.com/ziglang/zig/issues/3295
@@ -434,13 +434,18 @@ pub fn addTranslateCTests(b: *build.Builder, test_filter: ?[]const u8) *build.St
     return cases.step;
 }
 
-pub fn addRunTranslatedCTests(b: *build.Builder, test_filter: ?[]const u8) *build.Step {
+pub fn addRunTranslatedCTests(
+    b: *build.Builder,
+    test_filter: ?[]const u8,
+    target: std.zig.CrossTarget,
+) *build.Step {
     const cases = b.allocator.create(RunTranslatedCContext) catch unreachable;
     cases.* = .{
         .b = b,
         .step = b.step("test-run-translated-c", "Run the Run-Translated-C tests"),
         .test_index = 0,
         .test_filter = test_filter,
+        .target = target,
     };
 
     run_translated_c.addCases(cases);

@@ -271,7 +271,6 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
                 try lib_path(comp, arena, lib_libc_glibc ++ "include" ++ path.sep_str ++ "libc-symbols.h"),
                 "-DTOP_NAMESPACE=glibc",
                 "-DASSEMBLER",
-                "-g",
                 "-Wa,--noexecstack",
             });
             return comp.build_crt_file("crti", .Obj, &[1]Compilation.CSourceFile{
@@ -287,9 +286,10 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
             try args.appendSlice(&[_][]const u8{
                 "-D_LIBC_REENTRANT",
                 "-DMODULE_NAME=libc",
+                "-include",
+                try lib_path(comp, arena, lib_libc_glibc ++ "include" ++ path.sep_str ++ "libc-symbols.h"),
                 "-DTOP_NAMESPACE=glibc",
                 "-DASSEMBLER",
-                "-g",
                 "-Wa,--noexecstack",
             });
             return comp.build_crt_file("crtn", .Obj, &[1]Compilation.CSourceFile{
@@ -315,7 +315,6 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
                     "-DSHARED",
                     "-DTOP_NAMESPACE=glibc",
                     "-DASSEMBLER",
-                    "-g",
                     "-Wa,--noexecstack",
                 });
                 break :blk .{
@@ -335,7 +334,6 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
                     "-DMODULE_NAME=libc",
                     "-DTOP_NAMESPACE=glibc",
                     "-DASSEMBLER",
-                    "-g",
                     "-Wa,--noexecstack",
                 });
                 break :blk .{
@@ -370,8 +368,6 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
                 try args.appendSlice(&[_][]const u8{
                     "-std=gnu11",
                     "-fgnu89-inline",
-                    "-g",
-                    "-O2",
                     "-fmerge-all-constants",
                     "-fno-stack-protector",
                     "-fmath-errno",
@@ -407,8 +403,6 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
                 try args.appendSlice(&[_][]const u8{
                     "-std=gnu11",
                     "-fgnu89-inline",
-                    "-g",
-                    "-O2",
                     "-fmerge-all-constants",
                     "-fno-stack-protector",
                     "-fmath-errno",
@@ -689,9 +683,6 @@ pub const BuiltSharedObjects = struct {
 
 const all_map_basename = "all.map";
 
-// TODO Turn back on zig fmt when https://github.com/ziglang/zig/issues/5948 is implemented.
-// zig fmt: off
-
 pub fn buildSharedObjects(comp: *Compilation) !void {
     const tracy = trace(@src());
     defer tracy.end();
@@ -814,7 +805,7 @@ pub fn buildSharedObjects(comp: *Compilation) !void {
                     while (ver_i < ver_list.len) : (ver_i += 1) {
                         // Example:
                         // .globl _Exit_2_2_5
-                        // .type _Exit_2_2_5, @function;
+                        // .type _Exit_2_2_5, %function;
                         // .symver _Exit_2_2_5, _Exit@@GLIBC_2.2.5
                         // .hidden _Exit_2_2_5
                         // _Exit_2_2_5:
@@ -827,12 +818,13 @@ pub fn buildSharedObjects(comp: *Compilation) !void {
 
                         if (ver.patch == 0) {
                             const sym_plus_ver = try std.fmt.allocPrint(
-                                arena, "{s}_{d}_{d}",
-                                .{sym_name, ver.major, ver.minor},
+                                arena,
+                                "{s}_{d}_{d}",
+                                .{ sym_name, ver.major, ver.minor },
                             );
                             try zig_body.writer().print(
                                 \\.globl {s}
-                                \\.type {s}, @function;
+                                \\.type {s}, %function;
                                 \\.symver {s}, {s}{s}GLIBC_{d}.{d}
                                 \\.hidden {s}
                                 \\{s}:
@@ -840,17 +832,23 @@ pub fn buildSharedObjects(comp: *Compilation) !void {
                             , .{
                                 sym_plus_ver,
                                 sym_plus_ver,
-                                sym_plus_ver, sym_name, at_sign_str, ver.major, ver.minor,
+                                sym_plus_ver,
+                                sym_name,
+                                at_sign_str,
+                                ver.major,
+                                ver.minor,
                                 sym_plus_ver,
                                 sym_plus_ver,
                             });
                         } else {
-                            const sym_plus_ver = try std.fmt.allocPrint(arena, "{s}_{d}_{d}_{d}",
-                                .{sym_name, ver.major, ver.minor, ver.patch},
+                            const sym_plus_ver = try std.fmt.allocPrint(
+                                arena,
+                                "{s}_{d}_{d}_{d}",
+                                .{ sym_name, ver.major, ver.minor, ver.patch },
                             );
                             try zig_body.writer().print(
                                 \\.globl {s}
-                                \\.type {s}, @function;
+                                \\.type {s}, %function;
                                 \\.symver {s}, {s}{s}GLIBC_{d}.{d}.{d}
                                 \\.hidden {s}
                                 \\{s}:
@@ -858,7 +856,12 @@ pub fn buildSharedObjects(comp: *Compilation) !void {
                             , .{
                                 sym_plus_ver,
                                 sym_plus_ver,
-                                sym_plus_ver, sym_name, at_sign_str, ver.major, ver.minor, ver.patch,
+                                sym_plus_ver,
+                                sym_name,
+                                at_sign_str,
+                                ver.major,
+                                ver.minor,
+                                ver.patch,
                                 sym_plus_ver,
                                 sym_plus_ver,
                             });
@@ -902,13 +905,14 @@ fn buildSharedLib(
     const tracy = trace(@src());
     defer tracy.end();
 
+    const basename = try std.fmt.allocPrint(arena, "lib{s}.so.{d}", .{ lib.name, lib.sover });
     const emit_bin = Compilation.EmitLoc{
         .directory = bin_directory,
-        .basename = try std.fmt.allocPrint(arena, "lib{s}.so.{d}", .{ lib.name, lib.sover }),
+        .basename = basename,
     };
     const version: std.builtin.Version = .{ .major = lib.sover, .minor = 0, .patch = 0 };
     const ld_basename = path.basename(comp.getTarget().standardDynamicLinkerPath().get().?);
-    const override_soname = if (mem.eql(u8, lib.name, "ld")) ld_basename else null;
+    const soname = if (mem.eql(u8, lib.name, "ld")) ld_basename else basename;
     const map_file_path = try path.join(arena, &[_][]const u8{ bin_directory.path.?, all_map_basename });
     const c_source_files = [1]Compilation.CSourceFile{
         .{
@@ -924,16 +928,18 @@ fn buildSharedLib(
         .root_pkg = null,
         .output_mode = .Lib,
         .link_mode = .Dynamic,
-        .rand = comp.rand,
+        .thread_pool = comp.thread_pool,
         .libc_installation = comp.bin_file.options.libc_installation,
         .emit_bin = emit_bin,
-        .optimize_mode = comp.bin_file.options.optimize_mode,
+        .optimize_mode = comp.compilerRtOptMode(),
         .want_sanitize_c = false,
         .want_stack_check = false,
         .want_valgrind = false,
+        .want_tsan = false,
         .emit_h = null,
-        .strip = comp.bin_file.options.strip,
+        .strip = comp.compilerRtStrip(),
         .is_native_os = false,
+        .is_native_abi = false,
         .self_exe_path = comp.self_exe_path,
         .verbose_cc = comp.verbose_cc,
         .verbose_link = comp.bin_file.options.verbose_link,
@@ -946,9 +952,9 @@ fn buildSharedLib(
         .clang_passthrough_mode = comp.clang_passthrough_mode,
         .version = version,
         .version_script = map_file_path,
-        .override_soname = override_soname,
+        .soname = soname,
         .c_source_files = &c_source_files,
-        .is_compiler_rt_or_libc = true,
+        .skip_linker_dependencies = true,
     });
     defer sub_compilation.destroy();
 

@@ -27,7 +27,9 @@ const Decl = Module.Decl;
 pub fn analyzeInst(mod: *Module, scope: *Scope, old_inst: *zir.Inst) InnerError!*Inst {
     switch (old_inst.tag) {
         .alloc => return analyzeInstAlloc(mod, scope, old_inst.castTag(.alloc).?),
+        .alloc_mut => return analyzeInstAllocMut(mod, scope, old_inst.castTag(.alloc_mut).?),
         .alloc_inferred => return analyzeInstAllocInferred(mod, scope, old_inst.castTag(.alloc_inferred).?),
+        .alloc_inferred_mut => return analyzeInstAllocInferredMut(mod, scope, old_inst.castTag(.alloc_inferred_mut).?),
         .arg => return analyzeInstArg(mod, scope, old_inst.castTag(.arg).?),
         .bitcast_ref => return analyzeInstBitCastRef(mod, scope, old_inst.castTag(.bitcast_ref).?),
         .bitcast_result_ptr => return analyzeInstBitCastResultPtr(mod, scope, old_inst.castTag(.bitcast_result_ptr).?),
@@ -118,6 +120,7 @@ pub fn analyzeInst(mod: *Module, scope: *Scope, old_inst: *zir.Inst) InnerError!
         .iserr => return analyzeInstIsErr(mod, scope, old_inst.castTag(.iserr).?),
         .boolnot => return analyzeInstBoolNot(mod, scope, old_inst.castTag(.boolnot).?),
         .typeof => return analyzeInstTypeOf(mod, scope, old_inst.castTag(.typeof).?),
+        .typeof_peer => return analyzeInstTypeOfPeer(mod, scope, old_inst.castTag(.typeof_peer).?),
         .optional_type => return analyzeInstOptionalType(mod, scope, old_inst.castTag(.optional_type).?),
         .unwrap_optional_safe => return analyzeInstUnwrapOptional(mod, scope, old_inst.castTag(.unwrap_optional_safe).?, true),
         .unwrap_optional_unsafe => return analyzeInstUnwrapOptional(mod, scope, old_inst.castTag(.unwrap_optional_unsafe).?, false),
@@ -134,6 +137,11 @@ pub fn analyzeInst(mod: *Module, scope: *Scope, old_inst: *zir.Inst) InnerError!
         .error_set => return analyzeInstErrorSet(mod, scope, old_inst.castTag(.error_set).?),
         .slice => return analyzeInstSlice(mod, scope, old_inst.castTag(.slice).?),
         .slice_start => return analyzeInstSliceStart(mod, scope, old_inst.castTag(.slice_start).?),
+        .import => return analyzeInstImport(mod, scope, old_inst.castTag(.import).?),
+        .switchbr => return analyzeInstSwitchBr(mod, scope, old_inst.castTag(.switchbr).?),
+        .switch_range => return analyzeInstSwitchRange(mod, scope, old_inst.castTag(.switch_range).?),
+        .booland => return analyzeInstBoolOp(mod, scope, old_inst.castTag(.booland).?),
+        .boolor => return analyzeInstBoolOp(mod, scope, old_inst.castTag(.boolor).?),
     }
 }
 
@@ -403,7 +411,13 @@ fn analyzeInstEnsureIndexable(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp)
 
 fn analyzeInstAlloc(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp) InnerError!*Inst {
     const var_type = try resolveType(mod, scope, inst.positionals.operand);
-    // TODO this should happen only for var allocs
+    const ptr_type = try mod.simplePtrType(scope, inst.base.src, var_type, true, .One);
+    const b = try mod.requireRuntimeBlock(scope, inst.base.src);
+    return mod.addNoOp(b, inst.base.src, ptr_type, .alloc);
+}
+
+fn analyzeInstAllocMut(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp) InnerError!*Inst {
+    const var_type = try resolveType(mod, scope, inst.positionals.operand);
     if (!var_type.isValidVarType(false)) {
         return mod.fail(scope, inst.base.src, "variable of type '{}' must be const or comptime", .{var_type});
     }
@@ -414,6 +428,10 @@ fn analyzeInstAlloc(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp) InnerErro
 
 fn analyzeInstAllocInferred(mod: *Module, scope: *Scope, inst: *zir.Inst.NoOp) InnerError!*Inst {
     return mod.fail(scope, inst.base.src, "TODO implement analyzeInstAllocInferred", .{});
+}
+
+fn analyzeInstAllocInferredMut(mod: *Module, scope: *Scope, inst: *zir.Inst.NoOp) InnerError!*Inst {
+    return mod.fail(scope, inst.base.src, "TODO implement analyzeInstAllocInferredMut", .{});
 }
 
 fn analyzeInstStore(mod: *Module, scope: *Scope, inst: *zir.Inst.BinOp) InnerError!*Inst {
@@ -479,8 +497,9 @@ fn analyzeInstExport(mod: *Module, scope: *Scope, export_inst: *zir.Inst.Export)
     return mod.constVoid(scope, export_inst.base.src);
 }
 
-fn analyzeInstCompileError(mod: *Module, scope: *Scope, inst: *zir.Inst.CompileError) InnerError!*Inst {
-    return mod.fail(scope, inst.base.src, "{}", .{inst.positionals.msg});
+fn analyzeInstCompileError(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp) InnerError!*Inst {
+    const msg = try resolveConstString(mod, scope, inst.positionals.operand);
+    return mod.fail(scope, inst.base.src, "{}", .{msg});
 }
 
 fn analyzeInstArg(mod: *Module, scope: *Scope, inst: *zir.Inst.Arg) InnerError!*Inst {
@@ -550,10 +569,13 @@ fn analyzeInstBlockFlat(mod: *Module, scope: *Scope, inst: *zir.Inst.Block, is_c
 
     try analyzeBody(mod, &child_block.base, inst.positionals.body);
 
-    const copied_instructions = try parent_block.arena.dupe(*Inst, child_block.instructions.items);
-    try parent_block.instructions.appendSlice(mod.gpa, copied_instructions);
+    try parent_block.instructions.appendSlice(mod.gpa, child_block.instructions.items);
 
-    return copied_instructions[copied_instructions.len - 1];
+    // comptime blocks won't generate any runtime values
+    if (child_block.instructions.items.len == 0)
+        return mod.constVoid(scope, inst.base.src);
+
+    return parent_block.instructions.items[parent_block.instructions.items.len - 1];
 }
 
 fn analyzeInstBlock(mod: *Module, scope: *Scope, inst: *zir.Inst.Block, is_comptime: bool) InnerError!*Inst {
@@ -1047,6 +1069,19 @@ fn analyzeInstFieldPtr(mod: *Module, scope: *Scope, fieldptr: *zir.Inst.FieldPtr
                         .val = Value.initPayload(&ref_payload.base),
                     });
                 },
+                .Struct => {
+                    const container_scope = child_type.getContainerScope();
+                    if (mod.lookupDeclName(&container_scope.base, field_name)) |decl| {
+                        // TODO if !decl.is_pub and inDifferentFiles() "{} is private"
+                        return mod.analyzeDeclRef(scope, fieldptr.base.src, decl);
+                    }
+
+                    if (&container_scope.file_scope.base == mod.root_scope) {
+                        return mod.fail(scope, fieldptr.base.src, "root source file has no member called '{}'", .{field_name});
+                    } else {
+                        return mod.fail(scope, fieldptr.base.src, "container '{}' has no member called '{}'", .{ child_type, field_name });
+                    }
+                },
                 else => return mod.fail(scope, fieldptr.base.src, "type '{}' does not support field access", .{child_type}),
             }
         },
@@ -1190,6 +1225,244 @@ fn analyzeInstSliceStart(mod: *Module, scope: *Scope, inst: *zir.Inst.BinOp) Inn
     return mod.analyzeSlice(scope, inst.base.src, array_ptr, start, null, null);
 }
 
+fn analyzeInstSwitchRange(mod: *Module, scope: *Scope, inst: *zir.Inst.BinOp) InnerError!*Inst {
+    const start = try resolveInst(mod, scope, inst.positionals.lhs);
+    const end = try resolveInst(mod, scope, inst.positionals.rhs);
+
+    switch (start.ty.zigTypeTag()) {
+        .Int, .ComptimeInt => {},
+        else => return mod.constVoid(scope, inst.base.src),
+    }
+    switch (end.ty.zigTypeTag()) {
+        .Int, .ComptimeInt => {},
+        else => return mod.constVoid(scope, inst.base.src),
+    }
+    if (start.value()) |start_val| {
+        if (end.value()) |end_val| {
+            if (start_val.compare(.gte, end_val)) {
+                return mod.fail(scope, inst.base.src, "range start value must be smaller than the end value", .{});
+            }
+        }
+    }
+    return mod.constVoid(scope, inst.base.src);
+}
+
+fn analyzeInstSwitchBr(mod: *Module, scope: *Scope, inst: *zir.Inst.SwitchBr) InnerError!*Inst {
+    const target_ptr = try resolveInst(mod, scope, inst.positionals.target_ptr);
+    const target = try mod.analyzeDeref(scope, inst.base.src, target_ptr, inst.positionals.target_ptr.src);
+    try validateSwitch(mod, scope, target, inst);
+
+    if (try mod.resolveDefinedValue(scope, target)) |target_val| {
+        for (inst.positionals.cases) |case| {
+            const resolved = try resolveInst(mod, scope, case.item);
+            const casted = try mod.coerce(scope, target.ty, resolved);
+            const item = try mod.resolveConstValue(scope, casted);
+
+            if (target_val.eql(item)) {
+                try analyzeBody(mod, scope, case.body);
+                return mod.constNoReturn(scope, inst.base.src);
+            }
+        }
+        try analyzeBody(mod, scope, inst.positionals.else_body);
+        return mod.constNoReturn(scope, inst.base.src);
+    }
+
+    if (inst.positionals.cases.len == 0) {
+        // no cases just analyze else_branch
+        try analyzeBody(mod, scope, inst.positionals.else_body);
+        return mod.constNoReturn(scope, inst.base.src);
+    }
+
+    const parent_block = try mod.requireRuntimeBlock(scope, inst.base.src);
+    const cases = try parent_block.arena.alloc(Inst.SwitchBr.Case, inst.positionals.cases.len);
+
+    var case_block: Scope.Block = .{
+        .parent = parent_block,
+        .func = parent_block.func,
+        .decl = parent_block.decl,
+        .instructions = .{},
+        .arena = parent_block.arena,
+        .is_comptime = parent_block.is_comptime,
+    };
+    defer case_block.instructions.deinit(mod.gpa);
+
+    for (inst.positionals.cases) |case, i| {
+        // Reset without freeing.
+        case_block.instructions.items.len = 0;
+
+        const resolved = try resolveInst(mod, scope, case.item);
+        const casted = try mod.coerce(scope, target.ty, resolved);
+        const item = try mod.resolveConstValue(scope, casted);
+
+        try analyzeBody(mod, &case_block.base, case.body);
+
+        cases[i] = .{
+            .item = item,
+            .body = .{ .instructions = try parent_block.arena.dupe(*Inst, case_block.instructions.items) },
+        };
+    }
+
+    case_block.instructions.items.len = 0;
+    try analyzeBody(mod, &case_block.base, inst.positionals.else_body);
+
+    const else_body: ir.Body = .{
+        .instructions = try parent_block.arena.dupe(*Inst, case_block.instructions.items),
+    };
+
+    return mod.addSwitchBr(parent_block, inst.base.src, target_ptr, cases, else_body);
+}
+
+fn validateSwitch(mod: *Module, scope: *Scope, target: *Inst, inst: *zir.Inst.SwitchBr) InnerError!void {
+    // validate usage of '_' prongs
+    if (inst.kw_args.special_prong == .underscore and target.ty.zigTypeTag() != .Enum) {
+        return mod.fail(scope, inst.base.src, "'_' prong only allowed when switching on non-exhaustive enums", .{});
+        // TODO notes "'_' prong here" inst.positionals.cases[last].src
+    }
+
+    // check that target type supports ranges
+    if (inst.kw_args.range) |range_inst| {
+        switch (target.ty.zigTypeTag()) {
+            .Int, .ComptimeInt => {},
+            else => {
+                return mod.fail(scope, target.src, "ranges not allowed when switching on type {}", .{target.ty});
+                // TODO notes "range used here" range_inst.src
+            },
+        }
+    }
+
+    // validate for duplicate items/missing else prong
+    switch (target.ty.zigTypeTag()) {
+        .Enum => return mod.fail(scope, inst.base.src, "TODO validateSwitch .Enum", .{}),
+        .ErrorSet => return mod.fail(scope, inst.base.src, "TODO validateSwitch .ErrorSet", .{}),
+        .Union => return mod.fail(scope, inst.base.src, "TODO validateSwitch .Union", .{}),
+        .Int, .ComptimeInt => {
+            var range_set = @import("RangeSet.zig").init(mod.gpa);
+            defer range_set.deinit();
+
+            for (inst.positionals.items) |item| {
+                const maybe_src = if (item.castTag(.switch_range)) |range| blk: {
+                    const start_resolved = try resolveInst(mod, scope, range.positionals.lhs);
+                    const start_casted = try mod.coerce(scope, target.ty, start_resolved);
+                    const end_resolved = try resolveInst(mod, scope, range.positionals.rhs);
+                    const end_casted = try mod.coerce(scope, target.ty, end_resolved);
+
+                    break :blk try range_set.add(
+                        try mod.resolveConstValue(scope, start_casted),
+                        try mod.resolveConstValue(scope, end_casted),
+                        item.src,
+                    );
+                } else blk: {
+                    const resolved = try resolveInst(mod, scope, item);
+                    const casted = try mod.coerce(scope, target.ty, resolved);
+                    const value = try mod.resolveConstValue(scope, casted);
+                    break :blk try range_set.add(value, value, item.src);
+                };
+
+                if (maybe_src) |previous_src| {
+                    return mod.fail(scope, item.src, "duplicate switch value", .{});
+                    // TODO notes "previous value is here" previous_src
+                }
+            }
+
+            if (target.ty.zigTypeTag() == .Int) {
+                var arena = std.heap.ArenaAllocator.init(mod.gpa);
+                defer arena.deinit();
+
+                const start = try target.ty.minInt(&arena, mod.getTarget());
+                const end = try target.ty.maxInt(&arena, mod.getTarget());
+                if (try range_set.spans(start, end)) {
+                    if (inst.kw_args.special_prong == .@"else") {
+                        return mod.fail(scope, inst.base.src, "unreachable else prong, all cases already handled", .{});
+                    }
+                    return;
+                }
+            }
+
+            if (inst.kw_args.special_prong != .@"else") {
+                return mod.fail(scope, inst.base.src, "switch must handle all possibilities", .{});
+            }
+        },
+        .Bool => {
+            var true_count: u8 = 0;
+            var false_count: u8 = 0;
+            for (inst.positionals.items) |item| {
+                const resolved = try resolveInst(mod, scope, item);
+                const casted = try mod.coerce(scope, Type.initTag(.bool), resolved);
+                if ((try mod.resolveConstValue(scope, casted)).toBool()) {
+                    true_count += 1;
+                } else {
+                    false_count += 1;
+                }
+
+                if (true_count + false_count > 2) {
+                    return mod.fail(scope, item.src, "duplicate switch value", .{});
+                }
+            }
+            if ((true_count + false_count < 2) and inst.kw_args.special_prong != .@"else") {
+                return mod.fail(scope, inst.base.src, "switch must handle all possibilities", .{});
+            }
+            if ((true_count + false_count == 2) and inst.kw_args.special_prong == .@"else") {
+                return mod.fail(scope, inst.base.src, "unreachable else prong, all cases already handled", .{});
+            }
+        },
+        .EnumLiteral, .Void, .Fn, .Pointer, .Type => {
+            if (inst.kw_args.special_prong != .@"else") {
+                return mod.fail(scope, inst.base.src, "else prong required when switching on type '{}'", .{target.ty});
+            }
+
+            var seen_values = std.HashMap(Value, usize, Value.hash, Value.eql, std.hash_map.DefaultMaxLoadPercentage).init(mod.gpa);
+            defer seen_values.deinit();
+
+            for (inst.positionals.items) |item| {
+                const resolved = try resolveInst(mod, scope, item);
+                const casted = try mod.coerce(scope, target.ty, resolved);
+                const val = try mod.resolveConstValue(scope, casted);
+
+                if (try seen_values.fetchPut(val, item.src)) |prev| {
+                    return mod.fail(scope, item.src, "duplicate switch value", .{});
+                    // TODO notes "previous value here" prev.value
+                }
+            }
+        },
+
+        .ErrorUnion,
+        .NoReturn,
+        .Array,
+        .Struct,
+        .Undefined,
+        .Null,
+        .Optional,
+        .BoundFn,
+        .Opaque,
+        .Vector,
+        .Frame,
+        .AnyFrame,
+        .ComptimeFloat,
+        .Float,
+        => {
+            return mod.fail(scope, target.src, "invalid switch target type '{}'", .{target.ty});
+        },
+    }
+}
+
+fn analyzeInstImport(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp) InnerError!*Inst {
+    const operand = try resolveConstString(mod, scope, inst.positionals.operand);
+
+    const file_scope = mod.analyzeImport(scope, inst.base.src, operand) catch |err| switch (err) {
+        error.ImportOutsidePkgPath => {
+            return mod.fail(scope, inst.base.src, "import of file outside package path: '{}'", .{operand});
+        },
+        error.FileNotFound => {
+            return mod.fail(scope, inst.base.src, "unable to find '{}'", .{operand});
+        },
+        else => {
+            // TODO user friendly error to string
+            return mod.fail(scope, inst.base.src, "unable to open '{}': {}", .{ operand, @errorName(err) });
+        },
+    };
+    return mod.constType(scope, inst.base.src, file_scope.root_container.ty);
+}
+
 fn analyzeInstShl(mod: *Module, scope: *Scope, inst: *zir.Inst.BinOp) InnerError!*Inst {
     return mod.fail(scope, inst.base.src, "TODO implement analyzeInstShl", .{});
 }
@@ -1199,7 +1472,66 @@ fn analyzeInstShr(mod: *Module, scope: *Scope, inst: *zir.Inst.BinOp) InnerError
 }
 
 fn analyzeInstBitwise(mod: *Module, scope: *Scope, inst: *zir.Inst.BinOp) InnerError!*Inst {
-    return mod.fail(scope, inst.base.src, "TODO implement analyzeInstBitwise", .{});
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    const lhs = try resolveInst(mod, scope, inst.positionals.lhs);
+    const rhs = try resolveInst(mod, scope, inst.positionals.rhs);
+
+    const instructions = &[_]*Inst{ lhs, rhs };
+    const resolved_type = try mod.resolvePeerTypes(scope, instructions);
+    const casted_lhs = try mod.coerce(scope, resolved_type, lhs);
+    const casted_rhs = try mod.coerce(scope, resolved_type, rhs);
+
+    const scalar_type = if (resolved_type.zigTypeTag() == .Vector)
+        resolved_type.elemType()
+    else
+        resolved_type;
+
+    const scalar_tag = scalar_type.zigTypeTag();
+
+    if (lhs.ty.zigTypeTag() == .Vector and rhs.ty.zigTypeTag() == .Vector) {
+        if (lhs.ty.arrayLen() != rhs.ty.arrayLen()) {
+            return mod.fail(scope, inst.base.src, "vector length mismatch: {} and {}", .{
+                lhs.ty.arrayLen(),
+                rhs.ty.arrayLen(),
+            });
+        }
+        return mod.fail(scope, inst.base.src, "TODO implement support for vectors in analyzeInstBitwise", .{});
+    } else if (lhs.ty.zigTypeTag() == .Vector or rhs.ty.zigTypeTag() == .Vector) {
+        return mod.fail(scope, inst.base.src, "mixed scalar and vector operands to binary expression: '{}' and '{}'", .{
+            lhs.ty,
+            rhs.ty,
+        });
+    }
+
+    const is_int = scalar_tag == .Int or scalar_tag == .ComptimeInt;
+
+    if (!is_int) {
+        return mod.fail(scope, inst.base.src, "invalid operands to binary bitwise expression: '{}' and '{}'", .{ @tagName(lhs.ty.zigTypeTag()), @tagName(rhs.ty.zigTypeTag()) });
+    }
+
+    if (casted_lhs.value()) |lhs_val| {
+        if (casted_rhs.value()) |rhs_val| {
+            if (lhs_val.isUndef() or rhs_val.isUndef()) {
+                return mod.constInst(scope, inst.base.src, .{
+                    .ty = resolved_type,
+                    .val = Value.initTag(.undef),
+                });
+            }
+            return mod.fail(scope, inst.base.src, "TODO implement comptime bitwise operations", .{});
+        }
+    }
+
+    const b = try mod.requireRuntimeBlock(scope, inst.base.src);
+    const ir_tag = switch (inst.base.tag) {
+        .bitand => Inst.Tag.bitand,
+        .bitor => Inst.Tag.bitor,
+        .xor => Inst.Tag.xor,
+        else => unreachable,
+    };
+
+    return mod.addBinOp(b, inst.base.src, scalar_type, ir_tag, casted_lhs, casted_rhs);
 }
 
 fn analyzeInstBitNot(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp) InnerError!*Inst {
@@ -1242,7 +1574,7 @@ fn analyzeInstArithmetic(mod: *Module, scope: *Scope, inst: *zir.Inst.BinOp) Inn
         }
         return mod.fail(scope, inst.base.src, "TODO implement support for vectors in analyzeInstBinOp", .{});
     } else if (lhs.ty.zigTypeTag() == .Vector or rhs.ty.zigTypeTag() == .Vector) {
-        return mod.fail(scope, inst.base.src, "mixed scalar and vector operands to comparison operator: '{}' and '{}'", .{
+        return mod.fail(scope, inst.base.src, "mixed scalar and vector operands to binary expression: '{}' and '{}'", .{
             lhs.ty,
             rhs.ty,
         });
@@ -1404,6 +1736,11 @@ fn analyzeInstCmp(
         // signed-ness, comptime-ness, and bit-width. So peer type resolution is incorrect for
         // numeric types.
         return mod.cmpNumeric(scope, inst.base.src, lhs, rhs, op);
+    } else if (lhs_ty_tag == .Type and rhs_ty_tag == .Type) {
+        if (!is_equality_cmp) {
+            return mod.fail(scope, inst.base.src, "{} operator not allowed for types", .{@tagName(op)});
+        }
+        return mod.constBool(scope, inst.base.src, lhs.value().?.eql(rhs.value().?) == (op == .eq));
     }
     return mod.fail(scope, inst.base.src, "TODO implement more cmp analysis", .{});
 }
@@ -1411,6 +1748,16 @@ fn analyzeInstCmp(
 fn analyzeInstTypeOf(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp) InnerError!*Inst {
     const operand = try resolveInst(mod, scope, inst.positionals.operand);
     return mod.constType(scope, inst.base.src, operand.ty);
+}
+
+fn analyzeInstTypeOfPeer(mod: *Module, scope: *Scope, inst: *zir.Inst.TypeOfPeer) InnerError!*Inst {
+    var insts_to_res = try mod.gpa.alloc(*ir.Inst, inst.positionals.items.len);
+    defer mod.gpa.free(insts_to_res);
+    for (inst.positionals.items) |item, i| {
+        insts_to_res[i] = try resolveInst(mod, scope, item);
+    }
+    const pt_res = try mod.resolvePeerTypes(scope, insts_to_res);
+    return mod.constType(scope, inst.base.src, pt_res);
 }
 
 fn analyzeInstBoolNot(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp) InnerError!*Inst {
@@ -1422,6 +1769,28 @@ fn analyzeInstBoolNot(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp) InnerEr
     }
     const b = try mod.requireRuntimeBlock(scope, inst.base.src);
     return mod.addUnOp(b, inst.base.src, bool_type, .not, operand);
+}
+
+fn analyzeInstBoolOp(mod: *Module, scope: *Scope, inst: *zir.Inst.BinOp) InnerError!*Inst {
+    const bool_type = Type.initTag(.bool);
+    const uncasted_lhs = try resolveInst(mod, scope, inst.positionals.lhs);
+    const lhs = try mod.coerce(scope, bool_type, uncasted_lhs);
+    const uncasted_rhs = try resolveInst(mod, scope, inst.positionals.rhs);
+    const rhs = try mod.coerce(scope, bool_type, uncasted_rhs);
+
+    const is_bool_or = inst.base.tag == .boolor;
+
+    if (lhs.value()) |lhs_val| {
+        if (rhs.value()) |rhs_val| {
+            if (is_bool_or) {
+                return mod.constBool(scope, inst.base.src, lhs_val.toBool() or rhs_val.toBool());
+            } else {
+                return mod.constBool(scope, inst.base.src, lhs_val.toBool() and rhs_val.toBool());
+            }
+        }
+    }
+    const b = try mod.requireRuntimeBlock(scope, inst.base.src);
+    return mod.addBinOp(b, inst.base.src, bool_type, if (is_bool_or) .boolor else .booland, lhs, rhs);
 }
 
 fn analyzeInstIsNonNull(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp, invert_logic: bool) InnerError!*Inst {
@@ -1441,7 +1810,7 @@ fn analyzeInstCondBr(mod: *Module, scope: *Scope, inst: *zir.Inst.CondBr) InnerE
     if (try mod.resolveDefinedValue(scope, cond)) |cond_val| {
         const body = if (cond_val.toBool()) &inst.positionals.then_body else &inst.positionals.else_body;
         try analyzeBody(mod, scope, body.*);
-        return mod.constVoid(scope, inst.base.src);
+        return mod.constNoReturn(scope, inst.base.src);
     }
 
     const parent_block = try mod.requireRuntimeBlock(scope, inst.base.src);
