@@ -1769,7 +1769,8 @@ fn buildOutputType(
     }) catch |err| {
         fatal("unable to create compilation: {}", .{@errorName(err)});
     };
-    defer comp.destroy();
+    var comp_destroyed = false;
+    defer if (!comp_destroyed) comp.destroy();
 
     if (show_builtin) {
         return std.io.getStdOut().writeAll(try comp.generateBuiltinZigSource(arena));
@@ -1828,18 +1829,27 @@ fn buildOutputType(
                     else => unreachable,
                 }
             }
-            try argv.append(exe_path);
+            try argv.appendSlice(&[_][]const u8{
+                exe_path, self_exe_path,
+            });
         } else {
             for (test_exec_args.items) |arg| {
-                try argv.append(arg orelse exe_path);
+                if (arg) |a| {
+                    try argv.append(a);
+                } else {
+                    try argv.appendSlice(&[_][]const u8{
+                        exe_path, self_exe_path,
+                    });
+                }
             }
         }
         if (runtime_args_start) |i| {
             try argv.appendSlice(all_args[i..]);
         }
-        // We do not execve for tests because if the test fails we want to print the error message and
-        // invocation below.
+        // We do not execve for tests because if the test fails we want to print
+        // the error message and invocation below.
         if (std.process.can_execv and arg_mode == .run and !watch) {
+            // execv releases the locks; no need to destroy the Compilation here.
             const err = std.process.execv(gpa, argv.items);
             const cmd = try argvCmd(arena, argv.items);
             fatal("the following command failed to execve with '{s}':\n{s}", .{ @errorName(err), cmd });
@@ -1850,6 +1860,13 @@ fn buildOutputType(
             child.stdin_behavior = .Inherit;
             child.stdout_behavior = .Inherit;
             child.stderr_behavior = .Inherit;
+
+            if (!watch) {
+                // Here we release all the locks associated with the Compilation so
+                // that whatever this child process wants to do won't deadlock.
+                comp.destroy();
+                comp_destroyed = true;
+            }
 
             const term = try child.spawnAndWait();
             switch (arg_mode) {

@@ -1431,9 +1431,6 @@ pub fn performAllTheWork(self: *Compilation) error{ TimerUnsupported, OutOfMemor
     var c_comp_progress_node = main_progress_node.start("Compile C Objects", self.c_source_files.len);
     defer c_comp_progress_node.end();
 
-    var arena = std.heap.ArenaAllocator.init(self.gpa);
-    defer arena.deinit();
-
     self.work_queue_wait_group.reset();
     defer self.work_queue_wait_group.wait();
 
@@ -1502,7 +1499,7 @@ pub fn performAllTheWork(self: *Compilation) error{ TimerUnsupported, OutOfMemor
                 };
 
                 if (self.c_header) |*header| {
-                    c_codegen.generateHeader(&arena, module, &header.*, decl) catch |err| switch (err) {
+                    c_codegen.generateHeader(self, module, header, decl) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         error.AnalysisFail => {
                             decl.analysis = .dependency_failure;
@@ -1632,7 +1629,7 @@ pub fn performAllTheWork(self: *Compilation) error{ TimerUnsupported, OutOfMemor
                 unreachable;
 
             self.updateStage1Module(main_progress_node) catch |err| {
-                fatal("unable to build stage1 zig object: {}", .{@errorName(err)});
+                fatal("unable to build stage1 zig object: {s}", .{@errorName(err)});
             };
         },
     };
@@ -3004,7 +3001,12 @@ fn updateStage1Module(comp: *Compilation, main_progress_node: *std.Progress.Node
     const prev_hash_state = man.hash.peekBin();
     const input_file_count = man.files.items.len;
 
-    if (try man.hit()) {
+    const hit = man.hit() catch |err| {
+        const i = man.failed_file_index orelse return err;
+        const file_path = man.files.items[i].path orelse return err;
+        fatal("unable to build stage1 zig object: {s}: {s}", .{ @errorName(err), file_path });
+    };
+    if (hit) {
         const digest = man.final();
 
         // We use an extra hex-encoded byte here to store some flags.
