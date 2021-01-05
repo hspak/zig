@@ -90,7 +90,7 @@ pub fn deinit(self: *C) void {
 }
 
 pub fn updateDecl(self: *C, module: *Module, decl: *Module.Decl) !void {
-    codegen.generate(self, decl) catch |err| {
+    codegen.generate(self, module, decl) catch |err| {
         if (err == error.AnalysisFail) {
             try module.failed_decls.put(module.gpa, decl, self.error_msg);
         }
@@ -112,7 +112,7 @@ pub fn flushModule(self: *C, comp: *Compilation) !void {
         try writer.writeByte('\n');
     }
     if (self.constants.items.len > 0) {
-        try writer.print("{}\n", .{self.constants.items});
+        try writer.print("{s}\n", .{self.constants.items});
     }
     if (self.main.items.len > 1) {
         const last_two = self.main.items[self.main.items.len - 2 ..];

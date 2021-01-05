@@ -44,9 +44,9 @@ if("${ZIG_VERSION}" STREQUAL "")
                 # Tagged release version.
                 set(GIT_TAG ${CMAKE_MATCH_1})
                 if(NOT GIT_TAG VERSION_EQUAL ZIG_VERSION)
-                    message(SEND_ERROR "Configured Zig version (${ZIG_VERSION}) does not match Git tag (${GIT_TAG}).")
+                    message(SEND_ERROR "Zig version (${ZIG_VERSION}) does not match Git tag (${GIT_TAG}).")
                 endif()
-            elseif(GIT_DESCRIBE MATCHES "^v?([0-9]+\\.[0-9]+\\.[0-9]+)-([0-9]+)-(.+)$")
+            elseif(GIT_DESCRIBE MATCHES "^v?([0-9]+\\.[0-9]+\\.[0-9]+)-([0-9]+)-g(.+)$")
                 # Untagged pre-release. The Zig version is updated to include the number of commits
                 # since the last tagged version and the commit hash. The version is formatted in
                 # accordance with the https://semver.org specification.
@@ -54,7 +54,7 @@ if("${ZIG_VERSION}" STREQUAL "")
                 set(GIT_COMMITS_AFTER_TAG ${CMAKE_MATCH_2})
                 set(GIT_COMMIT ${CMAKE_MATCH_3})
                 if(NOT ZIG_VERSION VERSION_GREATER GIT_TAG)
-                    message(SEND_ERROR "Configured Zig version (${ZIG_VERSION}) must be greater than tagged ancestor (${GIT_TAG}).")
+                    message(SEND_ERROR "Zig version (${ZIG_VERSION}) must be greater than tagged ancestor (${GIT_TAG}).")
                 endif()
                 set(ZIG_VERSION "${ZIG_VERSION}-dev.${GIT_COMMITS_AFTER_TAG}+${GIT_COMMIT}")
             else()
@@ -89,6 +89,7 @@ set(ZIG_TARGET_MCPU "baseline" CACHE STRING "-mcpu parameter to output binaries 
 set(ZIG_EXECUTABLE "" CACHE STRING "(when cross compiling) path to already-built zig binary")
 set(ZIG_PREFER_LLVM_CONFIG off CACHE BOOL "(when cross compiling) use llvm-config to find target llvm dependencies if needed")
 set(ZIG_SINGLE_THREADED off CACHE BOOL "limit the zig compiler to use only 1 thread")
+set(ZIG_OMIT_STAGE2 off CACHE BOOL "omit the stage2 backend from stage1")
 
 find_package(llvm)
 find_package(clang)
@@ -585,6 +586,12 @@ if(MSVC)
         set(ZIG_DIA_GUIDS_LIB "${MSVC_DIA_SDK_DIR}/lib/amd64/diaguids.lib")
         string(REGEX REPLACE "\\\\" "\\\\\\\\" ZIG_DIA_GUIDS_LIB_ESCAPED "${ZIG_DIA_GUIDS_LIB}")
     endif()
+endif()
+
+if(ZIG_OMIT_STAGE2)
+  set(ZIG_OMIT_STAGE2_BOOL "true")
+else()
+  set(ZIG_OMIT_STAGE2_BOOL "false")
 endif()
 
 configure_file (

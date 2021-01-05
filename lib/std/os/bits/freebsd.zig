@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -7,13 +7,23 @@ const std = @import("../../std.zig");
 const builtin = std.builtin;
 const maxInt = std.math.maxInt;
 
-// See https://svnweb.freebsd.org/base/head/sys/sys/_types.h?view=co
-// TODO: audit pid_t/mode_t. They should likely be i32 and u16, respectively
-pub const fd_t = c_int;
-pub const pid_t = c_int;
+pub const blksize_t = i32;
+pub const blkcnt_t = i64;
+pub const clockid_t = i32;
+pub const fsblkcnt_t = u64;
+pub const fsfilcnt_t = u64;
+pub const nlink_t = u64;
+pub const fd_t = i32;
+pub const pid_t = i32;
 pub const uid_t = u32;
 pub const gid_t = u32;
-pub const mode_t = c_uint;
+pub const mode_t = u16;
+pub const off_t = i64;
+pub const ino_t = u64;
+pub const dev_t = u64;
+pub const time_t = i64;
+// The signedness is not constant across different architectures.
+pub const clock_t = isize;
 
 pub const socklen_t = u32;
 
@@ -117,20 +127,17 @@ pub const msghdr_const = extern struct {
     msg_flags: i32,
 };
 
-pub const off_t = i64;
-pub const ino_t = u64;
-
 pub const libc_stat = extern struct {
-    dev: u64,
+    dev: dev_t,
     ino: ino_t,
-    nlink: usize,
+    nlink: nlink_t,
 
-    mode: u16,
+    mode: mode_t,
     __pad0: u16,
     uid: uid_t,
     gid: gid_t,
     __pad1: u32,
-    rdev: u64,
+    rdev: dev_t,
 
     atim: timespec,
     mtim: timespec,

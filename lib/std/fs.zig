@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -2183,7 +2183,7 @@ pub const Walker = struct {
         while (true) {
             if (self.stack.items.len == 0) return null;
             // `top` becomes invalid after appending to `self.stack`.
-            const top = &self.stack.items[self.stack.items.len - 1];
+            var top = &self.stack.items[self.stack.items.len - 1];
             const dirname_len = top.dirname_len;
             if (try top.dir_it.next()) |base| {
                 self.name_buffer.shrink(dirname_len);
@@ -2200,6 +2200,7 @@ pub const Walker = struct {
                             .dir_it = new_dir.iterate(),
                             .dirname_len = self.name_buffer.items.len,
                         });
+                        top = &self.stack.items[self.stack.items.len - 1];
                     }
                 }
                 return Entry{
