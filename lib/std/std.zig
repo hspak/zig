@@ -32,7 +32,7 @@ pub const Progress = @import("Progress.zig");
 pub const ResetEvent = @import("ResetEvent.zig");
 pub const SemanticVersion = @import("SemanticVersion.zig");
 pub const SinglyLinkedList = @import("linked_list.zig").SinglyLinkedList;
-pub const SpinLock = @import("spinlock.zig").SpinLock;
+pub const SpinLock = @import("SpinLock.zig");
 pub const StaticResetEvent = @import("StaticResetEvent.zig");
 pub const StringHashMap = hash_map.StringHashMap;
 pub const StringHashMapUnmanaged = hash_map.StringHashMapUnmanaged;
@@ -93,5 +93,41 @@ comptime {
 }
 
 test "" {
-    testing.refAllDecls(@This());
+    if (builtin.os.tag == .windows) {
+        // We only test the Windows-relevant stuff to save memory because the CI
+        // server is hitting OOM. TODO revert this after stage2 arrives.
+        _ = ChildProcess;
+        _ = DynLib;
+        _ = mutex;
+        _ = Mutex;
+        _ = Progress;
+        _ = ResetEvent;
+        _ = SpinLock;
+        _ = StaticResetEvent;
+        _ = Target;
+        _ = Thread;
+
+        _ = atomic;
+        _ = build;
+        _ = builtin;
+        _ = debug;
+        _ = event;
+        _ = fs;
+        _ = heap;
+        _ = io;
+        _ = log;
+        _ = macho;
+        _ = net;
+        _ = os;
+        _ = once;
+        _ = pdb;
+        _ = process;
+        _ = testing;
+        _ = time;
+        _ = unicode;
+        _ = zig;
+        _ = start;
+    } else {
+        testing.refAllDecls(@This());
+    }
 }

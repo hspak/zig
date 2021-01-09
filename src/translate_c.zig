@@ -2031,7 +2031,7 @@ fn transStringLiteral(
             const bytes_ptr = stmt.getString_bytes_begin_size(&len);
             const str = bytes_ptr[0..len];
 
-            const token = try appendTokenFmt(rp.c, .StringLiteral, "\"{Z}\"", .{str});
+            const token = try appendTokenFmt(rp.c, .StringLiteral, "\"{}\"", .{std.zig.fmtEscapes(str)});
             const node = try rp.c.arena.create(ast.Node.OneToken);
             node.* = .{
                 .base = .{ .tag = .StringLiteral },
@@ -2846,7 +2846,7 @@ fn transCase(
 
     // take all pending statements
     try switch_scope.pending_block.statements.appendSlice(block_scope.statements.items);
-    block_scope.statements.shrink(0);
+    block_scope.statements.shrinkAndFree(0);
 
     const pending_node = try switch_scope.pending_block.complete(rp.c);
     switch_scope.pending_block.deinit();
@@ -2884,7 +2884,7 @@ fn transDefault(
 
     // take all pending statements
     try switch_scope.pending_block.statements.appendSlice(block_scope.statements.items);
-    block_scope.statements.shrink(0);
+    block_scope.statements.shrinkAndFree(0);
 
     const pending_node = try switch_scope.pending_block.complete(rp.c);
     switch_scope.pending_block.deinit();
@@ -2944,7 +2944,8 @@ fn transCharLiteral(
                 if (val > 255)
                     break :blk try transCreateNodeInt(rp.c, val);
             }
-            const token = try appendTokenFmt(rp.c, .CharLiteral, "'{Z}'", .{@intCast(u8, val)});
+            const val_array = [_]u8 { @intCast(u8, val) };
+            const token = try appendTokenFmt(rp.c, .CharLiteral, "'{}'", .{std.zig.fmtEscapes(&val_array)});
             const node = try rp.c.arena.create(ast.Node.OneToken);
             node.* = .{
                 .base = .{ .tag = .CharLiteral },
@@ -4773,9 +4774,9 @@ const RestorePoint = struct {
     src_buf_index: usize,
 
     fn activate(self: RestorePoint) void {
-        self.c.token_ids.shrink(self.c.gpa, self.token_index);
-        self.c.token_locs.shrink(self.c.gpa, self.token_index);
-        self.c.source_buffer.shrink(self.src_buf_index);
+        self.c.token_ids.shrinkAndFree(self.c.gpa, self.token_index);
+        self.c.token_locs.shrinkAndFree(self.c.gpa, self.token_index);
+        self.c.source_buffer.shrinkAndFree(self.src_buf_index);
     }
 };
 
@@ -5268,7 +5269,7 @@ fn appendTokenFmt(c: *Context, token_id: Token.Id, comptime format: []const u8, 
     try c.token_locs.ensureCapacity(c.gpa, c.token_locs.items.len + 1);
 
     const start_index = c.source_buffer.items.len;
-    try c.source_buffer.outStream().print(format ++ " ", args);
+    try c.source_buffer.writer().print(format ++ " ", args);
 
     c.token_ids.appendAssumeCapacity(token_id);
     c.token_locs.appendAssumeCapacity(.{
@@ -5315,7 +5316,7 @@ fn isZigPrimitiveType(name: []const u8) bool {
 }
 
 fn appendIdentifier(c: *Context, name: []const u8) !ast.TokenIndex {
-    return appendTokenFmt(c, .Identifier, "{z}", .{name});
+    return appendTokenFmt(c, .Identifier, "{}", .{std.zig.fmtId(name)});
 }
 
 fn transCreateNodeIdentifier(c: *Context, name: []const u8) !*ast.Node {

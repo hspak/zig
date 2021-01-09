@@ -1106,7 +1106,7 @@ fn linuxLookupNameFromHosts(
     };
     defer file.close();
 
-    const stream = std.io.bufferedInStream(file.inStream()).inStream();
+    const stream = std.io.bufferedReader(file.reader()).reader();
     var line_buf: [512]u8 = undefined;
     while (stream.readUntilDelimiterOrEof(&line_buf, '\n') catch |err| switch (err) {
         error.StreamTooLong => blk: {
@@ -1200,13 +1200,13 @@ fn linuxLookupNameFromDnsSearch(
 
     var tok_it = mem.tokenize(search, " \t");
     while (tok_it.next()) |tok| {
-        canon.shrink(canon_name.len + 1);
+        canon.shrinkAndFree(canon_name.len + 1);
         try canon.appendSlice(tok);
         try linuxLookupNameFromDns(addrs, canon, canon.items, family, rc, port);
         if (addrs.items.len != 0) return;
     }
 
-    canon.shrink(canon_name.len);
+    canon.shrinkAndFree(canon_name.len);
     return linuxLookupNameFromDns(addrs, canon, name, family, rc, port);
 }
 
@@ -1304,7 +1304,7 @@ fn getResolvConf(allocator: *mem.Allocator, rc: *ResolvConf) !void {
     };
     defer file.close();
 
-    const stream = std.io.bufferedInStream(file.inStream()).inStream();
+    const stream = std.io.bufferedReader(file.reader()).reader();
     var line_buf: [512]u8 = undefined;
     while (stream.readUntilDelimiterOrEof(&line_buf, '\n') catch |err| switch (err) {
         error.StreamTooLong => blk: {

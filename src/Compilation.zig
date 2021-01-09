@@ -27,7 +27,6 @@ const Cache = @import("Cache.zig");
 const stage1 = @import("stage1.zig");
 const translate_c = @import("translate_c.zig");
 const c_codegen = @import("codegen/c.zig");
-const c_link = @import("link/C.zig");
 const ThreadPool = @import("ThreadPool.zig");
 const WaitGroup = @import("WaitGroup.zig");
 const libtsan = @import("libtsan.zig");
@@ -138,8 +137,6 @@ emit_llvm_ir: ?EmitLoc,
 emit_analysis: ?EmitLoc,
 emit_docs: ?EmitLoc,
 
-c_header: ?c_link.Header,
-
 work_queue_wait_group: WaitGroup,
 
 pub const InnerError = Module.InnerError;
@@ -164,6 +161,8 @@ pub const CSourceFile = struct {
 const Job = union(enum) {
     /// Write the machine code for a Decl to the output file.
     codegen_decl: *Module.Decl,
+    /// Render the .h file snippet for the Decl.
+    emit_h_decl: *Module.Decl,
     /// The Decl needs to be analyzed and possibly export itself.
     /// It may have already be analyzed, or it may have been determined
     /// to be outdated; in this case perform semantic analysis again.
@@ -528,6 +527,10 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
             if (options.root_pkg == null)
                 break :blk false;
 
+            // If we are outputting .c code we must use Zig backend.
+            if (ofmt == .c)
+                break :blk false;
+
             // If we are the stage1 compiler, we depend on the stage1 c++ llvm backend
             // to compile zig code.
             if (build_options.is_stage1)
@@ -735,7 +738,7 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
             }
             assert(mem.endsWith(u8, buf.items, ","));
             buf.items[buf.items.len - 1] = 0;
-            buf.shrink(buf.items.len);
+            buf.shrinkAndFree(buf.items.len);
             break :blk buf.items[0 .. buf.items.len - 1 :0].ptr;
         } else null;
 
@@ -866,9 +869,13 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
                 .root_pkg = root_pkg,
                 .root_scope = root_scope,
                 .zig_cache_artifact_directory = zig_cache_artifact_directory,
+                .emit_h = options.emit_h,
             };
             break :blk module;
-        } else null;
+        } else blk: {
+            if (options.emit_h != null) return error.NoZigModuleForCHeader;
+            break :blk null;
+        };
         errdefer if (module) |zm| zm.deinit();
 
         const error_return_tracing = !strip and switch (options.optimize_mode) {
@@ -996,7 +1003,6 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
             .local_cache_directory = options.local_cache_directory,
             .global_cache_directory = options.global_cache_directory,
             .bin_file = bin_file,
-            .c_header = if (!use_llvm and options.emit_h != null) c_link.Header.init(gpa, options.emit_h) else null,
             .emit_asm = options.emit_asm,
             .emit_llvm_ir = options.emit_llvm_ir,
             .emit_analysis = options.emit_analysis,
@@ -1218,10 +1224,6 @@ pub fn destroy(self: *Compilation) void {
     }
     self.failed_c_objects.deinit(gpa);
 
-    if (self.c_header) |*header| {
-        header.deinit();
-    }
-
     self.cache_parent.manifest_dir.close();
     if (self.owned_link_dir) |*dir| dir.close();
 
@@ -1315,8 +1317,13 @@ pub fn update(self: *Compilation) !void {
 
     // This is needed before reading the error flags.
     try self.bin_file.flush(self);
-
     self.link_error_flags = self.bin_file.errorFlags();
+
+    if (!use_stage1) {
+        if (self.bin_file.options.module) |module| {
+            try link.File.C.flushEmitH(module);
+        }
+    }
 
     // If there are any errors, we anticipate the source files being loaded
     // to report error messages. Otherwise we unload all source files to save memory.
@@ -1324,20 +1331,6 @@ pub fn update(self: *Compilation) !void {
         if (self.bin_file.options.module) |module| {
             module.root_scope.unload(self.gpa);
         }
-    }
-
-    // If we've chosen to emit a C header, flush the header to the disk.
-    if (self.c_header) |header| {
-        const header_path = header.emit_loc.?;
-        // If a directory has been provided, write the header there. Otherwise, just write it to the
-        // cache directory.
-        const header_dir = if (header_path.directory) |dir|
-            dir.handle
-        else
-            self.local_cache_directory.handle;
-        const header_file = try header_dir.createFile(header_path.basename, .{});
-        defer header_file.close();
-        try header.flush(header_file.writer());
     }
 }
 
@@ -1357,10 +1350,14 @@ pub fn totalErrorCount(self: *Compilation) usize {
     var total: usize = self.failed_c_objects.items().len;
 
     if (self.bin_file.options.module) |module| {
-        total += module.failed_decls.items().len +
+        total += module.failed_decls.count() +
+            module.emit_h_failed_decls.count() +
             module.failed_exports.items().len +
             module.failed_files.items().len +
             @boolToInt(module.failed_root_src_file != null);
+        for (module.compile_log_decls.items()) |entry| {
+            total += entry.value.items.len;
+        }
     }
 
     // The "no entry point found" error only counts if there are no other errors.
@@ -1396,6 +1393,12 @@ pub fn getAllErrorsAlloc(self: *Compilation) !AllErrors {
             const source = try decl.scope.getSource(module);
             try AllErrors.add(&arena, &errors, decl.scope.subFilePath(), source, err_msg.*);
         }
+        for (module.emit_h_failed_decls.items()) |entry| {
+            const decl = entry.key;
+            const err_msg = entry.value;
+            const source = try decl.scope.getSource(module);
+            try AllErrors.add(&arena, &errors, decl.scope.subFilePath(), source, err_msg.*);
+        }
         for (module.failed_exports.items()) |entry| {
             const decl = entry.key.owner_decl;
             const err_msg = entry.value;
@@ -1410,6 +1413,15 @@ pub fn getAllErrorsAlloc(self: *Compilation) !AllErrors {
                 file_path, @errorName(err),
             });
             try AllErrors.addPlain(&arena, &errors, msg);
+        }
+        for (module.compile_log_decls.items()) |entry| {
+            const decl = entry.key;
+            const path = decl.scope.subFilePath();
+            const source = try decl.scope.getSource(module);
+            for (entry.value.items) |src_loc| {
+                const err_msg = ErrorMsg{ .byte_offset = src_loc, .msg = "found compile log statement" };
+                try AllErrors.add(&arena, &errors, path, source, err_msg);
+            }
         }
     }
 
@@ -1493,44 +1505,66 @@ pub fn performAllTheWork(self: *Compilation) error{ TimerUnsupported, OutOfMemor
 
                 assert(decl.typed_value.most_recent.typed_value.ty.hasCodeGenBits());
 
-                self.bin_file.updateDecl(module, decl) catch |err| {
-                    switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        error.AnalysisFail => {
-                            decl.analysis = .dependency_failure;
-                        },
-                        else => {
-                            try module.failed_decls.ensureCapacity(module.gpa, module.failed_decls.items().len + 1);
-                            module.failed_decls.putAssumeCapacityNoClobber(decl, try ErrorMsg.create(
-                                module.gpa,
-                                decl.src(),
-                                "unable to codegen: {s}",
-                                .{@errorName(err)},
-                            ));
-                            decl.analysis = .codegen_failure_retryable;
-                        },
-                    }
-                    return;
+                self.bin_file.updateDecl(module, decl) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.AnalysisFail => {
+                        decl.analysis = .codegen_failure;
+                        continue;
+                    },
+                    else => {
+                        try module.failed_decls.ensureCapacity(module.gpa, module.failed_decls.items().len + 1);
+                        module.failed_decls.putAssumeCapacityNoClobber(decl, try ErrorMsg.create(
+                            module.gpa,
+                            decl.src(),
+                            "unable to codegen: {s}",
+                            .{@errorName(err)},
+                        ));
+                        decl.analysis = .codegen_failure_retryable;
+                        continue;
+                    },
+                };
+            },
+        },
+        .emit_h_decl => |decl| switch (decl.analysis) {
+            .unreferenced => unreachable,
+            .in_progress => unreachable,
+            .outdated => unreachable,
+
+            .sema_failure,
+            .dependency_failure,
+            .sema_failure_retryable,
+            => continue,
+
+            // emit-h only requires semantic analysis of the Decl to be complete,
+            // it does not depend on machine code generation to succeed.
+            .codegen_failure, .codegen_failure_retryable, .complete => {
+                if (build_options.omit_stage2)
+                    @panic("sadly stage2 is omitted from this build to save memory on the CI server");
+                const module = self.bin_file.options.module.?;
+                const emit_loc = module.emit_h.?;
+                const tv = decl.typed_value.most_recent.typed_value;
+                const emit_h = decl.getEmitH(module);
+                const fwd_decl = &emit_h.fwd_decl;
+                fwd_decl.shrinkRetainingCapacity(0);
+
+                var dg: c_codegen.DeclGen = .{
+                    .module = module,
+                    .error_msg = null,
+                    .decl = decl,
+                    .fwd_decl = fwd_decl.toManaged(module.gpa),
+                };
+                defer dg.fwd_decl.deinit();
+
+                c_codegen.genHeader(&dg) catch |err| switch (err) {
+                    error.AnalysisFail => {
+                        try module.emit_h_failed_decls.put(module.gpa, decl, dg.error_msg.?);
+                        continue;
+                    },
+                    else => |e| return e,
                 };
 
-                if (self.c_header) |*header| {
-                    c_codegen.generateHeader(self, module, header, decl) catch |err| switch (err) {
-                        error.OutOfMemory => return error.OutOfMemory,
-                        error.AnalysisFail => {
-                            decl.analysis = .dependency_failure;
-                        },
-                        else => {
-                            try module.failed_decls.ensureCapacity(module.gpa, module.failed_decls.items().len + 1);
-                            module.failed_decls.putAssumeCapacityNoClobber(decl, try ErrorMsg.create(
-                                module.gpa,
-                                decl.src(),
-                                "unable to generate C header: {s}",
-                                .{@errorName(err)},
-                            ));
-                            decl.analysis = .codegen_failure_retryable;
-                        },
-                    };
-                }
+                fwd_decl.* = dg.fwd_decl.moveToUnmanaged();
+                fwd_decl.shrinkAndFree(module.gpa, fwd_decl.items.len);
             },
         },
         .analyze_decl => |decl| {
@@ -1786,7 +1820,7 @@ pub fn cImport(comp: *Compilation, c_src: []const u8) !CImportResult {
         var out_zig_file = try o_dir.createFile(cimport_zig_basename, .{});
         defer out_zig_file.close();
 
-        var bos = std.io.bufferedOutStream(out_zig_file.writer());
+        var bos = std.io.bufferedWriter(out_zig_file.writer());
         _ = try std.zig.render(comp.gpa, bos.writer(), tree);
         try bos.flush();
 
@@ -2116,7 +2150,7 @@ pub fn addCCArgs(
         try argv.append("-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS");
     }
 
-    const llvm_triple = try @import("llvm_backend.zig").targetTriple(arena, target);
+    const llvm_triple = try @import("codegen/llvm.zig").targetTriple(arena, target);
     try argv.appendSlice(&[_][]const u8{ "-target", llvm_triple });
 
     switch (ext) {
@@ -2669,27 +2703,27 @@ pub fn generateBuiltinZigSource(comp: *Compilation, allocator: *Allocator) ![]u8
         \\pub const arch = Target.current.cpu.arch;
         \\/// Deprecated
         \\pub const endian = Target.current.cpu.arch.endian();
-        \\pub const output_mode = OutputMode.{z};
-        \\pub const link_mode = LinkMode.{z};
+        \\pub const output_mode = OutputMode.{};
+        \\pub const link_mode = LinkMode.{};
         \\pub const is_test = {};
         \\pub const single_threaded = {};
-        \\pub const abi = Abi.{z};
+        \\pub const abi = Abi.{};
         \\pub const cpu: Cpu = Cpu{{
-        \\    .arch = .{z},
-        \\    .model = &Target.{z}.cpu.{z},
-        \\    .features = Target.{z}.featureSet(&[_]Target.{z}.Feature{{
+        \\    .arch = .{},
+        \\    .model = &Target.{}.cpu.{},
+        \\    .features = Target.{}.featureSet(&[_]Target.{}.Feature{{
         \\
     , .{
-        @tagName(comp.bin_file.options.output_mode),
-        @tagName(comp.bin_file.options.link_mode),
+        std.zig.fmtId(@tagName(comp.bin_file.options.output_mode)),
+        std.zig.fmtId(@tagName(comp.bin_file.options.link_mode)),
         comp.bin_file.options.is_test,
         comp.bin_file.options.single_threaded,
-        @tagName(target.abi),
-        @tagName(target.cpu.arch),
-        generic_arch_name,
-        target.cpu.model.name,
-        generic_arch_name,
-        generic_arch_name,
+        std.zig.fmtId(@tagName(target.abi)),
+        std.zig.fmtId(@tagName(target.cpu.arch)),
+        std.zig.fmtId(generic_arch_name),
+        std.zig.fmtId(target.cpu.model.name),
+        std.zig.fmtId(generic_arch_name),
+        std.zig.fmtId(generic_arch_name),
     });
 
     for (target.cpu.arch.allFeaturesList()) |feature, index_usize| {
@@ -2708,15 +2742,15 @@ pub fn generateBuiltinZigSource(comp: *Compilation, allocator: *Allocator) ![]u8
         \\    }}),
         \\}};
         \\pub const os = Os{{
-        \\    .tag = .{z},
+        \\    .tag = .{},
         \\    .version_range = .{{
     ,
-        .{@tagName(target.os.tag)},
+        .{std.zig.fmtId(@tagName(target.os.tag))},
     );
 
     switch (target.os.getVersionRange()) {
         .none => try buffer.appendSlice(" .none = {} }\n"),
-        .semver => |semver| try buffer.outStream().print(
+        .semver => |semver| try buffer.writer().print(
             \\ .semver = .{{
             \\        .min = .{{
             \\            .major = {},
@@ -2739,7 +2773,7 @@ pub fn generateBuiltinZigSource(comp: *Compilation, allocator: *Allocator) ![]u8
             semver.max.minor,
             semver.max.patch,
         }),
-        .linux => |linux| try buffer.outStream().print(
+        .linux => |linux| try buffer.writer().print(
             \\ .linux = .{{
             \\        .range = .{{
             \\            .min = .{{
@@ -2773,7 +2807,7 @@ pub fn generateBuiltinZigSource(comp: *Compilation, allocator: *Allocator) ![]u8
             linux.glibc.minor,
             linux.glibc.patch,
         }),
-        .windows => |windows| try buffer.outStream().print(
+        .windows => |windows| try buffer.writer().print(
             \\ .windows = .{{
             \\        .min = {s},
             \\        .max = {s},
@@ -2794,8 +2828,8 @@ pub fn generateBuiltinZigSource(comp: *Compilation, allocator: *Allocator) ![]u8
         (comp.bin_file.options.skip_linker_dependencies and comp.bin_file.options.parent_compilation_link_libc);
 
     try buffer.writer().print(
-        \\pub const object_format = ObjectFormat.{z};
-        \\pub const mode = Mode.{z};
+        \\pub const object_format = ObjectFormat.{};
+        \\pub const mode = Mode.{};
         \\pub const link_libc = {};
         \\pub const link_libcpp = {};
         \\pub const have_error_return_tracing = {};
@@ -2803,11 +2837,11 @@ pub fn generateBuiltinZigSource(comp: *Compilation, allocator: *Allocator) ![]u8
         \\pub const position_independent_code = {};
         \\pub const position_independent_executable = {};
         \\pub const strip_debug_info = {};
-        \\pub const code_model = CodeModel.{z};
+        \\pub const code_model = CodeModel.{};
         \\
     , .{
-        @tagName(comp.bin_file.options.object_format),
-        @tagName(comp.bin_file.options.optimize_mode),
+        std.zig.fmtId(@tagName(comp.bin_file.options.object_format)),
+        std.zig.fmtId(@tagName(comp.bin_file.options.optimize_mode)),
         link_libc,
         comp.bin_file.options.link_libcpp,
         comp.bin_file.options.error_return_tracing,
@@ -2815,7 +2849,7 @@ pub fn generateBuiltinZigSource(comp: *Compilation, allocator: *Allocator) ![]u8
         comp.bin_file.options.pic,
         comp.bin_file.options.pie,
         comp.bin_file.options.strip,
-        @tagName(comp.bin_file.options.machine_code_model),
+        std.zig.fmtId(@tagName(comp.bin_file.options.machine_code_model)),
     });
 
     if (comp.bin_file.options.is_test) {
@@ -2998,9 +3032,9 @@ fn updateStage1Module(comp: *Compilation, main_progress_node: *std.Progress.Node
     man.hash.add(comp.bin_file.options.function_sections);
     man.hash.add(comp.bin_file.options.is_test);
     man.hash.add(comp.bin_file.options.emit != null);
-    man.hash.add(comp.c_header != null);
-    if (comp.c_header) |header| {
-        man.hash.addEmitLoc(header.emit_loc.?);
+    man.hash.add(mod.emit_h != null);
+    if (mod.emit_h) |emit_h| {
+        man.hash.addEmitLoc(emit_h);
     }
     man.hash.addOptionalEmitLoc(comp.emit_asm);
     man.hash.addOptionalEmitLoc(comp.emit_llvm_ir);
@@ -3105,10 +3139,10 @@ fn updateStage1Module(comp: *Compilation, main_progress_node: *std.Progress.Node
         });
         break :blk try directory.join(arena, &[_][]const u8{bin_basename});
     } else "";
-    if (comp.c_header != null) {
+    if (mod.emit_h != null) {
         log.warn("-femit-h is not available in the stage1 backend; no .h file will be produced", .{});
     }
-    const emit_h_path = try stage1LocPath(arena, if (comp.c_header) |header| header.emit_loc else null, directory);
+    const emit_h_path = try stage1LocPath(arena, mod.emit_h, directory);
     const emit_asm_path = try stage1LocPath(arena, comp.emit_asm, directory);
     const emit_llvm_ir_path = try stage1LocPath(arena, comp.emit_llvm_ir, directory);
     const emit_analysis_path = try stage1LocPath(arena, comp.emit_analysis, directory);

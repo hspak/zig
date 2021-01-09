@@ -127,9 +127,8 @@ pub const Inst = struct {
         coerce_to_ptr_elem,
         /// Emit an error message and fail compilation.
         compileerror,
-        /// Changes the maximum number of backwards branches that compile-time
-        /// code execution can use before giving up and making a compile error.
-        set_eval_branch_quota,
+        /// Log compile time variables and emit an error message.
+        compilelog,
         /// Conditional branch. Splits control flow based on a boolean condition value.
         condbr,
         /// Special case, has no textual representation.
@@ -223,6 +222,9 @@ pub const Inst = struct {
         @"return",
         /// Same as `return` but there is no operand; the operand is implicitly the void value.
         returnvoid,
+        /// Changes the maximum number of backwards branches that compile-time
+        /// code execution can use before giving up and making a compile error.
+        set_eval_branch_quota,
         /// Integer shift-left. Zeroes are shifted in from the right hand side.
         shl,
         /// Integer shift-right. Arithmetic or logical depending on the signedness of the integer type.
@@ -407,6 +409,7 @@ pub const Inst = struct {
                 .declval => DeclVal,
                 .declval_in_module => DeclValInModule,
                 .coerce_result_block_ptr => CoerceResultBlockPtr,
+                .compilelog => CompileLog,
                 .loop => Loop,
                 .@"const" => Const,
                 .str => Str,
@@ -540,6 +543,7 @@ pub const Inst = struct {
                 .typeof_peer,
                 .resolve_inferred_alloc,
                 .set_eval_branch_quota,
+                .compilelog,
                 => false,
 
                 .@"break",
@@ -721,6 +725,19 @@ pub const Inst = struct {
             block: *Block,
         },
         kw_args: struct {},
+    };
+
+    pub const CompileLog = struct {
+        pub const base_tag = Tag.compilelog;
+        base: Inst,
+
+        positionals: struct {
+            to_log: []*Inst,
+        },
+        kw_args: struct {
+            /// If we have seen it already so don't make another error
+            seen: bool = false,
+        },
     };
 
     pub const Const = struct {
@@ -1099,7 +1116,7 @@ pub const Module = struct {
 
     /// This is a debugging utility for rendering the tree to stderr.
     pub fn dump(self: Module) void {
-        self.writeToStream(std.heap.page_allocator, std.io.getStdErr().outStream()) catch {};
+        self.writeToStream(std.heap.page_allocator, std.io.getStdErr().writer()) catch {};
     }
 
     const DeclAndIndex = struct {
@@ -1291,17 +1308,17 @@ const Writer = struct {
                 try stream.writeByte('}');
             },
             bool => return stream.writeByte("01"[@boolToInt(param)]),
-            []u8, []const u8 => return stream.print("\"{Z}\"", .{param}),
+            []u8, []const u8 => return stream.print("\"{}\"", .{std.zig.fmtEscapes(param)}),
             BigIntConst, usize => return stream.print("{}", .{param}),
             TypedValue => return stream.print("TypedValue{{ .ty = {}, .val = {}}}", .{ param.ty, param.val }),
             *IrModule.Decl => return stream.print("Decl({s})", .{param.name}),
             *Inst.Block => {
                 const name = self.block_table.get(param).?;
-                return stream.print("\"{Z}\"", .{name});
+                return stream.print("\"{}\"", .{std.zig.fmtEscapes(name)});
             },
             *Inst.Loop => {
                 const name = self.loop_table.get(param).?;
-                return stream.print("\"{Z}\"", .{name});
+                return stream.print("\"{}\"", .{std.zig.fmtEscapes(name)});
             },
             [][]const u8 => {
                 try stream.writeByte('[');
@@ -1309,7 +1326,7 @@ const Writer = struct {
                     if (i != 0) {
                         try stream.writeAll(", ");
                     }
-                    try stream.print("\"{Z}\"", .{str});
+                    try stream.print("\"{}\"", .{std.zig.fmtEscapes(str)});
                 }
                 try stream.writeByte(']');
             },
@@ -3237,7 +3254,7 @@ pub fn dumpZir(allocator: *Allocator, kind: []const u8, decl_name: [*:0]const u8
 
     try write.inst_table.ensureCapacity(@intCast(u32, instructions.len));
 
-    const stderr = std.io.getStdErr().outStream();
+    const stderr = std.io.getStdErr().writer();
     try stderr.print("{s} {s} {{ // unanalyzed\n", .{ kind, decl_name });
 
     for (instructions) |inst| {

@@ -57,6 +57,12 @@ decl_table: std.ArrayHashMapUnmanaged(Scope.NameHash, *Decl, Scope.name_hash_has
 /// Note that a Decl can succeed but the Fn it represents can fail. In this case,
 /// a Decl can have a failed_decls entry but have analysis status of success.
 failed_decls: std.AutoArrayHashMapUnmanaged(*Decl, *Compilation.ErrorMsg) = .{},
+/// When emit_h is non-null, each Decl gets one more compile error slot for
+/// emit-h failing for that Decl. This table is also how we tell if a Decl has
+/// failed emit-h or succeeded.
+emit_h_failed_decls: std.AutoArrayHashMapUnmanaged(*Decl, *Compilation.ErrorMsg) = .{},
+/// A Decl can have multiple compileLogs, but only one error, so we map a Decl to a the src locs of all the compileLogs
+compile_log_decls: std.AutoArrayHashMapUnmanaged(*Decl, ArrayListUnmanaged(usize)) = .{},
 /// Using a map here for consistency with the other fields here.
 /// The ErrorMsg memory is owned by the `Scope`, using Module's general purpose allocator.
 failed_files: std.AutoArrayHashMapUnmanaged(*Scope, *Compilation.ErrorMsg) = .{},
@@ -94,6 +100,8 @@ stage1_flags: packed struct {
     reserved: u2 = 0,
 } = .{},
 
+emit_h: ?Compilation.EmitLoc,
+
 pub const Export = struct {
     options: std.builtin.ExportOptions,
     /// Byte offset into the file that contains the export directive.
@@ -112,6 +120,13 @@ pub const Export = struct {
         failed_retryable,
         complete,
     },
+};
+
+/// When Module emit_h field is non-null, each Decl is allocated via this struct, so that
+/// there can be EmitH state attached to each Decl.
+pub const DeclPlusEmitH = struct {
+    decl: Decl,
+    emit_h: EmitH,
 };
 
 pub const Decl = struct {
@@ -202,14 +217,21 @@ pub const Decl = struct {
     /// stage1 compiler giving me: `error: struct 'Module.Decl' depends on itself`
     pub const DepsTable = std.ArrayHashMapUnmanaged(*Decl, void, std.array_hash_map.getAutoHashFn(*Decl), std.array_hash_map.getAutoEqlFn(*Decl), false);
 
-    pub fn destroy(self: *Decl, gpa: *Allocator) void {
+    pub fn destroy(self: *Decl, module: *Module) void {
+        const gpa = module.gpa;
         gpa.free(mem.spanZ(self.name));
         if (self.typedValueManaged()) |tvm| {
             tvm.deinit(gpa);
         }
         self.dependants.deinit(gpa);
         self.dependencies.deinit(gpa);
-        gpa.destroy(self);
+        if (module.emit_h != null) {
+            const decl_plus_emit_h = @fieldParentPtr(DeclPlusEmitH, "decl", self);
+            decl_plus_emit_h.emit_h.fwd_decl.deinit(gpa);
+            gpa.destroy(decl_plus_emit_h);
+        } else {
+            gpa.destroy(self);
+        }
     }
 
     pub fn src(self: Decl) usize {
@@ -275,6 +297,12 @@ pub const Decl = struct {
         return self.scope.cast(Scope.Container).?.file_scope;
     }
 
+    pub fn getEmitH(decl: *Decl, module: *Module) *EmitH {
+        assert(module.emit_h != null);
+        const decl_plus_emit_h = @fieldParentPtr(DeclPlusEmitH, "decl", decl);
+        return &decl_plus_emit_h.emit_h;
+    }
+
     fn removeDependant(self: *Decl, other: *Decl) void {
         self.dependants.removeAssertDiscard(other);
     }
@@ -282,6 +310,11 @@ pub const Decl = struct {
     fn removeDependency(self: *Decl, other: *Decl) void {
         self.dependencies.removeAssertDiscard(other);
     }
+};
+
+/// This state is attached to every Decl when Module emit_h is non-null.
+pub const EmitH = struct {
+    fwd_decl: std.ArrayListUnmanaged(u8) = .{},
 };
 
 /// Fn struct memory is owned by the Decl's TypedValue.Managed arena allocator.
@@ -561,7 +594,7 @@ pub const Scope = struct {
         }
 
         pub fn removeDecl(self: *Container, child: *Decl) void {
-            _ = self.decls.remove(child);
+            _ = self.decls.swapRemove(child);
         }
 
         pub fn fullyQualifiedNameHash(self: *Container, name: []const u8) NameHash {
@@ -881,7 +914,7 @@ pub fn deinit(self: *Module) void {
     self.deletion_set.deinit(gpa);
 
     for (self.decl_table.items()) |entry| {
-        entry.value.destroy(gpa);
+        entry.value.destroy(self);
     }
     self.decl_table.deinit(gpa);
 
@@ -889,6 +922,11 @@ pub fn deinit(self: *Module) void {
         entry.value.destroy(gpa);
     }
     self.failed_decls.deinit(gpa);
+
+    for (self.emit_h_failed_decls.items()) |entry| {
+        entry.value.destroy(gpa);
+    }
+    self.emit_h_failed_decls.deinit(gpa);
 
     for (self.failed_files.items()) |entry| {
         entry.value.destroy(gpa);
@@ -899,6 +937,11 @@ pub fn deinit(self: *Module) void {
         entry.value.destroy(gpa);
     }
     self.failed_exports.deinit(gpa);
+
+    for (self.compile_log_decls.items()) |*entry| {
+        entry.value.deinit(gpa);
+    }
+    self.compile_log_decls.deinit(gpa);
 
     for (self.decl_exports.items()) |entry| {
         const export_list = entry.value;
@@ -1148,6 +1191,10 @@ fn astGenAndAnalyzeDecl(self: *Module, decl: *Decl) !bool {
                 try self.comp.bin_file.allocateDeclIndexes(decl);
                 try self.comp.work_queue.writeItem(.{ .codegen_decl = decl });
 
+                if (type_changed and self.emit_h != null) {
+                    try self.comp.work_queue.writeItem(.{ .emit_h_decl = decl });
+                }
+
                 return type_changed;
             };
 
@@ -1267,6 +1314,9 @@ fn astGenAndAnalyzeDecl(self: *Module, decl: *Decl) !bool {
                 // increasing how many computations can be done in parallel.
                 try self.comp.bin_file.allocateDeclIndexes(decl);
                 try self.comp.work_queue.writeItem(.{ .codegen_decl = decl });
+                if (type_changed and self.emit_h != null) {
+                    try self.comp.work_queue.writeItem(.{ .emit_h_decl = decl });
+                }
             } else if (!prev_is_inline and prev_type_has_bits) {
                 self.comp.bin_file.freeDecl(decl);
             }
@@ -1599,7 +1649,7 @@ pub fn getAstTree(self: *Module, root_scope: *Scope.File) !*ast.Tree {
                 var msg = std.ArrayList(u8).init(self.gpa);
                 defer msg.deinit();
 
-                try parse_err.render(tree.token_ids, msg.outStream());
+                try parse_err.render(tree.token_ids, msg.writer());
                 const err_msg = try self.gpa.create(Compilation.ErrorMsg);
                 err_msg.* = .{
                     .msg = msg.toOwnedSlice(),
@@ -1660,7 +1710,7 @@ pub fn analyzeContainer(self: *Module, container_scope: *Scope.Container) !void 
                 // Update the AST Node index of the decl, even if its contents are unchanged, it may
                 // have been re-ordered.
                 decl.src_index = decl_i;
-                if (deleted_decls.remove(decl) == null) {
+                if (deleted_decls.swapRemove(decl) == null) {
                     decl.analysis = .sema_failure;
                     const err_msg = try Compilation.ErrorMsg.create(self.gpa, tree.token_locs[name_tok].start, "redefinition of '{s}'", .{decl.name});
                     errdefer err_msg.destroy(self.gpa);
@@ -1702,7 +1752,7 @@ pub fn analyzeContainer(self: *Module, container_scope: *Scope.Container) !void 
                 // Update the AST Node index of the decl, even if its contents are unchanged, it may
                 // have been re-ordered.
                 decl.src_index = decl_i;
-                if (deleted_decls.remove(decl) == null) {
+                if (deleted_decls.swapRemove(decl) == null) {
                     decl.analysis = .sema_failure;
                     const err_msg = try Compilation.ErrorMsg.create(self.gpa, name_loc.start, "redefinition of '{s}'", .{decl.name});
                     errdefer err_msg.destroy(self.gpa);
@@ -1832,18 +1882,25 @@ pub fn deleteDecl(self: *Module, decl: *Decl) !void {
             try self.markOutdatedDecl(dep);
         }
     }
-    if (self.failed_decls.remove(decl)) |entry| {
+    if (self.failed_decls.swapRemove(decl)) |entry| {
         entry.value.destroy(self.gpa);
+    }
+    if (self.emit_h_failed_decls.swapRemove(decl)) |entry| {
+        entry.value.destroy(self.gpa);
+    }
+    if (self.compile_log_decls.swapRemove(decl)) |*entry| {
+        entry.value.deinit(self.gpa);
     }
     self.deleteDeclExports(decl);
     self.comp.bin_file.freeDecl(decl);
-    decl.destroy(self.gpa);
+
+    decl.destroy(self);
 }
 
 /// Delete all the Export objects that are caused by this Decl. Re-analysis of
 /// this Decl will cause them to be re-created (or not).
 fn deleteDeclExports(self: *Module, decl: *Decl) void {
-    const kv = self.export_owners.remove(decl) orelse return;
+    const kv = self.export_owners.swapRemove(decl) orelse return;
 
     for (kv.value) |exp| {
         if (self.decl_exports.getEntry(exp.exported_decl)) |decl_exports_kv| {
@@ -1870,10 +1927,10 @@ fn deleteDeclExports(self: *Module, decl: *Decl) void {
         if (self.comp.bin_file.cast(link.File.MachO)) |macho| {
             macho.deleteExport(exp.link.macho);
         }
-        if (self.failed_exports.remove(exp)) |entry| {
+        if (self.failed_exports.swapRemove(exp)) |entry| {
             entry.value.destroy(self.gpa);
         }
-        _ = self.symbol_exports.remove(exp.options.name);
+        _ = self.symbol_exports.swapRemove(exp.options.name);
         self.gpa.free(exp.options.name);
         self.gpa.destroy(exp);
     }
@@ -1918,19 +1975,34 @@ pub fn analyzeFnBody(self: *Module, decl: *Decl, func: *Fn) !void {
 fn markOutdatedDecl(self: *Module, decl: *Decl) !void {
     log.debug("mark {s} outdated\n", .{decl.name});
     try self.comp.work_queue.writeItem(.{ .analyze_decl = decl });
-    if (self.failed_decls.remove(decl)) |entry| {
+    if (self.failed_decls.swapRemove(decl)) |entry| {
         entry.value.destroy(self.gpa);
+    }
+    if (self.emit_h_failed_decls.swapRemove(decl)) |entry| {
+        entry.value.destroy(self.gpa);
+    }
+    if (self.compile_log_decls.swapRemove(decl)) |*entry| {
+        entry.value.deinit(self.gpa);
     }
     decl.analysis = .outdated;
 }
 
 fn allocateNewDecl(
-    self: *Module,
+    mod: *Module,
     scope: *Scope,
     src_index: usize,
     contents_hash: std.zig.SrcHash,
 ) !*Decl {
-    const new_decl = try self.gpa.create(Decl);
+    // If we have emit-h then we must allocate a bigger structure to store the emit-h state.
+    const new_decl: *Decl = if (mod.emit_h != null) blk: {
+        const parent_struct = try mod.gpa.create(DeclPlusEmitH);
+        parent_struct.* = .{
+            .emit_h = .{},
+            .decl = undefined,
+        };
+        break :blk &parent_struct.decl;
+    } else try mod.gpa.create(Decl);
+
     new_decl.* = .{
         .name = "",
         .scope = scope.namespace(),
@@ -1939,18 +2011,18 @@ fn allocateNewDecl(
         .analysis = .unreferenced,
         .deletion_flag = false,
         .contents_hash = contents_hash,
-        .link = switch (self.comp.bin_file.tag) {
+        .link = switch (mod.comp.bin_file.tag) {
             .coff => .{ .coff = link.File.Coff.TextBlock.empty },
             .elf => .{ .elf = link.File.Elf.TextBlock.empty },
             .macho => .{ .macho = link.File.MachO.TextBlock.empty },
-            .c => .{ .c = {} },
+            .c => .{ .c = link.File.C.DeclBlock.empty },
             .wasm => .{ .wasm = {} },
         },
-        .fn_link = switch (self.comp.bin_file.tag) {
+        .fn_link = switch (mod.comp.bin_file.tag) {
             .coff => .{ .coff = {} },
             .elf => .{ .elf = link.File.Elf.SrcFn.empty },
             .macho => .{ .macho = link.File.MachO.SrcFn.empty },
-            .c => .{ .c = {} },
+            .c => .{ .c = link.File.C.FnBlock.empty },
             .wasm => .{ .wasm = null },
         },
         .generation = 0,
@@ -3090,6 +3162,44 @@ pub fn failNode(
     @setCold(true);
     const src = scope.tree().token_locs[ast_node.firstToken()].start;
     return self.fail(scope, src, format, args);
+}
+
+fn addCompileLog(self: *Module, decl: *Decl, src: usize) error{OutOfMemory}!void {
+    const entry = try self.compile_log_decls.getOrPutValue(self.gpa, decl, .{});
+    try entry.value.append(self.gpa, src);
+}
+
+pub fn failCompileLog(
+    self: *Module,
+    scope: *Scope,
+    src: usize,
+) InnerError!void {
+    switch (scope.tag) {
+        .decl => {
+            const decl = scope.cast(Scope.DeclAnalysis).?.decl;
+            try self.addCompileLog(decl, src);
+        },
+        .block => {
+            const block = scope.cast(Scope.Block).?;
+            try self.addCompileLog(block.decl, src);
+        },
+        .gen_zir => {
+            const gen_zir = scope.cast(Scope.GenZIR).?;
+            try self.addCompileLog(gen_zir.decl, src);
+        },
+        .local_val => {
+            const gen_zir = scope.cast(Scope.LocalVal).?.gen_zir;
+            try self.addCompileLog(gen_zir.decl, src);
+        },
+        .local_ptr => {
+            const gen_zir = scope.cast(Scope.LocalPtr).?.gen_zir;
+            try self.addCompileLog(gen_zir.decl, src);
+        },
+        .zir_module,
+        .file,
+        .container,
+        => unreachable,
+    }
 }
 
 fn failWithOwnedErrorMsg(self: *Module, scope: *Scope, src: usize, err_msg: *Compilation.ErrorMsg) InnerError {

@@ -13,7 +13,7 @@ const glibc_multi_install_dir: ?[]const u8 = build_options.glibc_multi_install_d
 const ThreadPool = @import("ThreadPool.zig");
 const CrossTarget = std.zig.CrossTarget;
 
-const c_header = @embedFile("link/cbe.h");
+const zig_h = link.File.C.zig_h;
 
 test "self-hosted" {
     var ctx = TestContext.init();
@@ -324,11 +324,11 @@ pub const TestContext = struct {
     }
 
     pub fn c(ctx: *TestContext, name: []const u8, target: CrossTarget, src: [:0]const u8, comptime out: [:0]const u8) void {
-        ctx.addC(name, target, .Zig).addCompareObjectFile(src, c_header ++ out);
+        ctx.addC(name, target, .Zig).addCompareObjectFile(src, zig_h ++ out);
     }
 
     pub fn h(ctx: *TestContext, name: []const u8, target: CrossTarget, src: [:0]const u8, comptime out: [:0]const u8) void {
-        ctx.addC(name, target, .Zig).addHeader(src, c_header ++ out);
+        ctx.addC(name, target, .Zig).addHeader(src, zig_h ++ out);
     }
 
     pub fn addCompareOutput(
@@ -700,11 +700,12 @@ pub const TestContext = struct {
                             },
                         }
                     }
-                    if (comp.bin_file.cast(link.File.C)) |c_file| {
-                        std.debug.print("Generated C: \n===============\n{s}\n\n===========\n\n", .{
-                            c_file.main.items,
-                        });
-                    }
+                    // TODO print generated C code
+                    //if (comp.bin_file.cast(link.File.C)) |c_file| {
+                    //    std.debug.print("Generated C: \n===============\n{s}\n\n===========\n\n", .{
+                    //        c_file.main.items,
+                    //    });
+                    //}
                     std.debug.print("Test failed.\n", .{});
                     std.process.exit(1);
                 }
@@ -737,7 +738,7 @@ pub const TestContext = struct {
                     write_node.activate();
                     var out_zir = std.ArrayList(u8).init(allocator);
                     defer out_zir.deinit();
-                    try new_zir_module.writeToStream(allocator, out_zir.outStream());
+                    try new_zir_module.writeToStream(allocator, out_zir.writer());
                     write_node.end();
 
                     var test_node = update_node.start("assert", 0);
@@ -816,6 +817,10 @@ pub const TestContext = struct {
                         // child process.
                         const exe_path = try std.fmt.allocPrint(arena, "." ++ std.fs.path.sep_str ++ "{s}", .{bin_name});
                         if (case.object_format != null and case.object_format.? == .c) {
+                            if (case.target.getExternalExecutor() != .native) {
+                                // We wouldn't be able to run the compiled C code.
+                                return; // Pass test.
+                            }
                             try argv.appendSlice(&[_][]const u8{
                                 std.testing.zig_exe_path,
                                 "run",

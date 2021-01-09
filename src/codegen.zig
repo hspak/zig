@@ -612,8 +612,8 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                             // jump
                             self.code.items.len -= 4;
                         } else for (self.exitlude_jump_relocs.items) |jmp_reloc| {
-                            const amt = self.code.items.len - (jmp_reloc + 4);
-                            if (amt == 0) {
+                            const amt = @intCast(i32, self.code.items.len) - @intCast(i32, jmp_reloc + 8);
+                            if (amt == -4) {
                                 // This return is at the end of the
                                 // code block. We can't just delete
                                 // the space because there may be
@@ -2123,7 +2123,7 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
             try parent_branch.inst_table.ensureCapacity(self.gpa, parent_branch.inst_table.items().len +
                 else_branch.inst_table.items().len);
             for (else_branch.inst_table.items()) |else_entry| {
-                const canon_mcv = if (saved_then_branch.inst_table.remove(else_entry.key)) |then_entry| blk: {
+                const canon_mcv = if (saved_then_branch.inst_table.swapRemove(else_entry.key)) |then_entry| blk: {
                     // The instruction's MCValue is overridden in both branches.
                     parent_branch.inst_table.putAssumeCapacity(else_entry.key, then_entry.value);
                     if (else_entry.value == .dead) {
@@ -2575,12 +2575,12 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                         return self.fail(src, "TODO implement set stack variable from embedded_in_code", .{});
                     },
                     .register => |reg| {
-                        // TODO: strh
-                        const offset = if (stack_offset <= math.maxInt(u12)) blk: {
-                            break :blk Instruction.Offset.imm(@intCast(u12, stack_offset));
-                        } else Instruction.Offset.reg(try self.copyToTmpRegister(src, MCValue{ .immediate = stack_offset }), 0);
-
                         const abi_size = ty.abiSize(self.target.*);
+                        const adj_off = stack_offset + abi_size;
+                        const offset = if (adj_off <= math.maxInt(u12)) blk: {
+                            break :blk Instruction.Offset.imm(@intCast(u12, adj_off));
+                        } else Instruction.Offset.reg(try self.copyToTmpRegister(src, MCValue{ .immediate = adj_off }), 0);
+
                         switch (abi_size) {
                             1 => writeInt(u32, try self.code.addManyAsArray(4), Instruction.strb(.al, reg, .fp, .{
                                 .offset = offset,
@@ -2778,21 +2778,21 @@ fn Function(comptime arch: std.Target.Cpu.Arch) type {
                         writeInt(u32, try self.code.addManyAsArray(4), Instruction.ldr(.al, reg, reg, .{ .offset = Instruction.Offset.none }).toU32());
                     },
                     .stack_offset => |unadjusted_off| {
-                        // TODO: ldrh
                         // TODO: maybe addressing from sp instead of fp
-                        const offset = if (unadjusted_off <= math.maxInt(u12)) blk: {
-                            break :blk Instruction.Offset.imm(@intCast(u12, unadjusted_off));
-                        } else Instruction.Offset.reg(try self.copyToTmpRegister(src, MCValue{ .immediate = unadjusted_off }), 0);
-
                         // TODO: supply type information to genSetReg as we do to genSetStack
                         // const abi_size = ty.abiSize(self.target.*);
                         const abi_size = 4;
+                        const adj_off = unadjusted_off + abi_size;
+                        const offset = if (adj_off <= math.maxInt(u12)) blk: {
+                            break :blk Instruction.Offset.imm(@intCast(u12, adj_off));
+                        } else Instruction.Offset.reg(try self.copyToTmpRegister(src, MCValue{ .immediate = adj_off }), 0);
+
                         switch (abi_size) {
                             1 => writeInt(u32, try self.code.addManyAsArray(4), Instruction.ldrb(.al, reg, .fp, .{
                                 .offset = offset,
                                 .positive = false,
                             }).toU32()),
-                            2 => return self.fail(src, "TODO implement strh", .{}),
+                            2 => return self.fail(src, "TODO implement ldrh", .{}),
                             4 => writeInt(u32, try self.code.addManyAsArray(4), Instruction.ldr(.al, reg, .fp, .{
                                 .offset = offset,
                                 .positive = false,

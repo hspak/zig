@@ -196,7 +196,7 @@ pub fn mainArgs(gpa: *Allocator, arena: *Allocator, args: []const []const u8) !v
         return cmdInit(gpa, arena, cmd_args, .Lib);
     } else if (mem.eql(u8, cmd, "targets")) {
         const info = try detectNativeTargetInfo(arena, .{});
-        const stdout = io.getStdOut().outStream();
+        const stdout = io.getStdOut().writer();
         return @import("print_targets.zig").cmdTargets(arena, cmd_args, stdout, info.target);
     } else if (mem.eql(u8, cmd, "version")) {
         try std.io.getStdOut().writeAll(build_options.version ++ "\n");
@@ -1007,6 +1007,11 @@ fn buildOutputType(
             ensure_libc_on_non_freestanding = true;
             ensure_libcpp_on_non_freestanding = arg_mode == .cpp;
             want_native_include_dirs = true;
+            // Clang's driver enables this switch unconditionally.
+            // Disabling the emission of .eh_frame_hdr can unexpectedly break
+            // some functionality that depend on it, such as C++ exceptions and
+            // DWARF-based stack traces.
+            link_eh_frame_hdr = true;
 
             const COutMode = enum {
                 link,
@@ -1274,6 +1279,10 @@ fn buildOutputType(
                     image_base_override = std.fmt.parseUnsigned(u64, linker_args.items[i], 0) catch |err| {
                         fatal("unable to parse '{s}': {s}", .{ arg, @errorName(err) });
                     };
+                } else if (mem.eql(u8, arg, "--eh-frame-hdr")) {
+                    link_eh_frame_hdr = true;
+                } else if (mem.eql(u8, arg, "--no-eh-frame-hdr")) {
+                    link_eh_frame_hdr = false;
                 } else {
                     warn("unsupported linker arg: {s}", .{arg});
                 }
@@ -1432,8 +1441,14 @@ fn buildOutputType(
         }
     }
 
+    if (comptime std.Target.current.isDarwin()) {
+        // If we want to link against frameworks, we need system headers.
+        if (framework_dirs.items.len > 0 or frameworks.items.len > 0)
+            want_native_include_dirs = true;
+    }
+
     if (cross_target.isNativeOs() and (system_libs.items.len != 0 or want_native_include_dirs)) {
-        const paths = std.zig.system.NativePaths.detect(arena) catch |err| {
+        const paths = std.zig.system.NativePaths.detect(arena, target_info) catch |err| {
             fatal("unable to detect native system paths: {s}", .{@errorName(err)});
         };
         for (paths.warnings.items) |warning| {
@@ -1703,7 +1718,7 @@ fn buildOutputType(
     if (build_options.have_llvm and emit_asm != .no) {
         // LLVM has no way to set this non-globally.
         const argv = [_][*:0]const u8{ "zig (LLVM option parsing)", "--x86-asm-syntax=intel" };
-        @import("llvm_bindings.zig").ParseCommandLineOptions(argv.len, &argv);
+        @import("codegen/llvm/bindings.zig").ParseCommandLineOptions(argv.len, &argv);
     }
 
     gimmeMoreOfThoseSweetSweetFileDescriptors();
@@ -1938,8 +1953,8 @@ fn buildOutputType(
         }
     }
 
-    const stdin = std.io.getStdIn().inStream();
-    const stderr = std.io.getStdErr().outStream();
+    const stdin = std.io.getStdIn().reader();
+    const stderr = std.io.getStdErr().writer();
     var repl_buf: [1024]u8 = undefined;
 
     while (watch) {
@@ -2108,9 +2123,9 @@ fn cmdTranslateC(comp: *Compilation, arena: *Allocator, enable_cache: bool) !voi
         var zig_file = try o_dir.createFile(translated_zig_basename, .{});
         defer zig_file.close();
 
-        var bos = io.bufferedOutStream(zig_file.writer());
-        _ = try std.zig.render(comp.gpa, bos.writer(), tree);
-        try bos.flush();
+        var bw = io.bufferedWriter(zig_file.writer());
+        _ = try std.zig.render(comp.gpa, bw.writer(), tree);
+        try bw.flush();
 
         man.writeManifest() catch |err| warn("failed to write cache manifest: {s}", .{@errorName(err)});
 
@@ -2181,9 +2196,9 @@ pub fn cmdLibC(gpa: *Allocator, args: []const []const u8) !void {
         };
         defer libc.deinit(gpa);
 
-        var bos = io.bufferedOutStream(io.getStdOut().writer());
-        try libc.render(bos.writer());
-        try bos.flush();
+        var bw = io.bufferedWriter(io.getStdOut().writer());
+        try libc.render(bw.writer());
+        try bw.flush();
     }
 }
 
@@ -2564,7 +2579,7 @@ pub fn cmdFmt(gpa: *Allocator, args: []const []const u8) !void {
             const arg = args[i];
             if (mem.startsWith(u8, arg, "-")) {
                 if (mem.eql(u8, arg, "-h") or mem.eql(u8, arg, "--help")) {
-                    const stdout = io.getStdOut().outStream();
+                    const stdout = io.getStdOut().writer();
                     try stdout.writeAll(usage_fmt);
                     return cleanExit();
                 } else if (mem.eql(u8, arg, "--color")) {
@@ -2594,7 +2609,7 @@ pub fn cmdFmt(gpa: *Allocator, args: []const []const u8) !void {
             fatal("cannot use --stdin with positional arguments", .{});
         }
 
-        const stdin = io.getStdIn().inStream();
+        const stdin = io.getStdIn().reader();
 
         const source_code = try stdin.readAllAlloc(gpa, max_src_size);
         defer gpa.free(source_code);
@@ -2611,14 +2626,14 @@ pub fn cmdFmt(gpa: *Allocator, args: []const []const u8) !void {
             process.exit(1);
         }
         if (check_flag) {
-            const anything_changed = try std.zig.render(gpa, io.null_out_stream, tree);
+            const anything_changed = try std.zig.render(gpa, io.null_writer, tree);
             const code = if (anything_changed) @as(u8, 1) else @as(u8, 0);
             process.exit(code);
         }
 
-        var bos = io.bufferedOutStream(io.getStdOut().writer());
-        _ = try std.zig.render(gpa, bos.writer(), tree);
-        try bos.flush();
+        var bw = io.bufferedWriter(io.getStdOut().writer());
+        _ = try std.zig.render(gpa, bw.writer(), tree);
+        try bw.flush();
         return;
     }
 
@@ -2768,7 +2783,7 @@ fn fmtPathFile(
     }
 
     if (check_mode) {
-        const anything_changed = try std.zig.render(fmt.gpa, io.null_out_stream, tree);
+        const anything_changed = try std.zig.render(fmt.gpa, io.null_writer, tree);
         if (anything_changed) {
             const stdout = io.getStdOut().writer();
             try stdout.print("{s}\n", .{file_path});
@@ -2817,11 +2832,11 @@ fn printErrMsgToFile(
 
     var text_buf = std.ArrayList(u8).init(gpa);
     defer text_buf.deinit();
-    const out_stream = text_buf.outStream();
-    try parse_error.render(tree.token_ids, out_stream);
+    const writer = text_buf.writer();
+    try parse_error.render(tree.token_ids, writer);
     const text = text_buf.items;
 
-    const stream = file.outStream();
+    const stream = file.writer();
     try stream.print("{s}:{d}:{d}: error: {s}\n", .{ path, start_loc.line + 1, start_loc.column + 1, text });
 
     if (!color_on) return;
@@ -2890,7 +2905,7 @@ pub fn punt_to_lld(arena: *Allocator, args: []const []const u8) error{OutOfMemor
         argv[i] = try arena.dupeZ(u8, arg); // TODO If there was an argsAllocZ we could avoid this allocation.
     }
     const exit_code = rc: {
-        const llvm = @import("llvm_bindings.zig");
+        const llvm = @import("codegen/llvm/bindings.zig");
         const argc = @intCast(c_int, argv.len);
         if (mem.eql(u8, args[1], "ld.lld")) {
             break :rc llvm.LinkELF(argc, argv.ptr, true);
@@ -3275,7 +3290,7 @@ fn detectNativeTargetInfo(gpa: *Allocator, cross_target: std.zig.CrossTarget) !s
         if (!build_options.have_llvm)
             fatal("CPU features detection is not yet available for {s} without LLVM extensions", .{@tagName(arch)});
 
-        const llvm = @import("llvm_bindings.zig");
+        const llvm = @import("codegen/llvm/bindings.zig");
         const llvm_cpu_name = llvm.GetHostCPUName();
         const llvm_cpu_features = llvm.GetNativeFeatures();
         info.target.cpu = try detectNativeCpuWithLLVM(arch, llvm_cpu_name, llvm_cpu_features);
