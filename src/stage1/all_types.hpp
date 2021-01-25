@@ -2192,9 +2192,11 @@ struct CodeGen {
     bool is_single_threaded;
     bool have_pic;
     bool have_pie;
+    bool have_lto;
     bool link_mode_dynamic;
     bool dll_export_fns;
     bool have_stack_probing;
+    bool red_zone;
     bool function_sections;
     bool test_is_evented;
     bool valgrind_enabled;

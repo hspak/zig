@@ -50,7 +50,7 @@ pub const LineInfo = struct {
     }
 };
 
-var stderr_mutex = std.Mutex{};
+var stderr_mutex = std.Thread.Mutex{};
 
 /// Deprecated. Use `std.log` functions for logging or `std.debug.print` for
 /// "printf debugging".
@@ -65,7 +65,7 @@ pub fn print(comptime fmt: []const u8, args: anytype) void {
     nosuspend stderr.print(fmt, args) catch return;
 }
 
-pub fn getStderrMutex() *std.Mutex {
+pub fn getStderrMutex() *std.Thread.Mutex {
     return &stderr_mutex;
 }
 
@@ -235,7 +235,7 @@ pub fn panic(comptime format: []const u8, args: anytype) noreturn {
 var panicking: u8 = 0;
 
 // Locked to avoid interleaving panic messages from multiple threads.
-var panic_mutex = std.Mutex{};
+var panic_mutex = std.Thread.Mutex{};
 
 /// Counts how many times the panic handler is invoked by this thread.
 /// This is used to catch and handle panics triggered by the panic handler.
@@ -249,6 +249,24 @@ pub fn panicExtra(trace: ?*const builtin.StackTrace, first_trace_addr: ?usize, c
         // the handler.
         resetSegfaultHandler();
     }
+
+    if (comptime std.Target.current.isDarwin() and std.Target.current.cpu.arch == .aarch64)
+        nosuspend {
+            // As a workaround for not having threadlocal variable support in LLD for this target,
+            // we have a simpler panic implementation that does not use threadlocal variables.
+            // TODO https://github.com/ziglang/zig/issues/7527
+            const stderr = io.getStdErr().writer();
+            if (@atomicRmw(u8, &panicking, .Add, 1, .SeqCst) == 0) {
+                stderr.print("panic: " ++ format ++ "\n", args) catch os.abort();
+                if (trace) |t| {
+                    dumpStackTrace(t.*);
+                }
+                dumpCurrentStackTrace(first_trace_addr);
+            } else {
+                stderr.print("Panicked during a panic. Aborting.\n", .{}) catch os.abort();
+            }
+            os.abort();
+        };
 
     nosuspend switch (panic_stage) {
         0 => {
@@ -280,7 +298,7 @@ pub fn panicExtra(trace: ?*const builtin.StackTrace, first_trace_addr: ?usize, c
                 // and call abort()
 
                 // Sleep forever without hammering the CPU
-                var event: std.StaticResetEvent = .{};
+                var event: std.Thread.StaticResetEvent = .{};
                 event.wait();
                 unreachable;
             }
@@ -639,6 +657,7 @@ fn printLineInfo(
             } else |err| switch (err) {
                 error.EndOfFile, error.FileNotFound => {},
                 error.BadPathName => {},
+                error.AccessDenied => {},
                 else => return err,
             }
         }

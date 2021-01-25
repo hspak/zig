@@ -70,20 +70,26 @@ pub const log_level: std.log.Level = switch (std.builtin.mode) {
     .ReleaseSmall => .crit,
 };
 
+var log_scopes: std.ArrayListUnmanaged([]const u8) = .{};
+
 pub fn log(
     comptime level: std.log.Level,
     comptime scope: @TypeOf(.EnumLiteral),
     comptime format: []const u8,
     args: anytype,
 ) void {
-    // Hide debug messages unless added with `-Dlog=foo`.
+    // Hide debug messages unless:
+    // * logging enabled with `-Dlog`.
+    // * the --debug-log arg for the scope has been provided
     if (@enumToInt(level) > @enumToInt(std.log.level) or
         @enumToInt(level) > @enumToInt(std.log.Level.info))
     {
+        if (!build_options.enable_logging) return;
+
         const scope_name = @tagName(scope);
-        const ok = comptime for (build_options.log_scopes) |log_scope| {
+        for (log_scopes.items) |log_scope| {
             if (mem.eql(u8, log_scope, scope_name))
-                break true;
+                break;
         } else return;
     }
 
@@ -156,6 +162,8 @@ pub fn mainArgs(gpa: *Allocator, arena: *Allocator, args: []const []const u8) !v
         }
     }
 
+    defer log_scopes.deinit(gpa);
+
     const cmd = args[1];
     const cmd_args = args[2..];
     if (mem.eql(u8, cmd, "build-exe")) {
@@ -221,7 +229,6 @@ const usage_build_generic =
     \\
     \\Supported file types:
     \\                    .zig    Zig source code
-    \\                    .zir    Zig Intermediate Representation code
     \\                      .o    ELF object file
     \\                      .o    MACH-O (macOS) object file
     \\                    .obj    COFF (Windows) object file
@@ -245,8 +252,6 @@ const usage_build_generic =
     \\  -fno-emit-bin             Do not output machine code
     \\  -femit-asm[=path]         Output .s (assembly code)
     \\  -fno-emit-asm             (default) Do not output .s (assembly code)
-    \\  -femit-zir[=path]         Produce a .zir file with Zig IR
-    \\  -fno-emit-zir             (default) Do not produce a .zir file with Zig IR
     \\  -femit-llvm-ir[=path]     Produce a .ll file with LLVM IR (requires LLVM extensions)
     \\  -fno-emit-llvm-ir         (default) Do not produce a .ll file with LLVM IR
     \\  -femit-h[=path]           Generate a C header file (.h)
@@ -267,6 +272,8 @@ const usage_build_generic =
     \\  -mcmodel=[default|tiny|   Limit range of code and data virtual addresses
     \\            small|kernel|
     \\            medium|large]
+    \\  -mred-zone                Force-enable the "red-zone"
+    \\  -mno-red-zone             Force-disable the "red-zone"
     \\  --name [name]             Override root name (not a file path)
     \\  -O [mode]                 Choose what to optimize for
     \\    Debug                   (default) Optimizations off, safety on
@@ -280,6 +287,8 @@ const usage_build_generic =
     \\  -fno-PIC                  Force-disable Position Independent Code
     \\  -fPIE                     Force-enable Position Independent Executable
     \\  -fno-PIE                  Force-disable Position Independent Executable
+    \\  -flto                     Force-enable Link Time Optimization (requires LLVM extensions)
+    \\  -fno-lto                  Force-disable Link Time Optimization
     \\  -fstack-check             Enable stack probing in unsafe builds
     \\  -fno-stack-check          Disable stack probing in safe builds
     \\  -fsanitize-c              Enable C undefined behavior detection in unsafe builds
@@ -359,6 +368,7 @@ const usage_build_generic =
     \\  --verbose-llvm-ir            Enable compiler debug output for LLVM IR
     \\  --verbose-cimport            Enable compiler debug output for C imports
     \\  --verbose-llvm-cpu-features  Enable compiler debug output for LLVM CPU features
+    \\  --debug-log [scope]          Enable printing debug/info log messages for scope
     \\
 ;
 
@@ -503,8 +513,10 @@ fn buildOutputType(
     var enable_cache: ?bool = null;
     var want_pic: ?bool = null;
     var want_pie: ?bool = null;
+    var want_lto: ?bool = null;
     var want_sanitize_c: ?bool = null;
     var want_stack_check: ?bool = null;
+    var want_red_zone: ?bool = null;
     var want_valgrind: ?bool = null;
     var want_tsan: ?bool = null;
     var want_compiler_rt: ?bool = null;
@@ -517,6 +529,9 @@ fn buildOutputType(
     var linker_bind_global_refs_locally: ?bool = null;
     var linker_z_nodelete = false;
     var linker_z_defs = false;
+    var linker_tsaware = false;
+    var linker_nxcompat = false;
+    var linker_dynamicbase = false;
     var test_evented_io = false;
     var stack_size_override: ?u64 = null;
     var image_base_override: ?u64 = null;
@@ -537,6 +552,8 @@ fn buildOutputType(
     var main_pkg_path: ?[]const u8 = null;
     var clang_preprocessor_mode: Compilation.ClangPreprocessorMode = .no;
     var subsystem: ?std.Target.SubSystem = null;
+    var major_subsystem_version: ?u32 = null;
+    var minor_subsystem_version: ?u32 = null;
 
     var system_libs = std.ArrayList([]const u8).init(gpa);
     defer system_libs.deinit();
@@ -811,6 +828,10 @@ fn buildOutputType(
                         if (i + 1 >= args.len) fatal("expected parameter after {s}", .{arg});
                         i += 1;
                         override_lib_dir = args[i];
+                    } else if (mem.eql(u8, arg, "--debug-log")) {
+                        if (i + 1 >= args.len) fatal("expected parameter after {s}", .{arg});
+                        i += 1;
+                        try log_scopes.append(gpa, args[i]);
                     } else if (mem.eql(u8, arg, "-fcompiler-rt")) {
                         want_compiler_rt = true;
                     } else if (mem.eql(u8, arg, "-fno-compiler-rt")) {
@@ -839,10 +860,18 @@ fn buildOutputType(
                         want_pie = true;
                     } else if (mem.eql(u8, arg, "-fno-PIE")) {
                         want_pie = false;
+                    } else if (mem.eql(u8, arg, "-flto")) {
+                        want_lto = true;
+                    } else if (mem.eql(u8, arg, "-fno-lto")) {
+                        want_lto = false;
                     } else if (mem.eql(u8, arg, "-fstack-check")) {
                         want_stack_check = true;
                     } else if (mem.eql(u8, arg, "-fno-stack-check")) {
                         want_stack_check = false;
+                    } else if (mem.eql(u8, arg, "-mred-zone")) {
+                        want_red_zone = true;
+                    } else if (mem.eql(u8, arg, "-mno-red-zone")) {
+                        want_red_zone = false;
                     } else if (mem.eql(u8, arg, "-fsanitize-c")) {
                         want_sanitize_c = true;
                     } else if (mem.eql(u8, arg, "-fno-sanitize-c")) {
@@ -1068,6 +1097,10 @@ fn buildOutputType(
                     .no_pic => want_pic = false,
                     .pie => want_pie = true,
                     .no_pie => want_pie = false,
+                    .lto => want_lto = true,
+                    .no_lto => want_lto = false,
+                    .red_zone => want_red_zone = true,
+                    .no_red_zone => want_red_zone = false,
                     .nostdlib => ensure_libc_on_non_freestanding = false,
                     .nostdlib_cpp => ensure_libcpp_on_non_freestanding = false,
                     .shared => {
@@ -1279,10 +1312,56 @@ fn buildOutputType(
                     image_base_override = std.fmt.parseUnsigned(u64, linker_args.items[i], 0) catch |err| {
                         fatal("unable to parse '{s}': {s}", .{ arg, @errorName(err) });
                     };
+                } else if (mem.eql(u8, arg, "-T")) {
+                    i += 1;
+                    if (i >= linker_args.items.len) {
+                        fatal("expected linker arg after '{s}'", .{arg});
+                    }
+                    linker_script = linker_args.items[i];
                 } else if (mem.eql(u8, arg, "--eh-frame-hdr")) {
                     link_eh_frame_hdr = true;
                 } else if (mem.eql(u8, arg, "--no-eh-frame-hdr")) {
                     link_eh_frame_hdr = false;
+                } else if (mem.eql(u8, arg, "--tsaware")) {
+                    linker_tsaware = true;
+                } else if (mem.eql(u8, arg, "--nxcompat")) {
+                    linker_nxcompat = true;
+                } else if (mem.eql(u8, arg, "--dynamicbase")) {
+                    linker_dynamicbase = true;
+                } else if (mem.eql(u8, arg, "--high-entropy-va")) {
+                    // This option does not do anything.
+                } else if (mem.eql(u8, arg, "--export-all-symbols")) {
+                    rdynamic = true;
+                } else if (mem.eql(u8, arg, "--start-group") or
+                    mem.eql(u8, arg, "--end-group"))
+                {
+                    // We don't need to care about these because these args are
+                    // for resolving circular dependencies but our linker takes
+                    // care of this without explicit args.
+                } else if (mem.startsWith(u8, arg, "--major-os-version") or
+                    mem.startsWith(u8, arg, "--minor-os-version"))
+                {
+                    // This option does not do anything.
+                } else if (mem.startsWith(u8, arg, "--major-subsystem-version=")) {
+                    major_subsystem_version = std.fmt.parseUnsigned(
+                        u32,
+                        arg["--major-subsystem-version=".len..],
+                        10,
+                    ) catch |err| {
+                        fatal("unable to parse '{s}': {s}", .{ arg, @errorName(err) });
+                    };
+                } else if (mem.startsWith(u8, arg, "--minor-subsystem-version=")) {
+                    minor_subsystem_version = std.fmt.parseUnsigned(
+                        u32,
+                        arg["--minor-subsystem-version=".len..],
+                        10,
+                    ) catch |err| {
+                        fatal("unable to parse '{s}': {s}", .{ arg, @errorName(err) });
+                    };
+                } else if (mem.startsWith(u8, arg, "--major-os-version=") or
+                    mem.startsWith(u8, arg, "--minor-os-version="))
+                {
+                    // These args do nothing.
                 } else {
                     warn("unsupported linker arg: {s}", .{arg});
                 }
@@ -1622,18 +1701,12 @@ fn buildOutputType(
     var emit_docs_resolved = try emit_docs.resolve("docs");
     defer emit_docs_resolved.deinit();
 
-    const zir_out_path: ?[]const u8 = switch (emit_zir) {
-        .no => null,
-        .yes_default_path => blk: {
-            if (root_src_file) |rsf| {
-                if (mem.endsWith(u8, rsf, ".zir")) {
-                    break :blk try std.fmt.allocPrint(arena, "{s}.out.zir", .{root_name});
-                }
-            }
-            break :blk try std.fmt.allocPrint(arena, "{s}.zir", .{root_name});
+    switch (emit_zir) {
+        .no => {},
+        .yes_default_path, .yes => {
+            fatal("The -femit-zir implementation has been intentionally deleted so that it can be rewritten as a proper backend.", .{});
         },
-        .yes => |p| p,
-    };
+    }
 
     const root_pkg: ?*Package = if (root_src_file) |src_path| blk: {
         if (main_pkg_path) |p| {
@@ -1744,7 +1817,7 @@ fn buildOutputType(
         .dll_export_fns = dll_export_fns,
         .object_format = object_format,
         .optimize_mode = optimize_mode,
-        .keep_source_files_loaded = zir_out_path != null,
+        .keep_source_files_loaded = false,
         .clang_argv = clang_argv.items,
         .lld_argv = lld_argv.items,
         .lib_dirs = lib_dirs.items,
@@ -1758,8 +1831,10 @@ fn buildOutputType(
         .link_libcpp = link_libcpp,
         .want_pic = want_pic,
         .want_pie = want_pie,
+        .want_lto = want_lto,
         .want_sanitize_c = want_sanitize_c,
         .want_stack_check = want_stack_check,
+        .want_red_zone = want_red_zone,
         .want_valgrind = want_valgrind,
         .want_tsan = want_tsan,
         .want_compiler_rt = want_compiler_rt,
@@ -1776,6 +1851,11 @@ fn buildOutputType(
         .linker_bind_global_refs_locally = linker_bind_global_refs_locally,
         .linker_z_nodelete = linker_z_nodelete,
         .linker_z_defs = linker_z_defs,
+        .linker_tsaware = linker_tsaware,
+        .linker_nxcompat = linker_nxcompat,
+        .linker_dynamicbase = linker_dynamicbase,
+        .major_subsystem_version = major_subsystem_version,
+        .minor_subsystem_version = minor_subsystem_version,
         .link_eh_frame_hdr = link_eh_frame_hdr,
         .link_emit_relocs = link_emit_relocs,
         .stack_size_override = stack_size_override,
@@ -1835,7 +1915,7 @@ fn buildOutputType(
         }
     };
 
-    updateModule(gpa, comp, zir_out_path, hook) catch |err| switch (err) {
+    updateModule(gpa, comp, hook) catch |err| switch (err) {
         error.SemanticAnalyzeFail => if (!watch) process.exit(1),
         else => |e| return e,
     };
@@ -1970,7 +2050,7 @@ fn buildOutputType(
                 if (output_mode == .Exe) {
                     try comp.makeBinFileWritable();
                 }
-                updateModule(gpa, comp, zir_out_path, hook) catch |err| switch (err) {
+                updateModule(gpa, comp, hook) catch |err| switch (err) {
                     error.SemanticAnalyzeFail => continue,
                     else => |e| return e,
                 };
@@ -1993,7 +2073,7 @@ const AfterUpdateHook = union(enum) {
     update: []const u8,
 };
 
-fn updateModule(gpa: *Allocator, comp: *Compilation, zir_out_path: ?[]const u8, hook: AfterUpdateHook) !void {
+fn updateModule(gpa: *Allocator, comp: *Compilation, hook: AfterUpdateHook) !void {
     try comp.update();
 
     var errors = try comp.getAllErrorsAlloc();
@@ -2002,6 +2082,10 @@ fn updateModule(gpa: *Allocator, comp: *Compilation, zir_out_path: ?[]const u8, 
     if (errors.list.len != 0) {
         for (errors.list) |full_err_msg| {
             full_err_msg.renderToStdErr();
+        }
+        const log_text = comp.getCompileLogOutput();
+        if (log_text.len != 0) {
+            std.debug.print("\nCompile Log Output:\n{s}", .{log_text});
         }
         return error.SemanticAnalyzeFail;
     } else switch (hook) {
@@ -2013,20 +2097,6 @@ fn updateModule(gpa: *Allocator, comp: *Compilation, zir_out_path: ?[]const u8, 
             full_path,
             .{},
         ),
-    }
-
-    if (zir_out_path) |zop| {
-        const module = comp.bin_file.options.module orelse
-            fatal("-femit-zir with no zig source code", .{});
-        var new_zir_module = try zir.emit(gpa, module);
-        defer new_zir_module.deinit(gpa);
-
-        const baf = try io.BufferedAtomicFile.create(gpa, fs.cwd(), zop, .{});
-        defer baf.destroy();
-
-        try new_zir_module.writeToStream(gpa, baf.stream());
-
-        try baf.finish();
     }
 }
 
@@ -2496,7 +2566,7 @@ pub fn cmdBuild(gpa: *Allocator, arena: *Allocator, args: []const []const u8) !v
         };
         defer comp.destroy();
 
-        try updateModule(gpa, comp, null, .none);
+        try updateModule(gpa, comp, .none);
         try comp.makeBinFileExecutable();
 
         child_argv.items[argv_index_exe] = try comp.bin_file.options.emit.?.directory.join(
@@ -2948,6 +3018,8 @@ pub const ClangArgIterator = struct {
         no_pic,
         pie,
         no_pie,
+        lto,
+        no_lto,
         nostdlib,
         nostdlib_cpp,
         shared,
@@ -2969,6 +3041,8 @@ pub const ClangArgIterator = struct {
         framework_dir,
         framework,
         nostdlibinc,
+        red_zone,
+        no_red_zone,
     };
 
     const Args = struct {
@@ -3050,7 +3124,7 @@ pub const ClangArgIterator = struct {
             arg = mem.span(self.argv[self.next_index]);
             self.incrementArgIndex();
         }
-        if (!mem.startsWith(u8, arg, "-")) {
+        if (mem.eql(u8, arg, "-") or !mem.startsWith(u8, arg, "-")) {
             self.zig_equivalent = .positional;
             self.only_arg = arg;
             return;
