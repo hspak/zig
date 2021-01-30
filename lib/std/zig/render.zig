@@ -228,7 +228,8 @@ fn renderContainerDecl(allocator: *mem.Allocator, ais: anytype, tree: *ast.Tree,
 
             try renderDocComments(tree, ais, test_decl, test_decl.doc_comments);
             try renderToken(tree, ais, test_decl.test_token, .Space);
-            try renderExpression(allocator, ais, tree, test_decl.name, .Space);
+            if (test_decl.name) |name|
+                try renderExpression(allocator, ais, tree, name, .Space);
             try renderExpression(allocator, ais, tree, test_decl.body_node, space);
         },
 
@@ -964,13 +965,13 @@ fn renderExpression(
             };
 
             if (field_inits.len == 1) blk: {
-                const field_init = field_inits[0].cast(ast.Node.FieldInitializer).?;
-
-                switch (field_init.expr.tag) {
-                    .StructInitializer,
-                    .StructInitializerDot,
-                    => break :blk,
-                    else => {},
+                if (field_inits[0].cast(ast.Node.FieldInitializer)) |field_init| {
+                    switch (field_init.expr.tag) {
+                        .StructInitializer,
+                        .StructInitializerDot,
+                        => break :blk,
+                        else => {},
+                    }
                 }
 
                 // if the expression outputs to multiline, make this struct multiline
@@ -983,7 +984,7 @@ fn renderExpression(
                     .node => |node| try renderExpression(allocator, ais, tree, node, Space.None),
                 }
                 try renderToken(tree, ais, lbrace, Space.Space);
-                try renderExpression(allocator, ais, tree, &field_init.base, Space.Space);
+                try renderExpression(allocator, ais, tree, field_inits[0], Space.Space);
                 return renderToken(tree, ais, rtoken, space);
             }
 
