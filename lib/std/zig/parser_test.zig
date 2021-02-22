@@ -2355,17 +2355,17 @@ test "zig fmt: functions" {
         \\extern fn puts(s: *const u8) c_int;
         \\extern "c" fn puts(s: *const u8) c_int;
         \\export fn puts(s: *const u8) c_int;
-        \\inline fn puts(s: *const u8) c_int;
+        \\fn puts(s: *const u8) callconv(.Inline) c_int;
         \\noinline fn puts(s: *const u8) c_int;
         \\pub extern fn puts(s: *const u8) c_int;
         \\pub extern "c" fn puts(s: *const u8) c_int;
         \\pub export fn puts(s: *const u8) c_int;
-        \\pub inline fn puts(s: *const u8) c_int;
+        \\pub fn puts(s: *const u8) callconv(.Inline) c_int;
         \\pub noinline fn puts(s: *const u8) c_int;
         \\pub extern fn puts(s: *const u8) align(2 + 2) c_int;
         \\pub extern "c" fn puts(s: *const u8) align(2 + 2) c_int;
         \\pub export fn puts(s: *const u8) align(2 + 2) c_int;
-        \\pub inline fn puts(s: *const u8) align(2 + 2) c_int;
+        \\pub fn puts(s: *const u8) align(2 + 2) callconv(.Inline) c_int;
         \\pub noinline fn puts(s: *const u8) align(2 + 2) c_int;
         \\
     );
@@ -3822,7 +3822,7 @@ fn testCanonical(source: []const u8) !void {
     return testTransform(source, source);
 }
 
-const Error = @TagType(std.zig.ast.Error);
+const Error = std.meta.Tag(std.zig.ast.Error);
 
 fn testError(source: []const u8, expected_errors: []const Error) !void {
     const tree = try std.zig.parse(std.testing.allocator, source);
