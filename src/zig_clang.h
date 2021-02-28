@@ -1097,6 +1097,7 @@ ZIG_EXTERN_C const struct ZigClangAPSInt *ZigClangAPSInt_negate(const struct Zig
 ZIG_EXTERN_C void ZigClangAPSInt_free(const struct ZigClangAPSInt *self);
 ZIG_EXTERN_C const uint64_t *ZigClangAPSInt_getRawData(const struct ZigClangAPSInt *self);
 ZIG_EXTERN_C unsigned ZigClangAPSInt_getNumWords(const struct ZigClangAPSInt *self);
+ZIG_EXTERN_C bool ZigClangAPSInt_lessThanEqual(const struct ZigClangAPSInt *self, uint64_t rhs);
 
 ZIG_EXTERN_C uint64_t ZigClangAPInt_getLimitedValue(const struct ZigClangAPInt *self, uint64_t limit);
 
@@ -1155,6 +1156,10 @@ ZIG_EXTERN_C struct ZigClangQualType ZigClangParenType_getInnerType(const struct
 ZIG_EXTERN_C struct ZigClangQualType ZigClangAttributedType_getEquivalentType(const struct ZigClangAttributedType *);
 
 ZIG_EXTERN_C struct ZigClangQualType ZigClangMacroQualifiedType_getModifiedType(const struct ZigClangMacroQualifiedType *);
+
+ZIG_EXTERN_C struct ZigClangQualType ZigClangTypeOfType_getUnderlyingType(const struct ZigClangTypeOfType *);
+
+ZIG_EXTERN_C const struct ZigClangExpr *ZigClangTypeOfExprType_getUnderlyingExpr(const struct ZigClangTypeOfExprType *);
 
 ZIG_EXTERN_C struct ZigClangQualType ZigClangElaboratedType_getNamedType(const struct ZigClangElaboratedType *);
 ZIG_EXTERN_C enum ZigClangElaboratedTypeKeyword ZigClangElaboratedType_getKeyword(const struct ZigClangElaboratedType *);

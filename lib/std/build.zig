@@ -790,7 +790,7 @@ pub const Builder = struct {
                 var list = ArrayList([]const u8).init(self.allocator);
                 list.append(s) catch unreachable;
                 list.append(value) catch unreachable;
-                _ = self.user_input_options.put(name, UserInputOption{
+                self.user_input_options.put(name, UserInputOption{
                     .name = name,
                     .value = UserValue{ .List = list },
                     .used = false,
@@ -799,7 +799,7 @@ pub const Builder = struct {
             UserValue.List => |*list| {
                 // append to the list
                 list.append(value) catch unreachable;
-                _ = self.user_input_options.put(name, UserInputOption{
+                self.user_input_options.put(name, UserInputOption{
                     .name = name,
                     .value = UserValue{ .List = list.* },
                     .used = false,
@@ -1420,6 +1420,8 @@ pub const LibExeObjStep = struct {
 
     /// Overrides the default stack size
     stack_size: ?u64 = null,
+
+    want_lto: ?bool = null,
 
     const LinkObject = union(enum) {
         StaticPath: []const u8,
@@ -2589,6 +2591,14 @@ pub const LibExeObjStep = struct {
             }
         }
 
+        if (self.want_lto) |lto| {
+            if (lto) {
+                try zig_args.append("-flto");
+            } else {
+                try zig_args.append("-fno-lto");
+            }
+        }
+
         if (self.subsystem) |subsystem| {
             try zig_args.append("--subsystem");
             try zig_args.append(switch (subsystem) {
@@ -2763,7 +2773,9 @@ pub const InstallDirectoryOptions = struct {
             .install_dir = self.install_dir.dupe(b),
             .install_subdir = b.dupe(self.install_subdir),
             .exclude_extensions = if (self.exclude_extensions) |extensions|
-                b.dupeStrings(extensions) else null,
+                b.dupeStrings(extensions)
+            else
+                null,
         };
     }
 };
