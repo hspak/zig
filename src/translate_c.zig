@@ -11,6 +11,7 @@ const math = std.math;
 const ast = @import("translate_c/ast.zig");
 const Node = ast.Node;
 const Tag = Node.Tag;
+const c_builtins = std.c.builtins;
 
 const CallingConvention = std.builtin.CallingConvention;
 
@@ -1054,6 +1055,14 @@ fn transStmt(
             return maybeSuppressResult(c, scope, result_used, expr);
         },
         .OffsetOfExprClass => return transOffsetOfExpr(c, scope, @ptrCast(*const clang.OffsetOfExpr, stmt), result_used),
+        .CompoundLiteralExprClass => {
+            const compound_literal = @ptrCast(*const clang.CompoundLiteralExpr, stmt);
+            return transExpr(c, scope, compound_literal.getInitializer(), result_used);
+        },
+        .GenericSelectionExprClass => {
+            const gen_sel = @ptrCast(*const clang.GenericSelectionExpr, stmt);
+            return transExpr(c, scope, gen_sel.getResultExpr(), result_used);
+        },
         else => {
             return fail(c, error.UnsupportedTranslation, stmt.getBeginLoc(), "TODO implement translation of stmt class {s}", .{@tagName(sc)});
         },
@@ -1518,7 +1527,7 @@ fn transImplicitCastExpr(
             return maybeSuppressResult(c, scope, result_used, ne);
         },
         .BuiltinFnToFnPtr => {
-            return transExpr(c, scope, sub_expr, result_used);
+            return transBuiltinFnExpr(c, scope, sub_expr, result_used);
         },
         .ToVoid => {
             // Should only appear in the rhs and lhs of a ConditionalOperator
@@ -1532,6 +1541,22 @@ fn transImplicitCastExpr(
             .{@tagName(kind)},
         ),
     }
+}
+
+fn isBuiltinDefined(name: []const u8) bool {
+    inline for (std.meta.declarations(c_builtins)) |decl| {
+        if (std.mem.eql(u8, name, decl.name)) return true;
+    }
+    return false;
+}
+
+fn transBuiltinFnExpr(c: *Context, scope: *Scope, expr: *const clang.Expr, used: ResultUsed) TransError!Node {
+    const node = try transExpr(c, scope, expr, used);
+    if (node.castTag(.identifier)) |ident| {
+        const name = ident.data;
+        if (!isBuiltinDefined(name)) return fail(c, error.UnsupportedTranslation, expr.getBeginLoc(), "TODO implement function '{s}' in std.c.builtins", .{name});
+    }
+    return node;
 }
 
 fn transBoolExpr(
@@ -1577,6 +1602,10 @@ fn exprIsNarrowStringLiteral(expr: *const clang.Expr) bool {
         .ParenExprClass => {
             const op_expr = @ptrCast(*const clang.ParenExpr, expr).getSubExpr();
             return exprIsNarrowStringLiteral(op_expr);
+        },
+        .GenericSelectionExprClass => {
+            const gen_sel = @ptrCast(*const clang.GenericSelectionExpr, expr);
+            return exprIsNarrowStringLiteral(gen_sel.getResultExpr());
         },
         else => return false,
     }
@@ -1832,6 +1861,7 @@ fn cIntTypeForEnum(enum_qt: clang.QualType) clang.QualType {
     return enum_decl.getIntegerType();
 }
 
+// when modifying this function, make sure to also update std.meta.cast
 fn transCCast(
     c: *Context,
     scope: *Scope,
@@ -2560,8 +2590,8 @@ fn transConstantExpr(c: *Context, scope: *Scope, expr: *const clang.Expr, used: 
             });
             return maybeSuppressResult(c, scope, used, as_node);
         },
-        else => {
-            return fail(c, error.UnsupportedTranslation, expr.getBeginLoc(), "unsupported constant expression kind", .{});
+        else => |kind| {
+            return fail(c, error.UnsupportedTranslation, expr.getBeginLoc(), "unsupported constant expression kind '{s}'", .{kind});
         },
     }
 }
@@ -2720,6 +2750,10 @@ fn cIsFunctionDeclRef(expr: *const clang.Expr) bool {
             const un_op = @ptrCast(*const clang.UnaryOperator, expr);
             const opcode = un_op.getOpcode();
             return (opcode == .AddrOf or opcode == .Deref) and cIsFunctionDeclRef(un_op.getSubExpr());
+        },
+        .GenericSelectionExprClass => {
+            const gen_sel = @ptrCast(*const clang.GenericSelectionExpr, expr);
+            return cIsFunctionDeclRef(gen_sel.getResultExpr());
         },
         else => return false,
     }
@@ -4431,40 +4465,68 @@ fn parseCNumLit(c: *Context, m: *MacroCtx) ParseError!Node {
 
     switch (m.list[m.i].id) {
         .IntegerLiteral => |suffix| {
+            var radix: []const u8 = "decimal";
             if (lit_bytes.len > 2 and lit_bytes[0] == '0') {
                 switch (lit_bytes[1]) {
                     '0'...'7' => {
                         // Octal
-                        lit_bytes = try std.fmt.allocPrint(c.arena, "0o{s}", .{lit_bytes});
+                        lit_bytes = try std.fmt.allocPrint(c.arena, "0o{s}", .{lit_bytes[1..]});
+                        radix = "octal";
                     },
                     'X' => {
                         // Hexadecimal with capital X, valid in C but not in Zig
                         lit_bytes = try std.fmt.allocPrint(c.arena, "0x{s}", .{lit_bytes[2..]});
+                        radix = "hexadecimal";
+                    },
+                    'x' => {
+                        radix = "hexadecimal";
                     },
                     else => {},
                 }
             }
 
-            if (suffix == .none) {
-                return transCreateNodeNumber(c, lit_bytes, .int);
-            }
-
             const type_node = try Tag.type.create(c.arena, switch (suffix) {
+                .none => "c_int",
                 .u => "c_uint",
                 .l => "c_long",
                 .lu => "c_ulong",
                 .ll => "c_longlong",
                 .llu => "c_ulonglong",
-                else => unreachable,
+                .f => unreachable,
             });
             lit_bytes = lit_bytes[0 .. lit_bytes.len - switch (suffix) {
-                .u, .l => @as(u8, 1),
+                .none => @as(u8, 0),
+                .u, .l => 1,
                 .lu, .ll => 2,
                 .llu => 3,
-                else => unreachable,
+                .f => unreachable,
             }];
-            const rhs = try transCreateNodeNumber(c, lit_bytes, .int);
-            return Tag.as.create(c.arena, .{ .lhs = type_node, .rhs = rhs });
+
+            const value = std.fmt.parseInt(i128, lit_bytes, 0) catch math.maxInt(i128);
+
+            // make the output less noisy by skipping promoteIntLiteral where
+            // it's guaranteed to not be required because of C standard type constraints
+            const guaranteed_to_fit = switch (suffix) {
+                .none => if (math.cast(i16, value)) |_| true else |_| false,
+                .u => if (math.cast(u16, value)) |_| true else |_| false,
+                .l => if (math.cast(i32, value)) |_| true else |_| false,
+                .lu => if (math.cast(u32, value)) |_| true else |_| false,
+                .ll => if (math.cast(i64, value)) |_| true else |_| false,
+                .llu => if (math.cast(u64, value)) |_| true else |_| false,
+                .f => unreachable,
+            };
+
+            const literal_node = try transCreateNodeNumber(c, lit_bytes, .int);
+
+            if (guaranteed_to_fit) {
+                return Tag.as.create(c.arena, .{ .lhs = type_node, .rhs = literal_node });
+            } else {
+                return Tag.std_meta_promoteIntLiteral.create(c.arena, .{
+                    .type = type_node,
+                    .value = literal_node,
+                    .radix = try Tag.enum_literal.create(c.arena, radix),
+                });
+            }
         },
         .FloatLiteral => |suffix| {
             if (lit_bytes[0] == '.')
@@ -4714,6 +4776,10 @@ fn parseCPrimaryExprInner(c: *Context, m: *MacroCtx, scope: *Scope) ParseError!N
         },
         .Identifier => {
             const mangled_name = scope.getAlias(slice);
+            if (mem.startsWith(u8, mangled_name, "__builtin_") and !isBuiltinDefined(mangled_name)) {
+                try m.fail(c, "TODO implement function '{s}' in std.c.builtins", .{mangled_name});
+                return error.ParseError;
+            }
             return Tag.identifier.create(c.arena, builtin_typedef_map.get(mangled_name) orelse mangled_name);
         },
         .LParen => {

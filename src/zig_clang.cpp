@@ -2445,6 +2445,11 @@ struct ZigClangQualType ZigClangFunctionType_getReturnType(const struct ZigClang
     return bitcast(casted->getReturnType());
 }
 
+const struct ZigClangExpr *ZigClangGenericSelectionExpr_getResultExpr(const struct ZigClangGenericSelectionExpr *self) {
+    auto casted = reinterpret_cast<const clang::GenericSelectionExpr *>(self);
+    return reinterpret_cast<const struct ZigClangExpr *>(casted->getResultExpr());
+}
+
 bool ZigClangFunctionProtoType_isVariadic(const struct ZigClangFunctionProtoType *self) {
     auto casted = reinterpret_cast<const clang::FunctionProtoType *>(self);
     return casted->isVariadic();
@@ -2806,6 +2811,11 @@ const struct ZigClangExpr *ZigClangCompoundAssignOperator_getLHS(const struct Zi
 const struct ZigClangExpr *ZigClangCompoundAssignOperator_getRHS(const struct ZigClangCompoundAssignOperator *self) {
     auto casted = reinterpret_cast<const clang::CompoundAssignOperator *>(self);
     return reinterpret_cast<const struct ZigClangExpr *>(casted->getRHS());
+}
+
+const struct ZigClangExpr *ZigClangCompoundLiteralExpr_getInitializer(const ZigClangCompoundLiteralExpr *self) {
+    auto casted = reinterpret_cast<const clang::CompoundLiteralExpr *>(self);
+    return reinterpret_cast<const ZigClangExpr *>(casted->getInitializer());
 }
 
 enum ZigClangUO ZigClangUnaryOperator_getOpcode(const struct ZigClangUnaryOperator *self) {
