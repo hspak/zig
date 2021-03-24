@@ -3,6 +3,17 @@ const tests = @import("tests.zig");
 const nl = std.cstr.line_sep;
 
 pub fn addCases(cases: *tests.RunTranslatedCContext) void {
+    cases.add("division of floating literals",
+        \\#define _NO_CRT_STDIO_INLINE 1
+        \\#include <stdio.h>
+        \\#define PI 3.14159265358979323846f
+        \\#define DEG2RAD (PI/180.0f)
+        \\int main(void) {
+        \\    printf("DEG2RAD is: %f\n", DEG2RAD);
+        \\    return 0;
+        \\}
+    , "DEG2RAD is: 0.017453" ++ nl);
+
     cases.add("use global scope for record/enum/typedef type transalation if needed",
         \\void bar(void);
         \\void baz(void);
@@ -1230,6 +1241,20 @@ pub fn addCases(cases: *tests.RunTranslatedCContext) void {
         \\}
         \\int main(void) {
         \\    if (__builtin_sqrt(1.0) != 1.0) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("convert single-statement bodies into blocks for if/else/for/while. issue #8159",
+        \\#include <stdlib.h>
+        \\int foo() { return 1; }
+        \\int main(void) {
+        \\    int i = 0;
+        \\    if (i == 0) if (i == 0) if (i != 0) i = 1;
+        \\    if (i != 0) i = 1; else if (i == 0) if (i == 0) i += 1;
+        \\    for (; i < 10;) for (; i < 10;) i++;
+        \\    while (i == 100) while (i == 100) foo();
+        \\    if (0) do do "string"; while(1); while(1);
         \\    return 0;
         \\}
     , "");
