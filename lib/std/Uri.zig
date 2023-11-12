@@ -193,6 +193,9 @@ pub fn parseWithoutScheme(text: []const u8) ParseError!Uri {
             }
         }
 
+        // if ']' came before '['
+        if (start_of_host >= end_of_host) return error.UnexpectedCharacter;
+
         uri.host = authority[start_of_host..end_of_host];
     }
 
@@ -779,4 +782,10 @@ test "format" {
     defer buf.deinit();
     try uri.format(":/?#", .{}, buf.writer());
     try std.testing.expectEqualSlices(u8, "file:/foo/bar/baz", buf.items);
+}
+
+test "URI malformed input" {
+    // Originally reported at https://github.com/ziglang/zig/issues/17869
+    try std.testing.expectError(error.UnexpectedCharacter, std.Uri.parse("http://]@["));
+    try std.testing.expectError(error.UnexpectedCharacter, std.Uri.parse("http://lo]s\x85hc@[/8\x10?0Q"));
 }
