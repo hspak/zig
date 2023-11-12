@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 // Ported from musl, which is licensed under the MIT license:
 // https://git.musl-libc.org/cgit/musl/tree/COPYRIGHT
 //
@@ -10,7 +5,6 @@
 // https://git.musl-libc.org/cgit/musl/tree/src/complex/catan.c
 
 const std = @import("../../std.zig");
-const builtin = @import("builtin");
 const testing = std.testing;
 const math = std.math;
 const cmath = math.complex;
@@ -38,7 +32,7 @@ fn redupif32(x: f32) f32 {
         t -= 0.5;
     }
 
-    const u = @intToFloat(f32, @floatToInt(i32, t));
+    const u = @as(f32, @floatFromInt(@as(i32, @intFromFloat(t))));
     return ((x - u * DP1) - u * DP2) - t * DP3;
 }
 
@@ -50,14 +44,14 @@ fn atan32(z: Complex(f32)) Complex(f32) {
 
     if ((x == 0.0) and (y > 1.0)) {
         // overflow
-        return Complex(f32).new(maxnum, maxnum);
+        return Complex(f32).init(maxnum, maxnum);
     }
 
     const x2 = x * x;
     var a = 1.0 - x2 - (y * y);
     if (a == 0.0) {
         // overflow
-        return Complex(f32).new(maxnum, maxnum);
+        return Complex(f32).init(maxnum, maxnum);
     }
 
     var t = 0.5 * math.atan2(f32, 2.0 * x, a);
@@ -67,12 +61,12 @@ fn atan32(z: Complex(f32)) Complex(f32) {
     a = x2 + t * t;
     if (a == 0.0) {
         // overflow
-        return Complex(f32).new(maxnum, maxnum);
+        return Complex(f32).init(maxnum, maxnum);
     }
 
     t = y + 1.0;
     a = (x2 + (t * t)) / a;
-    return Complex(f32).new(w, 0.25 * math.ln(a));
+    return Complex(f32).init(w, 0.25 * @log(a));
 }
 
 fn redupif64(x: f64) f64 {
@@ -87,7 +81,7 @@ fn redupif64(x: f64) f64 {
         t -= 0.5;
     }
 
-    const u = @intToFloat(f64, @floatToInt(i64, t));
+    const u = @as(f64, @floatFromInt(@as(i64, @intFromFloat(t))));
     return ((x - u * DP1) - u * DP2) - t * DP3;
 }
 
@@ -99,14 +93,14 @@ fn atan64(z: Complex(f64)) Complex(f64) {
 
     if ((x == 0.0) and (y > 1.0)) {
         // overflow
-        return Complex(f64).new(maxnum, maxnum);
+        return Complex(f64).init(maxnum, maxnum);
     }
 
     const x2 = x * x;
     var a = 1.0 - x2 - (y * y);
     if (a == 0.0) {
         // overflow
-        return Complex(f64).new(maxnum, maxnum);
+        return Complex(f64).init(maxnum, maxnum);
     }
 
     var t = 0.5 * math.atan2(f64, 2.0 * x, a);
@@ -116,28 +110,28 @@ fn atan64(z: Complex(f64)) Complex(f64) {
     a = x2 + t * t;
     if (a == 0.0) {
         // overflow
-        return Complex(f64).new(maxnum, maxnum);
+        return Complex(f64).init(maxnum, maxnum);
     }
 
     t = y + 1.0;
     a = (x2 + (t * t)) / a;
-    return Complex(f64).new(w, 0.25 * math.ln(a));
+    return Complex(f64).init(w, 0.25 * @log(a));
 }
 
 const epsilon = 0.0001;
 
 test "complex.catan32" {
-    const a = Complex(f32).new(5, 3);
+    const a = Complex(f32).init(5, 3);
     const c = atan(a);
 
-    testing.expect(math.approxEqAbs(f32, c.re, 1.423679, epsilon));
-    testing.expect(math.approxEqAbs(f32, c.im, 0.086569, epsilon));
+    try testing.expect(math.approxEqAbs(f32, c.re, 1.423679, epsilon));
+    try testing.expect(math.approxEqAbs(f32, c.im, 0.086569, epsilon));
 }
 
 test "complex.catan64" {
-    const a = Complex(f64).new(5, 3);
+    const a = Complex(f64).init(5, 3);
     const c = atan(a);
 
-    testing.expect(math.approxEqAbs(f64, c.re, 1.423679, epsilon));
-    testing.expect(math.approxEqAbs(f64, c.im, 0.086569, epsilon));
+    try testing.expect(math.approxEqAbs(f64, c.re, 1.423679, epsilon));
+    try testing.expect(math.approxEqAbs(f64, c.im, 0.086569, epsilon));
 }

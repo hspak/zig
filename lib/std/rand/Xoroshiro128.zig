@@ -1,9 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
-
 //! Xoroshiro128+ - http://xoroshiro.di.unimi.it/
 //!
 //! PRNG
@@ -13,21 +7,20 @@ const Random = std.rand.Random;
 const math = std.math;
 const Xoroshiro128 = @This();
 
-random: Random,
-
 s: [2]u64,
 
 pub fn init(init_s: u64) Xoroshiro128 {
-    var x = Xoroshiro128{
-        .random = Random{ .fillFn = fill },
-        .s = undefined,
-    };
+    var x = Xoroshiro128{ .s = undefined };
 
     x.seed(init_s);
     return x;
 }
 
-fn next(self: *Xoroshiro128) u64 {
+pub fn random(self: *Xoroshiro128) Random {
+    return Random.init(self, fill);
+}
+
+pub fn next(self: *Xoroshiro128) u64 {
     const s0 = self.s[0];
     var s1 = self.s[1];
     const r = s0 +% s1;
@@ -40,7 +33,7 @@ fn next(self: *Xoroshiro128) u64 {
 }
 
 // Skip 2^64 places ahead in the sequence
-fn jump(self: *Xoroshiro128) void {
+pub fn jump(self: *Xoroshiro128) void {
     var s0: u64 = 0;
     var s1: u64 = 0;
 
@@ -52,7 +45,7 @@ fn jump(self: *Xoroshiro128) void {
     inline for (table) |entry| {
         var b: usize = 0;
         while (b < 64) : (b += 1) {
-            if ((entry & (@as(u64, 1) << @intCast(u6, b))) != 0) {
+            if ((entry & (@as(u64, 1) << @as(u6, @intCast(b)))) != 0) {
                 s0 ^= self.s[0];
                 s1 ^= self.s[1];
             }
@@ -72,9 +65,7 @@ pub fn seed(self: *Xoroshiro128, init_s: u64) void {
     self.s[1] = gen.next();
 }
 
-fn fill(r: *Random, buf: []u8) void {
-    const self = @fieldParentPtr(Xoroshiro128, "random", r);
-
+pub fn fill(self: *Xoroshiro128, buf: []u8) void {
     var i: usize = 0;
     const aligned_len = buf.len - (buf.len & 7);
 
@@ -83,7 +74,7 @@ fn fill(r: *Random, buf: []u8) void {
         var n = self.next();
         comptime var j: usize = 0;
         inline while (j < 8) : (j += 1) {
-            buf[i + j] = @truncate(u8, n);
+            buf[i + j] = @as(u8, @truncate(n));
             n >>= 8;
         }
     }
@@ -92,7 +83,7 @@ fn fill(r: *Random, buf: []u8) void {
     if (i != buf.len) {
         var n = self.next();
         while (i < buf.len) : (i += 1) {
-            buf[i] = @truncate(u8, n);
+            buf[i] = @as(u8, @truncate(n));
             n >>= 8;
         }
     }
@@ -113,7 +104,7 @@ test "xoroshiro sequence" {
     };
 
     for (seq1) |s| {
-        std.testing.expect(s == r.next());
+        try std.testing.expect(s == r.next());
     }
 
     r.jump();
@@ -128,7 +119,7 @@ test "xoroshiro sequence" {
     };
 
     for (seq2) |s| {
-        std.testing.expect(s == r.next());
+        try std.testing.expect(s == r.next());
     }
 }
 
@@ -149,8 +140,8 @@ test "xoroshiro fill" {
     for (seq) |s| {
         var buf0: [8]u8 = undefined;
         var buf1: [7]u8 = undefined;
-        std.mem.writeIntLittle(u64, &buf0, s);
-        Xoroshiro128.fill(&r.random, &buf1);
-        std.testing.expect(std.mem.eql(u8, buf0[0..7], buf1[0..]));
+        std.mem.writeInt(u64, &buf0, s, .little);
+        r.fill(&buf1);
+        try std.testing.expect(std.mem.eql(u8, buf0[0..7], buf1[0..]));
     }
 }

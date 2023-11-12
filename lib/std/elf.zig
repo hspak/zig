@@ -1,16 +1,8 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("std.zig");
-const builtin = std.builtin;
-const io = std.io;
-const os = std.os;
 const math = std.math;
 const mem = std.mem;
-const debug = std.debug;
-const File = std.fs.File;
+const assert = std.debug.assert;
+const native_endian = @import("builtin").target.cpu.arch.endian();
 
 pub const AT_NULL = 0;
 pub const AT_IGNORE = 1;
@@ -226,75 +218,205 @@ pub const DT_IA_64_NUM = 1;
 
 pub const DT_NIOS2_GP = 0x70000002;
 
+pub const DF_ORIGIN = 0x00000001;
+pub const DF_SYMBOLIC = 0x00000002;
+pub const DF_TEXTREL = 0x00000004;
+pub const DF_BIND_NOW = 0x00000008;
+pub const DF_STATIC_TLS = 0x00000010;
+
+pub const DF_1_NOW = 0x00000001;
+pub const DF_1_GLOBAL = 0x00000002;
+pub const DF_1_GROUP = 0x00000004;
+pub const DF_1_NODELETE = 0x00000008;
+pub const DF_1_LOADFLTR = 0x00000010;
+pub const DF_1_INITFIRST = 0x00000020;
+pub const DF_1_NOOPEN = 0x00000040;
+pub const DF_1_ORIGIN = 0x00000080;
+pub const DF_1_DIRECT = 0x00000100;
+pub const DF_1_TRANS = 0x00000200;
+pub const DF_1_INTERPOSE = 0x00000400;
+pub const DF_1_NODEFLIB = 0x00000800;
+pub const DF_1_NODUMP = 0x00001000;
+pub const DF_1_CONFALT = 0x00002000;
+pub const DF_1_ENDFILTEE = 0x00004000;
+pub const DF_1_DISPRELDNE = 0x00008000;
+pub const DF_1_DISPRELPND = 0x00010000;
+pub const DF_1_NODIRECT = 0x00020000;
+pub const DF_1_IGNMULDEF = 0x00040000;
+pub const DF_1_NOKSYMS = 0x00080000;
+pub const DF_1_NOHDR = 0x00100000;
+pub const DF_1_EDITED = 0x00200000;
+pub const DF_1_NORELOC = 0x00400000;
+pub const DF_1_SYMINTPOSE = 0x00800000;
+pub const DF_1_GLOBAUDIT = 0x01000000;
+pub const DF_1_SINGLETON = 0x02000000;
+pub const DF_1_STUB = 0x04000000;
+pub const DF_1_PIE = 0x08000000;
+
+pub const VERSYM_HIDDEN = 0x8000;
+pub const VERSYM_VERSION = 0x7fff;
+
+/// Symbol is local
+pub const VER_NDX_LOCAL = 0;
+/// Symbol is global
+pub const VER_NDX_GLOBAL = 1;
+/// Beginning of reserved entries
+pub const VER_NDX_LORESERVE = 0xff00;
+/// Symbol is to be eliminated
+pub const VER_NDX_ELIMINATE = 0xff01;
+
+/// Version definition of the file itself
+pub const VER_FLG_BASE = 1;
+/// Weak version identifier
+pub const VER_FLG_WEAK = 2;
+
+/// Program header table entry unused
 pub const PT_NULL = 0;
+/// Loadable program segment
 pub const PT_LOAD = 1;
+/// Dynamic linking information
 pub const PT_DYNAMIC = 2;
+/// Program interpreter
 pub const PT_INTERP = 3;
+/// Auxiliary information
 pub const PT_NOTE = 4;
+/// Reserved
 pub const PT_SHLIB = 5;
+/// Entry for header table itself
 pub const PT_PHDR = 6;
+/// Thread-local storage segment
 pub const PT_TLS = 7;
+/// Number of defined types
 pub const PT_NUM = 8;
+/// Start of OS-specific
 pub const PT_LOOS = 0x60000000;
+/// GCC .eh_frame_hdr segment
 pub const PT_GNU_EH_FRAME = 0x6474e550;
+/// Indicates stack executability
 pub const PT_GNU_STACK = 0x6474e551;
+/// Read-only after relocation
 pub const PT_GNU_RELRO = 0x6474e552;
 pub const PT_LOSUNW = 0x6ffffffa;
+/// Sun specific segment
 pub const PT_SUNWBSS = 0x6ffffffa;
+/// Stack segment
 pub const PT_SUNWSTACK = 0x6ffffffb;
 pub const PT_HISUNW = 0x6fffffff;
+/// End of OS-specific
 pub const PT_HIOS = 0x6fffffff;
+/// Start of processor-specific
 pub const PT_LOPROC = 0x70000000;
+/// End of processor-specific
 pub const PT_HIPROC = 0x7fffffff;
 
+/// Section header table entry unused
 pub const SHT_NULL = 0;
+/// Program data
 pub const SHT_PROGBITS = 1;
+/// Symbol table
 pub const SHT_SYMTAB = 2;
+/// String table
 pub const SHT_STRTAB = 3;
+/// Relocation entries with addends
 pub const SHT_RELA = 4;
+/// Symbol hash table
 pub const SHT_HASH = 5;
+/// Dynamic linking information
 pub const SHT_DYNAMIC = 6;
+/// Notes
 pub const SHT_NOTE = 7;
+/// Program space with no data (bss)
 pub const SHT_NOBITS = 8;
+/// Relocation entries, no addends
 pub const SHT_REL = 9;
+/// Reserved
 pub const SHT_SHLIB = 10;
+/// Dynamic linker symbol table
 pub const SHT_DYNSYM = 11;
+/// Array of constructors
 pub const SHT_INIT_ARRAY = 14;
+/// Array of destructors
 pub const SHT_FINI_ARRAY = 15;
+/// Array of pre-constructors
 pub const SHT_PREINIT_ARRAY = 16;
+/// Section group
 pub const SHT_GROUP = 17;
+/// Extended section indices
 pub const SHT_SYMTAB_SHNDX = 18;
+/// Start of OS-specific
 pub const SHT_LOOS = 0x60000000;
+/// LLVM address-significance table
+pub const SHT_LLVM_ADDRSIG = 0x6fff4c03;
+/// GNU hash table
+pub const SHT_GNU_HASH = 0x6ffffff6;
+/// GNU version definition table
+pub const SHT_GNU_VERDEF = 0x6ffffffd;
+/// GNU needed versions table
+pub const SHT_GNU_VERNEED = 0x6ffffffe;
+/// GNU symbol version table
+pub const SHT_GNU_VERSYM = 0x6fffffff;
+/// End of OS-specific
 pub const SHT_HIOS = 0x6fffffff;
+/// Start of processor-specific
 pub const SHT_LOPROC = 0x70000000;
+/// Unwind information
+pub const SHT_X86_64_UNWIND = 0x70000001;
+/// End of processor-specific
 pub const SHT_HIPROC = 0x7fffffff;
+/// Start of application-specific
 pub const SHT_LOUSER = 0x80000000;
+/// End of application-specific
 pub const SHT_HIUSER = 0xffffffff;
 
+// Note type for .note.gnu.build_id
+pub const NT_GNU_BUILD_ID = 3;
+
+/// Local symbol
 pub const STB_LOCAL = 0;
+/// Global symbol
 pub const STB_GLOBAL = 1;
+/// Weak symbol
 pub const STB_WEAK = 2;
+/// Number of defined types
 pub const STB_NUM = 3;
+/// Start of OS-specific
 pub const STB_LOOS = 10;
+/// Unique symbol
 pub const STB_GNU_UNIQUE = 10;
+/// End of OS-specific
 pub const STB_HIOS = 12;
+/// Start of processor-specific
 pub const STB_LOPROC = 13;
+/// End of processor-specific
 pub const STB_HIPROC = 15;
 
 pub const STB_MIPS_SPLIT_COMMON = 13;
 
+/// Symbol type is unspecified
 pub const STT_NOTYPE = 0;
+/// Symbol is a data object
 pub const STT_OBJECT = 1;
+/// Symbol is a code object
 pub const STT_FUNC = 2;
+/// Symbol associated with a section
 pub const STT_SECTION = 3;
+/// Symbol's name is file name
 pub const STT_FILE = 4;
+/// Symbol is a common data object
 pub const STT_COMMON = 5;
+/// Symbol is thread-local data object
 pub const STT_TLS = 6;
+/// Number of defined types
 pub const STT_NUM = 7;
+/// Start of OS-specific
 pub const STT_LOOS = 10;
+/// Symbol is indirect code object
 pub const STT_GNU_IFUNC = 10;
+/// End of OS-specific
 pub const STT_HIOS = 12;
+/// Start of processor-specific
 pub const STT_LOPROC = 13;
+/// End of processor-specific
 pub const STT_HIPROC = 15;
 
 pub const STT_SPARC_REGISTER = 13;
@@ -307,11 +429,10 @@ pub const STT_HP_STUB = (STT_LOOS + 0x2);
 pub const STT_ARM_TFUNC = STT_LOPROC;
 pub const STT_ARM_16BIT = STT_HIPROC;
 
-pub const VER_FLG_BASE = 0x1;
-pub const VER_FLG_WEAK = 0x2;
+pub const MAGIC = "\x7fELF";
 
 /// File types
-pub const ET = extern enum(u16) {
+pub const ET = enum(u16) {
     /// No file type
     NONE = 0,
 
@@ -336,7 +457,7 @@ pub const ET = extern enum(u16) {
 
 /// All integers are native endian.
 pub const Header = struct {
-    endian: builtin.Endian,
+    endian: std.builtin.Endian,
     machine: EM,
     is_64: bool,
     entry: u64,
@@ -370,17 +491,17 @@ pub const Header = struct {
     }
 
     pub fn parse(hdr_buf: *align(@alignOf(Elf64_Ehdr)) const [@sizeOf(Elf64_Ehdr)]u8) !Header {
-        const hdr32 = @ptrCast(*const Elf32_Ehdr, hdr_buf);
-        const hdr64 = @ptrCast(*const Elf64_Ehdr, hdr_buf);
-        if (!mem.eql(u8, hdr32.e_ident[0..4], "\x7fELF")) return error.InvalidElfMagic;
+        const hdr32 = @as(*const Elf32_Ehdr, @ptrCast(hdr_buf));
+        const hdr64 = @as(*const Elf64_Ehdr, @ptrCast(hdr_buf));
+        if (!mem.eql(u8, hdr32.e_ident[0..4], MAGIC)) return error.InvalidElfMagic;
         if (hdr32.e_ident[EI_VERSION] != 1) return error.InvalidElfVersion;
 
         const endian: std.builtin.Endian = switch (hdr32.e_ident[EI_DATA]) {
-            ELFDATA2LSB => .Little,
-            ELFDATA2MSB => .Big,
+            ELFDATA2LSB => .little,
+            ELFDATA2MSB => .big,
             else => return error.InvalidElfEndian,
         };
-        const need_bswap = endian != std.builtin.endian;
+        const need_bswap = endian != native_endian;
 
         const is_64 = switch (hdr32.e_ident[EI_CLASS]) {
             ELFCLASS32 => false,
@@ -389,8 +510,8 @@ pub const Header = struct {
         };
 
         const machine = if (need_bswap) blk: {
-            const value = @enumToInt(hdr32.e_machine);
-            break :blk @intToEnum(EM, @byteSwap(@TypeOf(value), value));
+            const value = @intFromEnum(hdr32.e_machine);
+            break :blk @as(EM, @enumFromInt(@byteSwap(value)));
         } else hdr32.e_machine;
 
         return @as(Header, .{
@@ -409,7 +530,7 @@ pub const Header = struct {
     }
 };
 
-pub fn ProgramHeaderIterator(ParseSource: anytype) type {
+pub fn ProgramHeaderIterator(comptime ParseSource: anytype) type {
     return struct {
         elf_header: Header,
         parse_source: ParseSource,
@@ -426,10 +547,10 @@ pub fn ProgramHeaderIterator(ParseSource: anytype) type {
                 try self.parse_source.reader().readNoEof(mem.asBytes(&phdr));
 
                 // ELF endianness matches native endianness.
-                if (self.elf_header.endian == std.builtin.endian) return phdr;
+                if (self.elf_header.endian == native_endian) return phdr;
 
                 // Convert fields to native endianness.
-                bswapAllFields(Elf64_Phdr, &phdr);
+                mem.byteSwapAllFields(Elf64_Phdr, &phdr);
                 return phdr;
             }
 
@@ -439,9 +560,9 @@ pub fn ProgramHeaderIterator(ParseSource: anytype) type {
             try self.parse_source.reader().readNoEof(mem.asBytes(&phdr));
 
             // ELF endianness does NOT match native endianness.
-            if (self.elf_header.endian != std.builtin.endian) {
+            if (self.elf_header.endian != native_endian) {
                 // Convert fields to native endianness.
-                bswapAllFields(Elf32_Phdr, &phdr);
+                mem.byteSwapAllFields(Elf32_Phdr, &phdr);
             }
 
             // Convert 32-bit header to 64-bit.
@@ -459,7 +580,7 @@ pub fn ProgramHeaderIterator(ParseSource: anytype) type {
     };
 }
 
-pub fn SectionHeaderIterator(ParseSource: anytype) type {
+pub fn SectionHeaderIterator(comptime ParseSource: anytype) type {
     return struct {
         elf_header: Header,
         parse_source: ParseSource,
@@ -476,21 +597,11 @@ pub fn SectionHeaderIterator(ParseSource: anytype) type {
                 try self.parse_source.reader().readNoEof(mem.asBytes(&shdr));
 
                 // ELF endianness matches native endianness.
-                if (self.elf_header.endian == std.builtin.endian) return shdr;
+                if (self.elf_header.endian == native_endian) return shdr;
 
                 // Convert fields to native endianness.
-                return Elf64_Shdr{
-                    .sh_name = @byteSwap(@TypeOf(shdr.sh_name), shdr.sh_name),
-                    .sh_type = @byteSwap(@TypeOf(shdr.sh_type), shdr.sh_type),
-                    .sh_flags = @byteSwap(@TypeOf(shdr.sh_flags), shdr.sh_flags),
-                    .sh_addr = @byteSwap(@TypeOf(shdr.sh_addr), shdr.sh_addr),
-                    .sh_offset = @byteSwap(@TypeOf(shdr.sh_offset), shdr.sh_offset),
-                    .sh_size = @byteSwap(@TypeOf(shdr.sh_size), shdr.sh_size),
-                    .sh_link = @byteSwap(@TypeOf(shdr.sh_link), shdr.sh_link),
-                    .sh_info = @byteSwap(@TypeOf(shdr.sh_info), shdr.sh_info),
-                    .sh_addralign = @byteSwap(@TypeOf(shdr.sh_addralign), shdr.sh_addralign),
-                    .sh_entsize = @byteSwap(@TypeOf(shdr.sh_entsize), shdr.sh_entsize),
-                };
+                mem.byteSwapAllFields(Elf64_Shdr, &shdr);
+                return shdr;
             }
 
             var shdr: Elf32_Shdr = undefined;
@@ -499,20 +610,9 @@ pub fn SectionHeaderIterator(ParseSource: anytype) type {
             try self.parse_source.reader().readNoEof(mem.asBytes(&shdr));
 
             // ELF endianness does NOT match native endianness.
-            if (self.elf_header.endian != std.builtin.endian) {
+            if (self.elf_header.endian != native_endian) {
                 // Convert fields to native endianness.
-                shdr = .{
-                    .sh_name = @byteSwap(@TypeOf(shdr.sh_name), shdr.sh_name),
-                    .sh_type = @byteSwap(@TypeOf(shdr.sh_type), shdr.sh_type),
-                    .sh_flags = @byteSwap(@TypeOf(shdr.sh_flags), shdr.sh_flags),
-                    .sh_addr = @byteSwap(@TypeOf(shdr.sh_addr), shdr.sh_addr),
-                    .sh_offset = @byteSwap(@TypeOf(shdr.sh_offset), shdr.sh_offset),
-                    .sh_size = @byteSwap(@TypeOf(shdr.sh_size), shdr.sh_size),
-                    .sh_link = @byteSwap(@TypeOf(shdr.sh_link), shdr.sh_link),
-                    .sh_info = @byteSwap(@TypeOf(shdr.sh_info), shdr.sh_info),
-                    .sh_addralign = @byteSwap(@TypeOf(shdr.sh_addralign), shdr.sh_addralign),
-                    .sh_entsize = @byteSwap(@TypeOf(shdr.sh_entsize), shdr.sh_entsize),
-                };
+                mem.byteSwapAllFields(Elf32_Shdr, &shdr);
             }
 
             // Convert 32-bit header to 64-bit.
@@ -535,7 +635,7 @@ pub fn SectionHeaderIterator(ParseSource: anytype) type {
 pub fn int(is_64: bool, need_bswap: bool, int_32: anytype, int_64: anytype) @TypeOf(int_64) {
     if (is_64) {
         if (need_bswap) {
-            return @byteSwap(@TypeOf(int_64), int_64);
+            return @byteSwap(int_64);
         } else {
             return int_64;
         }
@@ -546,30 +646,10 @@ pub fn int(is_64: bool, need_bswap: bool, int_32: anytype, int_64: anytype) @Typ
 
 pub fn int32(need_bswap: bool, int_32: anytype, comptime Int64: anytype) Int64 {
     if (need_bswap) {
-        return @byteSwap(@TypeOf(int_32), int_32);
+        return @byteSwap(int_32);
     } else {
         return int_32;
     }
-}
-
-pub fn bswapAllFields(comptime S: type, ptr: *S) void {
-    if (@typeInfo(S) != .Struct) @compileError("bswapAllFields expects a struct as the first argument");
-    inline for (std.meta.fields(S)) |f| {
-        @field(ptr, f.name) = @byteSwap(f.field_type, @field(ptr, f.name));
-    }
-}
-test "bswapAllFields" {
-    var s: Elf32_Chdr = .{
-        .ch_type = 0x12341234,
-        .ch_size = 0x56785678,
-        .ch_addralign = 0x12124242,
-    };
-    bswapAllFields(Elf32_Chdr, &s);
-    std.testing.expectEqual(Elf32_Chdr{
-        .ch_type = 0x34123412,
-        .ch_size = 0x78567856,
-        .ch_addralign = 0x42421212,
-    }, s);
 }
 
 pub const EI_NIDENT = 16;
@@ -683,13 +763,13 @@ pub const Elf64_Shdr = extern struct {
     sh_entsize: Elf64_Xword,
 };
 pub const Elf32_Chdr = extern struct {
-    ch_type: Elf32_Word,
+    ch_type: COMPRESS,
     ch_size: Elf32_Word,
     ch_addralign: Elf32_Word,
 };
 pub const Elf64_Chdr = extern struct {
-    ch_type: Elf64_Word,
-    ch_reserved: Elf64_Word,
+    ch_type: COMPRESS,
+    ch_reserved: Elf64_Word = 0,
     ch_size: Elf64_Xword,
     ch_addralign: Elf64_Xword,
 };
@@ -700,6 +780,13 @@ pub const Elf32_Sym = extern struct {
     st_info: u8,
     st_other: u8,
     st_shndx: Elf32_Section,
+
+    pub inline fn st_type(self: @This()) u4 {
+        return @truncate(self.st_info);
+    }
+    pub inline fn st_bind(self: @This()) u4 {
+        return @truncate(self.st_info >> 4);
+    }
 };
 pub const Elf64_Sym = extern struct {
     st_name: Elf64_Word,
@@ -708,6 +795,13 @@ pub const Elf64_Sym = extern struct {
     st_shndx: Elf64_Section,
     st_value: Elf64_Addr,
     st_size: Elf64_Xword,
+
+    pub inline fn st_type(self: @This()) u4 {
+        return @truncate(self.st_info);
+    }
+    pub inline fn st_bind(self: @This()) u4 {
+        return @truncate(self.st_info >> 4);
+    }
 };
 pub const Elf32_Syminfo = extern struct {
     si_boundto: Elf32_Half,
@@ -721,22 +815,22 @@ pub const Elf32_Rel = extern struct {
     r_offset: Elf32_Addr,
     r_info: Elf32_Word,
 
-    pub fn r_sym(self: @This()) callconv(.Inline) u24 {
-        return @truncate(u24, self.r_info >> 8);
+    pub inline fn r_sym(self: @This()) u24 {
+        return @truncate(self.r_info >> 8);
     }
-    pub fn r_type(self: @This()) callconv(.Inline) u8 {
-        return @truncate(u8, self.r_info & 0xff);
+    pub inline fn r_type(self: @This()) u8 {
+        return @truncate(self.r_info);
     }
 };
 pub const Elf64_Rel = extern struct {
     r_offset: Elf64_Addr,
     r_info: Elf64_Xword,
 
-    pub fn r_sym(self: @This()) callconv(.Inline) u32 {
-        return @truncate(u32, self.r_info >> 32);
+    pub inline fn r_sym(self: @This()) u32 {
+        return @truncate(self.r_info >> 32);
     }
-    pub fn r_type(self: @This()) callconv(.Inline) u32 {
-        return @truncate(u32, self.r_info & 0xffffffff);
+    pub inline fn r_type(self: @This()) u32 {
+        return @truncate(self.r_info);
     }
 };
 pub const Elf32_Rela = extern struct {
@@ -744,11 +838,11 @@ pub const Elf32_Rela = extern struct {
     r_info: Elf32_Word,
     r_addend: Elf32_Sword,
 
-    pub fn r_sym(self: @This()) callconv(.Inline) u24 {
-        return @truncate(u24, self.r_info >> 8);
+    pub inline fn r_sym(self: @This()) u24 {
+        return @truncate(self.r_info >> 8);
     }
-    pub fn r_type(self: @This()) callconv(.Inline) u8 {
-        return @truncate(u8, self.r_info & 0xff);
+    pub inline fn r_type(self: @This()) u8 {
+        return @truncate(self.r_info);
     }
 };
 pub const Elf64_Rela = extern struct {
@@ -756,11 +850,11 @@ pub const Elf64_Rela = extern struct {
     r_info: Elf64_Xword,
     r_addend: Elf64_Sxword,
 
-    pub fn r_sym(self: @This()) callconv(.Inline) u32 {
-        return @truncate(u32, self.r_info >> 32);
+    pub inline fn r_sym(self: @This()) u32 {
+        return @truncate(self.r_info >> 32);
     }
-    pub fn r_type(self: @This()) callconv(.Inline) u32 {
-        return @truncate(u32, self.r_info & 0xffffffff);
+    pub inline fn r_type(self: @This()) u32 {
+        return @truncate(self.r_info);
     }
 };
 pub const Elf32_Dyn = extern struct {
@@ -879,7 +973,7 @@ pub const Elf32_RegInfo = extern struct {
 pub const Elf_Options = extern struct {
     kind: u8,
     size: u8,
-    @"section": Elf32_Section,
+    section: Elf32_Section,
     info: Elf32_Word,
 };
 pub const Elf_Options_Hw = extern struct {
@@ -916,14 +1010,14 @@ pub const Elf_MIPS_ABIFlags_v0 = extern struct {
 };
 
 comptime {
-    debug.assert(@sizeOf(Elf32_Ehdr) == 52);
-    debug.assert(@sizeOf(Elf64_Ehdr) == 64);
+    assert(@sizeOf(Elf32_Ehdr) == 52);
+    assert(@sizeOf(Elf64_Ehdr) == 64);
 
-    debug.assert(@sizeOf(Elf32_Phdr) == 32);
-    debug.assert(@sizeOf(Elf64_Phdr) == 56);
+    assert(@sizeOf(Elf32_Phdr) == 32);
+    assert(@sizeOf(Elf64_Phdr) == 56);
 
-    debug.assert(@sizeOf(Elf32_Shdr) == 40);
-    debug.assert(@sizeOf(Elf64_Shdr) == 64);
+    assert(@sizeOf(Elf32_Shdr) == 40);
+    assert(@sizeOf(Elf64_Shdr) == 64);
 }
 
 pub const Auxv = switch (@sizeOf(usize)) {
@@ -961,6 +1055,11 @@ pub const Shdr = switch (@sizeOf(usize)) {
     8 => Elf64_Shdr,
     else => @compileError("expected pointer size of 32 or 64"),
 };
+pub const Chdr = switch (@sizeOf(usize)) {
+    4 => Elf32_Chdr,
+    8 => Elf64_Chdr,
+    else => @compileError("expected pointer size of 32 or 64"),
+};
 pub const Sym = switch (@sizeOf(usize)) {
     4 => Elf32_Sym,
     8 => Elf64_Sym,
@@ -987,547 +1086,585 @@ pub const Half = switch (@sizeOf(usize)) {
     else => @compileError("expected pointer size of 32 or 64"),
 };
 
-/// Machine architectures
+/// Machine architectures.
+///
 /// See current registered ELF machine architectures at:
-///    http://www.uxsglobal.com/developers/gabi/latest/ch4.eheader.html
-/// The underscore prefix is because many of these start with numbers.
-pub const EM = extern enum(u16) {
+/// http://www.sco.com/developers/gabi/latest/ch4.eheader.html
+pub const EM = enum(u16) {
     /// No machine
-    _NONE = 0,
+    NONE = 0,
 
     /// AT&T WE 32100
-    _M32 = 1,
+    M32 = 1,
 
     /// SPARC
-    _SPARC = 2,
+    SPARC = 2,
 
     /// Intel 386
-    _386 = 3,
+    @"386" = 3,
 
     /// Motorola 68000
-    _68K = 4,
+    @"68K" = 4,
 
     /// Motorola 88000
-    _88K = 5,
+    @"88K" = 5,
 
     /// Intel MCU
-    _IAMCU = 6,
+    IAMCU = 6,
 
     /// Intel 80860
-    _860 = 7,
+    @"860" = 7,
 
     /// MIPS R3000
-    _MIPS = 8,
+    MIPS = 8,
 
     /// IBM System/370
-    _S370 = 9,
+    S370 = 9,
 
     /// MIPS RS3000 Little-endian
-    _MIPS_RS3_LE = 10,
+    MIPS_RS3_LE = 10,
 
     /// SPU Mark II
-    _SPU_2 = 13,
+    SPU_2 = 13,
 
     /// Hewlett-Packard PA-RISC
-    _PARISC = 15,
+    PARISC = 15,
 
     /// Fujitsu VPP500
-    _VPP500 = 17,
+    VPP500 = 17,
 
     /// Enhanced instruction set SPARC
-    _SPARC32PLUS = 18,
+    SPARC32PLUS = 18,
 
     /// Intel 80960
-    _960 = 19,
+    @"960" = 19,
 
     /// PowerPC
-    _PPC = 20,
+    PPC = 20,
 
     /// PowerPC64
-    _PPC64 = 21,
+    PPC64 = 21,
 
     /// IBM System/390
-    _S390 = 22,
+    S390 = 22,
 
     /// IBM SPU/SPC
-    _SPU = 23,
+    SPU = 23,
 
     /// NEC V800
-    _V800 = 36,
+    V800 = 36,
 
     /// Fujitsu FR20
-    _FR20 = 37,
+    FR20 = 37,
 
     /// TRW RH-32
-    _RH32 = 38,
+    RH32 = 38,
 
     /// Motorola RCE
-    _RCE = 39,
+    RCE = 39,
 
     /// ARM
-    _ARM = 40,
+    ARM = 40,
 
     /// DEC Alpha
-    _ALPHA = 41,
+    ALPHA = 41,
 
     /// Hitachi SH
-    _SH = 42,
+    SH = 42,
 
     /// SPARC V9
-    _SPARCV9 = 43,
+    SPARCV9 = 43,
 
     /// Siemens TriCore
-    _TRICORE = 44,
+    TRICORE = 44,
 
     /// Argonaut RISC Core
-    _ARC = 45,
+    ARC = 45,
 
     /// Hitachi H8/300
-    _H8_300 = 46,
+    H8_300 = 46,
 
     /// Hitachi H8/300H
-    _H8_300H = 47,
+    H8_300H = 47,
 
     /// Hitachi H8S
-    _H8S = 48,
+    H8S = 48,
 
     /// Hitachi H8/500
-    _H8_500 = 49,
+    H8_500 = 49,
 
     /// Intel IA-64 processor architecture
-    _IA_64 = 50,
+    IA_64 = 50,
 
     /// Stanford MIPS-X
-    _MIPS_X = 51,
+    MIPS_X = 51,
 
     /// Motorola ColdFire
-    _COLDFIRE = 52,
+    COLDFIRE = 52,
 
     /// Motorola M68HC12
-    _68HC12 = 53,
+    @"68HC12" = 53,
 
     /// Fujitsu MMA Multimedia Accelerator
-    _MMA = 54,
+    MMA = 54,
 
     /// Siemens PCP
-    _PCP = 55,
+    PCP = 55,
 
     /// Sony nCPU embedded RISC processor
-    _NCPU = 56,
+    NCPU = 56,
 
     /// Denso NDR1 microprocessor
-    _NDR1 = 57,
+    NDR1 = 57,
 
     /// Motorola Star*Core processor
-    _STARCORE = 58,
+    STARCORE = 58,
 
     /// Toyota ME16 processor
-    _ME16 = 59,
+    ME16 = 59,
 
     /// STMicroelectronics ST100 processor
-    _ST100 = 60,
+    ST100 = 60,
 
     /// Advanced Logic Corp. TinyJ embedded processor family
-    _TINYJ = 61,
+    TINYJ = 61,
 
     /// AMD x86-64 architecture
-    _X86_64 = 62,
+    X86_64 = 62,
 
     /// Sony DSP Processor
-    _PDSP = 63,
+    PDSP = 63,
 
     /// Digital Equipment Corp. PDP-10
-    _PDP10 = 64,
+    PDP10 = 64,
 
     /// Digital Equipment Corp. PDP-11
-    _PDP11 = 65,
+    PDP11 = 65,
 
     /// Siemens FX66 microcontroller
-    _FX66 = 66,
+    FX66 = 66,
 
     /// STMicroelectronics ST9+ 8/16 bit microcontroller
-    _ST9PLUS = 67,
+    ST9PLUS = 67,
 
     /// STMicroelectronics ST7 8-bit microcontroller
-    _ST7 = 68,
+    ST7 = 68,
 
     /// Motorola MC68HC16 Microcontroller
-    _68HC16 = 69,
+    @"68HC16" = 69,
 
     /// Motorola MC68HC11 Microcontroller
-    _68HC11 = 70,
+    @"68HC11" = 70,
 
     /// Motorola MC68HC08 Microcontroller
-    _68HC08 = 71,
+    @"68HC08" = 71,
 
     /// Motorola MC68HC05 Microcontroller
-    _68HC05 = 72,
+    @"68HC05" = 72,
 
     /// Silicon Graphics SVx
-    _SVX = 73,
+    SVX = 73,
 
     /// STMicroelectronics ST19 8-bit microcontroller
-    _ST19 = 74,
+    ST19 = 74,
 
     /// Digital VAX
-    _VAX = 75,
+    VAX = 75,
 
     /// Axis Communications 32-bit embedded processor
-    _CRIS = 76,
+    CRIS = 76,
 
     /// Infineon Technologies 32-bit embedded processor
-    _JAVELIN = 77,
+    JAVELIN = 77,
 
     /// Element 14 64-bit DSP Processor
-    _FIREPATH = 78,
+    FIREPATH = 78,
 
     /// LSI Logic 16-bit DSP Processor
-    _ZSP = 79,
+    ZSP = 79,
 
     /// Donald Knuth's educational 64-bit processor
-    _MMIX = 80,
+    MMIX = 80,
 
     /// Harvard University machine-independent object files
-    _HUANY = 81,
+    HUANY = 81,
 
     /// SiTera Prism
-    _PRISM = 82,
+    PRISM = 82,
 
     /// Atmel AVR 8-bit microcontroller
-    _AVR = 83,
+    AVR = 83,
 
     /// Fujitsu FR30
-    _FR30 = 84,
+    FR30 = 84,
 
     /// Mitsubishi D10V
-    _D10V = 85,
+    D10V = 85,
 
     /// Mitsubishi D30V
-    _D30V = 86,
+    D30V = 86,
 
     /// NEC v850
-    _V850 = 87,
+    V850 = 87,
 
     /// Mitsubishi M32R
-    _M32R = 88,
+    M32R = 88,
 
     /// Matsushita MN10300
-    _MN10300 = 89,
+    MN10300 = 89,
 
     /// Matsushita MN10200
-    _MN10200 = 90,
+    MN10200 = 90,
 
     /// picoJava
-    _PJ = 91,
+    PJ = 91,
 
     /// OpenRISC 32-bit embedded processor
-    _OPENRISC = 92,
+    OPENRISC = 92,
 
     /// ARC International ARCompact processor (old spelling/synonym: EM_ARC_A5)
-    _ARC_COMPACT = 93,
+    ARC_COMPACT = 93,
 
     /// Tensilica Xtensa Architecture
-    _XTENSA = 94,
+    XTENSA = 94,
 
     /// Alphamosaic VideoCore processor
-    _VIDEOCORE = 95,
+    VIDEOCORE = 95,
 
     /// Thompson Multimedia General Purpose Processor
-    _TMM_GPP = 96,
+    TMM_GPP = 96,
 
     /// National Semiconductor 32000 series
-    _NS32K = 97,
+    NS32K = 97,
 
     /// Tenor Network TPC processor
-    _TPC = 98,
+    TPC = 98,
 
     /// Trebia SNP 1000 processor
-    _SNP1K = 99,
+    SNP1K = 99,
 
     /// STMicroelectronics (www.st.com) ST200
-    _ST200 = 100,
+    ST200 = 100,
 
     /// Ubicom IP2xxx microcontroller family
-    _IP2K = 101,
+    IP2K = 101,
 
     /// MAX Processor
-    _MAX = 102,
+    MAX = 102,
 
     /// National Semiconductor CompactRISC microprocessor
-    _CR = 103,
+    CR = 103,
 
     /// Fujitsu F2MC16
-    _F2MC16 = 104,
+    F2MC16 = 104,
 
     /// Texas Instruments embedded microcontroller msp430
-    _MSP430 = 105,
+    MSP430 = 105,
 
     /// Analog Devices Blackfin (DSP) processor
-    _BLACKFIN = 106,
+    BLACKFIN = 106,
 
     /// S1C33 Family of Seiko Epson processors
-    _SE_C33 = 107,
+    SE_C33 = 107,
 
     /// Sharp embedded microprocessor
-    _SEP = 108,
+    SEP = 108,
 
     /// Arca RISC Microprocessor
-    _ARCA = 109,
+    ARCA = 109,
 
     /// Microprocessor series from PKU-Unity Ltd. and MPRC of Peking University
-    _UNICORE = 110,
+    UNICORE = 110,
 
     /// eXcess: 16/32/64-bit configurable embedded CPU
-    _EXCESS = 111,
+    EXCESS = 111,
 
     /// Icera Semiconductor Inc. Deep Execution Processor
-    _DXP = 112,
+    DXP = 112,
 
     /// Altera Nios II soft-core processor
-    _ALTERA_NIOS2 = 113,
+    ALTERA_NIOS2 = 113,
 
     /// National Semiconductor CompactRISC CRX
-    _CRX = 114,
+    CRX = 114,
 
     /// Motorola XGATE embedded processor
-    _XGATE = 115,
+    XGATE = 115,
 
     /// Infineon C16x/XC16x processor
-    _C166 = 116,
+    C166 = 116,
 
     /// Renesas M16C series microprocessors
-    _M16C = 117,
+    M16C = 117,
 
     /// Microchip Technology dsPIC30F Digital Signal Controller
-    _DSPIC30F = 118,
+    DSPIC30F = 118,
 
     /// Freescale Communication Engine RISC core
-    _CE = 119,
+    CE = 119,
 
     /// Renesas M32C series microprocessors
-    _M32C = 120,
+    M32C = 120,
 
     /// Altium TSK3000 core
-    _TSK3000 = 131,
+    TSK3000 = 131,
 
     /// Freescale RS08 embedded processor
-    _RS08 = 132,
+    RS08 = 132,
 
     /// Analog Devices SHARC family of 32-bit DSP processors
-    _SHARC = 133,
+    SHARC = 133,
 
     /// Cyan Technology eCOG2 microprocessor
-    _ECOG2 = 134,
+    ECOG2 = 134,
 
     /// Sunplus S+core7 RISC processor
-    _SCORE7 = 135,
+    SCORE7 = 135,
 
     /// New Japan Radio (NJR) 24-bit DSP Processor
-    _DSP24 = 136,
+    DSP24 = 136,
 
     /// Broadcom VideoCore III processor
-    _VIDEOCORE3 = 137,
+    VIDEOCORE3 = 137,
 
     /// RISC processor for Lattice FPGA architecture
-    _LATTICEMICO32 = 138,
+    LATTICEMICO32 = 138,
 
     /// Seiko Epson C17 family
-    _SE_C17 = 139,
+    SE_C17 = 139,
 
     /// The Texas Instruments TMS320C6000 DSP family
-    _TI_C6000 = 140,
+    TI_C6000 = 140,
 
     /// The Texas Instruments TMS320C2000 DSP family
-    _TI_C2000 = 141,
+    TI_C2000 = 141,
 
     /// The Texas Instruments TMS320C55x DSP family
-    _TI_C5500 = 142,
+    TI_C5500 = 142,
 
     /// STMicroelectronics 64bit VLIW Data Signal Processor
-    _MMDSP_PLUS = 160,
+    MMDSP_PLUS = 160,
 
     /// Cypress M8C microprocessor
-    _CYPRESS_M8C = 161,
+    CYPRESS_M8C = 161,
 
     /// Renesas R32C series microprocessors
-    _R32C = 162,
+    R32C = 162,
 
     /// NXP Semiconductors TriMedia architecture family
-    _TRIMEDIA = 163,
+    TRIMEDIA = 163,
 
     /// Qualcomm Hexagon processor
-    _HEXAGON = 164,
+    HEXAGON = 164,
 
     /// Intel 8051 and variants
-    _8051 = 165,
+    @"8051" = 165,
 
     /// STMicroelectronics STxP7x family of configurable and extensible RISC processors
-    _STXP7X = 166,
+    STXP7X = 166,
 
     /// Andes Technology compact code size embedded RISC processor family
-    _NDS32 = 167,
+    NDS32 = 167,
 
     /// Cyan Technology eCOG1X family
-    _ECOG1X = 168,
+    ECOG1X = 168,
 
     /// Dallas Semiconductor MAXQ30 Core Micro-controllers
-    _MAXQ30 = 169,
+    MAXQ30 = 169,
 
     /// New Japan Radio (NJR) 16-bit DSP Processor
-    _XIMO16 = 170,
+    XIMO16 = 170,
 
     /// M2000 Reconfigurable RISC Microprocessor
-    _MANIK = 171,
+    MANIK = 171,
 
     /// Cray Inc. NV2 vector architecture
-    _CRAYNV2 = 172,
+    CRAYNV2 = 172,
 
     /// Renesas RX family
-    _RX = 173,
+    RX = 173,
 
     /// Imagination Technologies META processor architecture
-    _METAG = 174,
+    METAG = 174,
 
     /// MCST Elbrus general purpose hardware architecture
-    _MCST_ELBRUS = 175,
+    MCST_ELBRUS = 175,
 
     /// Cyan Technology eCOG16 family
-    _ECOG16 = 176,
+    ECOG16 = 176,
 
     /// National Semiconductor CompactRISC CR16 16-bit microprocessor
-    _CR16 = 177,
+    CR16 = 177,
 
     /// Freescale Extended Time Processing Unit
-    _ETPU = 178,
+    ETPU = 178,
 
     /// Infineon Technologies SLE9X core
-    _SLE9X = 179,
+    SLE9X = 179,
 
     /// Intel L10M
-    _L10M = 180,
+    L10M = 180,
 
     /// Intel K10M
-    _K10M = 181,
+    K10M = 181,
 
     /// ARM AArch64
-    _AARCH64 = 183,
+    AARCH64 = 183,
 
     /// Atmel Corporation 32-bit microprocessor family
-    _AVR32 = 185,
+    AVR32 = 185,
 
     /// STMicroeletronics STM8 8-bit microcontroller
-    _STM8 = 186,
+    STM8 = 186,
 
     /// Tilera TILE64 multicore architecture family
-    _TILE64 = 187,
+    TILE64 = 187,
 
     /// Tilera TILEPro multicore architecture family
-    _TILEPRO = 188,
+    TILEPRO = 188,
 
     /// NVIDIA CUDA architecture
-    _CUDA = 190,
+    CUDA = 190,
 
     /// Tilera TILE-Gx multicore architecture family
-    _TILEGX = 191,
+    TILEGX = 191,
 
     /// CloudShield architecture family
-    _CLOUDSHIELD = 192,
+    CLOUDSHIELD = 192,
 
     /// KIPO-KAIST Core-A 1st generation processor family
-    _COREA_1ST = 193,
+    COREA_1ST = 193,
 
     /// KIPO-KAIST Core-A 2nd generation processor family
-    _COREA_2ND = 194,
+    COREA_2ND = 194,
 
     /// Synopsys ARCompact V2
-    _ARC_COMPACT2 = 195,
+    ARC_COMPACT2 = 195,
 
     /// Open8 8-bit RISC soft processor core
-    _OPEN8 = 196,
+    OPEN8 = 196,
 
     /// Renesas RL78 family
-    _RL78 = 197,
+    RL78 = 197,
 
     /// Broadcom VideoCore V processor
-    _VIDEOCORE5 = 198,
+    VIDEOCORE5 = 198,
 
     /// Renesas 78KOR family
-    _78KOR = 199,
+    @"78KOR" = 199,
 
     /// Freescale 56800EX Digital Signal Controller (DSC)
-    _56800EX = 200,
+    @"56800EX" = 200,
 
     /// Beyond BA1 CPU architecture
-    _BA1 = 201,
+    BA1 = 201,
 
     /// Beyond BA2 CPU architecture
-    _BA2 = 202,
+    BA2 = 202,
 
     /// XMOS xCORE processor family
-    _XCORE = 203,
+    XCORE = 203,
 
     /// Microchip 8-bit PIC(r) family
-    _MCHP_PIC = 204,
+    MCHP_PIC = 204,
 
     /// Reserved by Intel
-    _INTEL205 = 205,
+    INTEL205 = 205,
 
     /// Reserved by Intel
-    _INTEL206 = 206,
+    INTEL206 = 206,
 
     /// Reserved by Intel
-    _INTEL207 = 207,
+    INTEL207 = 207,
 
     /// Reserved by Intel
-    _INTEL208 = 208,
+    INTEL208 = 208,
 
     /// Reserved by Intel
-    _INTEL209 = 209,
+    INTEL209 = 209,
 
     /// KM211 KM32 32-bit processor
-    _KM32 = 210,
+    KM32 = 210,
 
     /// KM211 KMX32 32-bit processor
-    _KMX32 = 211,
+    KMX32 = 211,
 
     /// KM211 KMX16 16-bit processor
-    _KMX16 = 212,
+    KMX16 = 212,
 
     /// KM211 KMX8 8-bit processor
-    _KMX8 = 213,
+    KMX8 = 213,
 
     /// KM211 KVARC processor
-    _KVARC = 214,
+    KVARC = 214,
 
     /// Paneve CDP architecture family
-    _CDP = 215,
+    CDP = 215,
 
     /// Cognitive Smart Memory Processor
-    _COGE = 216,
+    COGE = 216,
 
     /// iCelero CoolEngine
-    _COOL = 217,
+    COOL = 217,
 
     /// Nanoradio Optimized RISC
-    _NORC = 218,
+    NORC = 218,
 
     /// CSR Kalimba architecture family
-    _CSR_KALIMBA = 219,
+    CSR_KALIMBA = 219,
 
     /// AMD GPU architecture
-    _AMDGPU = 224,
+    AMDGPU = 224,
 
     /// RISC-V
-    _RISCV = 243,
+    RISCV = 243,
 
     /// Lanai 32-bit processor
-    _LANAI = 244,
+    LANAI = 244,
 
     /// Linux kernel bpf virtual machine
-    _BPF = 247,
+    BPF = 247,
+
+    /// C-SKY
+    CSKY = 252,
+
+    /// Fujitsu FR-V
+    FRV = 0x5441,
 
     _,
+
+    pub fn toTargetCpuArch(em: EM) ?std.Target.Cpu.Arch {
+        return switch (em) {
+            .AVR => .avr,
+            .MSP430 => .msp430,
+            .ARC => .arc,
+            .ARM => .arm,
+            .HEXAGON => .hexagon,
+            .@"68K" => .m68k,
+            .MIPS => .mips,
+            .MIPS_RS3_LE => .mipsel,
+            .PPC => .powerpc,
+            .SPARC => .sparc,
+            .@"386" => .x86,
+            .XCORE => .xcore,
+            .CSR_KALIMBA => .kalimba,
+            .LANAI => .lanai,
+            .AARCH64 => .aarch64,
+            .PPC64 => .powerpc64,
+            .RISCV => .riscv64,
+            .X86_64 => .x86_64,
+            .BPF => .bpfel,
+            .SPARCV9 => .sparc64,
+            .S390 => .s390x,
+            .SPU_2 => .spu_2,
+            // there's many cases we don't (yet) handle, or will never have a
+            // zig target cpu arch equivalent (such as null).
+            else => null,
+        };
+    }
 };
+
+pub const GRP_COMDAT = 1;
 
 /// Section data should be writable during execution.
 pub const SHF_WRITE = 0x1;
@@ -1562,6 +1699,9 @@ pub const SHF_TLS = 0x400;
 
 /// Identifies a section containing compressed data.
 pub const SHF_COMPRESSED = 0x800;
+
+/// Not to be GCed by the linker
+pub const SHF_GNU_RETAIN = 0x200000;
 
 /// This section is excluded from the final executable or shared library.
 pub const SHF_EXCLUDE = 0x80000000;
@@ -1637,3 +1777,213 @@ pub const PF_MASKOS = 0x0ff00000;
 
 /// Bits for processor-specific semantics.
 pub const PF_MASKPROC = 0xf0000000;
+
+/// Undefined section
+pub const SHN_UNDEF = 0;
+/// Start of reserved indices
+pub const SHN_LORESERVE = 0xff00;
+/// Start of processor-specific
+pub const SHN_LOPROC = 0xff00;
+/// End of processor-specific
+pub const SHN_HIPROC = 0xff1f;
+pub const SHN_LIVEPATCH = 0xff20;
+/// Associated symbol is absolute
+pub const SHN_ABS = 0xfff1;
+/// Associated symbol is common
+pub const SHN_COMMON = 0xfff2;
+/// End of reserved indices
+pub const SHN_HIRESERVE = 0xffff;
+
+// Legal values for ch_type (compression algorithm).
+pub const COMPRESS = enum(u32) {
+    ZLIB = 1,
+    ZSTD = 2,
+    LOOS = 0x60000000,
+    HIOS = 0x6fffffff,
+    LOPROC = 0x70000000,
+    HIPROC = 0x7fffffff,
+    _,
+};
+
+/// AMD x86-64 relocations.
+/// No reloc
+pub const R_X86_64_NONE = 0;
+/// Direct 64 bit
+pub const R_X86_64_64 = 1;
+/// PC relative 32 bit signed
+pub const R_X86_64_PC32 = 2;
+/// 32 bit GOT entry
+pub const R_X86_64_GOT32 = 3;
+/// 32 bit PLT address
+pub const R_X86_64_PLT32 = 4;
+/// Copy symbol at runtime
+pub const R_X86_64_COPY = 5;
+/// Create GOT entry
+pub const R_X86_64_GLOB_DAT = 6;
+/// Create PLT entry
+pub const R_X86_64_JUMP_SLOT = 7;
+/// Adjust by program base
+pub const R_X86_64_RELATIVE = 8;
+/// 32 bit signed PC relative offset to GOT
+pub const R_X86_64_GOTPCREL = 9;
+/// Direct 32 bit zero extended
+pub const R_X86_64_32 = 10;
+/// Direct 32 bit sign extended
+pub const R_X86_64_32S = 11;
+/// Direct 16 bit zero extended
+pub const R_X86_64_16 = 12;
+/// 16 bit sign extended pc relative
+pub const R_X86_64_PC16 = 13;
+/// Direct 8 bit sign extended
+pub const R_X86_64_8 = 14;
+/// 8 bit sign extended pc relative
+pub const R_X86_64_PC8 = 15;
+/// ID of module containing symbol
+pub const R_X86_64_DTPMOD64 = 16;
+/// Offset in module's TLS block
+pub const R_X86_64_DTPOFF64 = 17;
+/// Offset in initial TLS block
+pub const R_X86_64_TPOFF64 = 18;
+/// 32 bit signed PC relative offset to two GOT entries for GD symbol
+pub const R_X86_64_TLSGD = 19;
+/// 32 bit signed PC relative offset to two GOT entries for LD symbol
+pub const R_X86_64_TLSLD = 20;
+/// Offset in TLS block
+pub const R_X86_64_DTPOFF32 = 21;
+/// 32 bit signed PC relative offset to GOT entry for IE symbol
+pub const R_X86_64_GOTTPOFF = 22;
+/// Offset in initial TLS block
+pub const R_X86_64_TPOFF32 = 23;
+/// PC relative 64 bit
+pub const R_X86_64_PC64 = 24;
+/// 64 bit offset to GOT
+pub const R_X86_64_GOTOFF64 = 25;
+/// 32 bit signed pc relative offset to GOT
+pub const R_X86_64_GOTPC32 = 26;
+/// 64 bit GOT entry offset
+pub const R_X86_64_GOT64 = 27;
+/// 64 bit PC relative offset to GOT entry
+pub const R_X86_64_GOTPCREL64 = 28;
+/// 64 bit PC relative offset to GOT
+pub const R_X86_64_GOTPC64 = 29;
+/// Like GOT64, says PLT entry needed
+pub const R_X86_64_GOTPLT64 = 30;
+/// 64-bit GOT relative offset to PLT entry
+pub const R_X86_64_PLTOFF64 = 31;
+/// Size of symbol plus 32-bit addend
+pub const R_X86_64_SIZE32 = 32;
+/// Size of symbol plus 64-bit addend
+pub const R_X86_64_SIZE64 = 33;
+/// GOT offset for TLS descriptor
+pub const R_X86_64_GOTPC32_TLSDESC = 34;
+/// Marker for call through TLS descriptor
+pub const R_X86_64_TLSDESC_CALL = 35;
+/// TLS descriptor
+pub const R_X86_64_TLSDESC = 36;
+/// Adjust indirectly by program base
+pub const R_X86_64_IRELATIVE = 37;
+/// 64-bit adjust by program base
+pub const R_X86_64_RELATIVE64 = 38;
+/// 39 Reserved was R_X86_64_PC32_BND
+/// 40 Reserved was R_X86_64_PLT32_BND
+/// Load from 32 bit signed pc relative offset to GOT entry without REX prefix, relaxable
+pub const R_X86_64_GOTPCRELX = 41;
+/// Load from 32 bit signed PC relative offset to GOT entry with REX prefix, relaxable
+pub const R_X86_64_REX_GOTPCRELX = 42;
+pub const R_X86_64_NUM = 43;
+
+pub const STV = enum(u2) {
+    DEFAULT = 0,
+    INTERNAL = 1,
+    HIDDEN = 2,
+    PROTECTED = 3,
+};
+
+pub const ar_hdr = extern struct {
+    /// Member file name, sometimes / terminated.
+    ar_name: [16]u8,
+
+    /// File date, decimal seconds since Epoch.
+    ar_date: [12]u8,
+
+    /// User ID, in ASCII format.
+    ar_uid: [6]u8,
+
+    /// Group ID, in ASCII format.
+    ar_gid: [6]u8,
+
+    /// File mode, in ASCII octal.
+    ar_mode: [8]u8,
+
+    /// File size, in ASCII decimal.
+    ar_size: [10]u8,
+
+    /// Always contains ARFMAG.
+    ar_fmag: [2]u8,
+
+    pub fn date(self: ar_hdr) std.fmt.ParseIntError!u64 {
+        const value = mem.trimRight(u8, &self.ar_date, &[_]u8{0x20});
+        return std.fmt.parseInt(u64, value, 10);
+    }
+
+    pub fn size(self: ar_hdr) std.fmt.ParseIntError!u32 {
+        const value = mem.trimRight(u8, &self.ar_size, &[_]u8{0x20});
+        return std.fmt.parseInt(u32, value, 10);
+    }
+
+    pub fn isStrtab(self: ar_hdr) bool {
+        return mem.eql(u8, &self.ar_name, STRNAME);
+    }
+
+    pub fn isSymtab(self: ar_hdr) bool {
+        return mem.eql(u8, &self.ar_name, SYMNAME);
+    }
+
+    pub fn isSymtab64(self: ar_hdr) bool {
+        return mem.eql(u8, &self.ar_name, SYM64NAME);
+    }
+
+    pub fn isSymdef(self: ar_hdr) bool {
+        return mem.eql(u8, &self.ar_name, SYMDEFNAME);
+    }
+
+    pub fn isSymdefSorted(self: ar_hdr) bool {
+        return mem.eql(u8, &self.ar_name, SYMDEFSORTEDNAME);
+    }
+
+    pub fn name(self: *const ar_hdr) ?[]const u8 {
+        const value = &self.ar_name;
+        if (value[0] == '/') return null;
+        const sentinel = mem.indexOfScalar(u8, value, '/') orelse value.len;
+        return value[0..sentinel];
+    }
+
+    pub fn nameOffset(self: ar_hdr) std.fmt.ParseIntError!?u32 {
+        const value = &self.ar_name;
+        if (value[0] != '/') return null;
+        const trimmed = mem.trimRight(u8, value, &[_]u8{0x20});
+        return try std.fmt.parseInt(u32, trimmed[1..], 10);
+    }
+};
+
+fn genSpecialMemberName(comptime name: []const u8) *const [16]u8 {
+    assert(name.len <= 16);
+    const padding = 16 - name.len;
+    return name ++ &[_]u8{0x20} ** padding;
+}
+
+// Archive files start with the ARMAG identifying string.  Then follows a
+// `struct ar_hdr', and as many bytes of member file data as its `ar_size'
+// member indicates, for each member file.
+/// String that begins an archive file.
+pub const ARMAG = "!<arch>\n";
+/// String in ar_fmag at the end of each header.
+pub const ARFMAG = "`\n";
+/// 32-bit symtab identifier
+pub const SYMNAME = genSpecialMemberName("/");
+/// Strtab identifier
+pub const STRNAME = genSpecialMemberName("//");
+/// 64-bit symtab identifier
+pub const SYM64NAME = genSpecialMemberName("/SYM64/");
+pub const SYMDEFNAME = genSpecialMemberName("__.SYMDEF");
+pub const SYMDEFSORTEDNAME = genSpecialMemberName("__.SYMDEF SORTED");

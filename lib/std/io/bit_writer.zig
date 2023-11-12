@@ -1,10 +1,4 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("../std.zig");
-const builtin = std.builtin;
 const io = std.io;
 const testing = std.testing;
 const assert = std.debug.assert;
@@ -13,7 +7,7 @@ const meta = std.meta;
 const math = std.math;
 
 /// Creates a stream which allows for writing bit fields to another stream
-pub fn BitWriter(endian: builtin.Endian, comptime WriterType: type) type {
+pub fn BitWriter(comptime endian: std.builtin.Endian, comptime WriterType: type) type {
     return struct {
         forward_writer: WriterType,
         bit_buffer: u8,
@@ -23,8 +17,8 @@ pub fn BitWriter(endian: builtin.Endian, comptime WriterType: type) type {
         pub const Writer = io.Writer(*Self, Error, write);
 
         const Self = @This();
-        const u8_bit_count = comptime meta.bitCount(u8);
-        const u4_bit_count = comptime meta.bitCount(u4);
+        const u8_bit_count = @bitSizeOf(u8);
+        const u4_bit_count = @bitSizeOf(u4);
 
         pub fn init(forward_writer: WriterType) Self {
             return Self{
@@ -45,7 +39,7 @@ pub fn BitWriter(endian: builtin.Endian, comptime WriterType: type) type {
 
             //by extending the buffer to a minimum of u8 we can cover a number of edge cases
             // related to shifting and casting.
-            const u_bit_count = comptime meta.bitCount(U);
+            const u_bit_count = @bitSizeOf(U);
             const buf_bit_count = bc: {
                 assert(u_bit_count >= bits);
                 break :bc if (u_bit_count <= u8_bit_count) u8_bit_count else u_bit_count;
@@ -53,27 +47,27 @@ pub fn BitWriter(endian: builtin.Endian, comptime WriterType: type) type {
             const Buf = std.meta.Int(.unsigned, buf_bit_count);
             const BufShift = math.Log2Int(Buf);
 
-            const buf_value = @intCast(Buf, value);
+            const buf_value = @as(Buf, @intCast(value));
 
-            const high_byte_shift = @intCast(BufShift, buf_bit_count - u8_bit_count);
+            const high_byte_shift = @as(BufShift, @intCast(buf_bit_count - u8_bit_count));
             var in_buffer = switch (endian) {
-                .Big => buf_value << @intCast(BufShift, buf_bit_count - bits),
-                .Little => buf_value,
+                .big => buf_value << @as(BufShift, @intCast(buf_bit_count - bits)),
+                .little => buf_value,
             };
             var in_bits = bits;
 
             if (self.bit_count > 0) {
                 const bits_remaining = u8_bit_count - self.bit_count;
-                const n = @intCast(u3, if (bits_remaining > bits) bits else bits_remaining);
+                const n = @as(u3, @intCast(if (bits_remaining > bits) bits else bits_remaining));
                 switch (endian) {
-                    .Big => {
-                        const shift = @intCast(BufShift, high_byte_shift + self.bit_count);
-                        const v = @intCast(u8, in_buffer >> shift);
+                    .big => {
+                        const shift = @as(BufShift, @intCast(high_byte_shift + self.bit_count));
+                        const v = @as(u8, @intCast(in_buffer >> shift));
                         self.bit_buffer |= v;
                         in_buffer <<= n;
                     },
-                    .Little => {
-                        const v = @truncate(u8, in_buffer) << @intCast(u3, self.bit_count);
+                    .little => {
+                        const v = @as(u8, @truncate(in_buffer)) << @as(u3, @intCast(self.bit_count));
                         self.bit_buffer |= v;
                         in_buffer >>= n;
                     },
@@ -92,16 +86,16 @@ pub fn BitWriter(endian: builtin.Endian, comptime WriterType: type) type {
             //copy bytes until we can't fill one anymore, then leave the rest in bit_buffer
             while (in_bits >= u8_bit_count) {
                 switch (endian) {
-                    .Big => {
-                        const v = @intCast(u8, in_buffer >> high_byte_shift);
+                    .big => {
+                        const v = @as(u8, @intCast(in_buffer >> high_byte_shift));
                         try self.forward_writer.writeByte(v);
-                        in_buffer <<= @intCast(u3, u8_bit_count - 1);
+                        in_buffer <<= @as(u3, @intCast(u8_bit_count - 1));
                         in_buffer <<= 1;
                     },
-                    .Little => {
-                        const v = @truncate(u8, in_buffer);
+                    .little => {
+                        const v = @as(u8, @truncate(in_buffer));
                         try self.forward_writer.writeByte(v);
-                        in_buffer >>= @intCast(u3, u8_bit_count - 1);
+                        in_buffer >>= @as(u3, @intCast(u8_bit_count - 1));
                         in_buffer >>= 1;
                     },
                 }
@@ -109,10 +103,10 @@ pub fn BitWriter(endian: builtin.Endian, comptime WriterType: type) type {
             }
 
             if (in_bits > 0) {
-                self.bit_count = @intCast(u4, in_bits);
+                self.bit_count = @as(u4, @intCast(in_bits));
                 self.bit_buffer = switch (endian) {
-                    .Big => @truncate(u8, in_buffer >> high_byte_shift),
-                    .Little => @truncate(u8, in_buffer),
+                    .big => @as(u8, @truncate(in_buffer >> high_byte_shift)),
+                    .little => @as(u8, @truncate(in_buffer)),
                 };
             }
         }
@@ -128,7 +122,7 @@ pub fn BitWriter(endian: builtin.Endian, comptime WriterType: type) type {
         pub fn write(self: *Self, buffer: []const u8) Error!usize {
             // TODO: I'm not sure this is a good idea, maybe flushBits should be forced
             if (self.bit_count > 0) {
-                for (buffer) |b, i|
+                for (buffer) |b|
                     try self.writeBits(b, u8_bit_count);
                 return buffer.len;
             }
@@ -143,7 +137,7 @@ pub fn BitWriter(endian: builtin.Endian, comptime WriterType: type) type {
 }
 
 pub fn bitWriter(
-    comptime endian: builtin.Endian,
+    comptime endian: std.builtin.Endian,
     underlying_stream: anytype,
 ) BitWriter(endian, @TypeOf(underlying_stream)) {
     return BitWriter(endian, @TypeOf(underlying_stream)).init(underlying_stream);
@@ -154,7 +148,7 @@ test "api coverage" {
     var mem_le = [_]u8{0} ** 2;
 
     var mem_out_be = io.fixedBufferStream(&mem_be);
-    var bit_stream_be = bitWriter(.Big, mem_out_be.writer());
+    var bit_stream_be = bitWriter(.big, mem_out_be.writer());
 
     try bit_stream_be.writeBits(@as(u2, 1), 1);
     try bit_stream_be.writeBits(@as(u5, 2), 2);
@@ -163,22 +157,22 @@ test "api coverage" {
     try bit_stream_be.writeBits(@as(u9, 5), 5);
     try bit_stream_be.writeBits(@as(u1, 1), 1);
 
-    testing.expect(mem_be[0] == 0b11001101 and mem_be[1] == 0b00001011);
+    try testing.expect(mem_be[0] == 0b11001101 and mem_be[1] == 0b00001011);
 
     mem_out_be.pos = 0;
 
     try bit_stream_be.writeBits(@as(u15, 0b110011010000101), 15);
     try bit_stream_be.flushBits();
-    testing.expect(mem_be[0] == 0b11001101 and mem_be[1] == 0b00001010);
+    try testing.expect(mem_be[0] == 0b11001101 and mem_be[1] == 0b00001010);
 
     mem_out_be.pos = 0;
     try bit_stream_be.writeBits(@as(u32, 0b110011010000101), 16);
-    testing.expect(mem_be[0] == 0b01100110 and mem_be[1] == 0b10000101);
+    try testing.expect(mem_be[0] == 0b01100110 and mem_be[1] == 0b10000101);
 
     try bit_stream_be.writeBits(@as(u0, 0), 0);
 
     var mem_out_le = io.fixedBufferStream(&mem_le);
-    var bit_stream_le = bitWriter(.Little, mem_out_le.writer());
+    var bit_stream_le = bitWriter(.little, mem_out_le.writer());
 
     try bit_stream_le.writeBits(@as(u2, 1), 1);
     try bit_stream_le.writeBits(@as(u5, 2), 2);
@@ -187,16 +181,16 @@ test "api coverage" {
     try bit_stream_le.writeBits(@as(u9, 5), 5);
     try bit_stream_le.writeBits(@as(u1, 1), 1);
 
-    testing.expect(mem_le[0] == 0b00011101 and mem_le[1] == 0b10010101);
+    try testing.expect(mem_le[0] == 0b00011101 and mem_le[1] == 0b10010101);
 
     mem_out_le.pos = 0;
     try bit_stream_le.writeBits(@as(u15, 0b110011010000101), 15);
     try bit_stream_le.flushBits();
-    testing.expect(mem_le[0] == 0b10000101 and mem_le[1] == 0b01100110);
+    try testing.expect(mem_le[0] == 0b10000101 and mem_le[1] == 0b01100110);
 
     mem_out_le.pos = 0;
     try bit_stream_le.writeBits(@as(u32, 0b1100110100001011), 16);
-    testing.expect(mem_le[0] == 0b00001011 and mem_le[1] == 0b11001101);
+    try testing.expect(mem_le[0] == 0b00001011 and mem_le[1] == 0b11001101);
 
     try bit_stream_le.writeBits(@as(u0, 0), 0);
 }

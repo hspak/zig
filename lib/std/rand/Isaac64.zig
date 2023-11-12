@@ -1,9 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
-
 //! ISAAC64 - http://www.burtleburtle.net/bob/rand/isaacafa.html
 //!
 //! Follows the general idea of the implementation from here with a few shortcuts.
@@ -14,8 +8,6 @@ const Random = std.rand.Random;
 const mem = std.mem;
 const Isaac64 = @This();
 
-random: Random,
-
 r: [256]u64,
 m: [256]u64,
 a: u64,
@@ -25,7 +17,6 @@ i: usize,
 
 pub fn init(init_s: u64) Isaac64 {
     var isaac = Isaac64{
-        .random = Random{ .fillFn = fill },
         .r = undefined,
         .m = undefined,
         .a = undefined,
@@ -39,14 +30,18 @@ pub fn init(init_s: u64) Isaac64 {
     return isaac;
 }
 
+pub fn random(self: *Isaac64) Random {
+    return Random.init(self, fill);
+}
+
 fn step(self: *Isaac64, mix: u64, base: usize, comptime m1: usize, comptime m2: usize) void {
     const x = self.m[base + m1];
     self.a = mix +% self.m[base + m2];
 
-    const y = self.a +% self.b +% self.m[@intCast(usize, (x >> 3) % self.m.len)];
+    const y = self.a +% self.b +% self.m[@as(usize, @intCast((x >> 3) % self.m.len))];
     self.m[base + m1] = y;
 
-    self.b = x +% self.m[@intCast(usize, (y >> 11) % self.m.len)];
+    self.b = x +% self.m[@as(usize, @intCast((y >> 11) % self.m.len))];
     self.r[self.r.len - 1 - base - m1] = self.b;
 }
 
@@ -92,7 +87,7 @@ fn next(self: *Isaac64) u64 {
 fn seed(self: *Isaac64, init_s: u64, comptime rounds: usize) void {
     // We ignore the multi-pass requirement since we don't currently expose full access to
     // seeding the self.m array completely.
-    mem.set(u64, self.m[0..], 0);
+    @memset(self.m[0..], 0);
     self.m[0] = init_s;
 
     // prescrambled golden ratio constants
@@ -148,16 +143,14 @@ fn seed(self: *Isaac64, init_s: u64, comptime rounds: usize) void {
         }
     }
 
-    mem.set(u64, self.r[0..], 0);
+    @memset(self.r[0..], 0);
     self.a = 0;
     self.b = 0;
     self.c = 0;
     self.i = self.r.len; // trigger refill on first value
 }
 
-fn fill(r: *Random, buf: []u8) void {
-    const self = @fieldParentPtr(Isaac64, "random", r);
-
+pub fn fill(self: *Isaac64, buf: []u8) void {
     var i: usize = 0;
     const aligned_len = buf.len - (buf.len & 7);
 
@@ -166,7 +159,7 @@ fn fill(r: *Random, buf: []u8) void {
         var n = self.next();
         comptime var j: usize = 0;
         inline while (j < 8) : (j += 1) {
-            buf[i + j] = @truncate(u8, n);
+            buf[i + j] = @as(u8, @truncate(n));
             n >>= 8;
         }
     }
@@ -175,7 +168,7 @@ fn fill(r: *Random, buf: []u8) void {
     if (i != buf.len) {
         var n = self.next();
         while (i < buf.len) : (i += 1) {
-            buf[i] = @truncate(u8, n);
+            buf[i] = @as(u8, @truncate(n));
             n >>= 8;
         }
     }
@@ -205,7 +198,7 @@ test "isaac64 sequence" {
     };
 
     for (seq) |s| {
-        std.testing.expect(s == r.next());
+        try std.testing.expect(s == r.next());
     }
 }
 
@@ -235,8 +228,8 @@ test "isaac64 fill" {
     for (seq) |s| {
         var buf0: [8]u8 = undefined;
         var buf1: [7]u8 = undefined;
-        std.mem.writeIntLittle(u64, &buf0, s);
-        Isaac64.fill(&r.random, &buf1);
-        std.testing.expect(std.mem.eql(u8, buf0[0..7], buf1[0..]));
+        std.mem.writeInt(u64, &buf0, s, .little);
+        r.fill(&buf1);
+        try std.testing.expect(std.mem.eql(u8, buf0[0..7], buf1[0..]));
     }
 }

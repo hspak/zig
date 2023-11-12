@@ -1,11 +1,13 @@
 *.zig text eol=lf
 *.txt text eol=lf
 langref.html.in text eol=lf
-deps/SoftFloat-3e/*.txt text eol=crlf
+lib/std/compress/testdata/** binary
+lib/std/compress/deflate/testdata/** binary
 
-deps/* linguist-vendored
-lib/include/* linguist-vendored
-lib/libc/* linguist-vendored
-lib/libcxx/* linguist-vendored
-lib/libcxxabi/* linguist-vendored
-lib/libunwind/* linguist-vendored
+lib/include/** linguist-vendored
+lib/libc/** linguist-vendored
+lib/libcxx/** linguist-vendored
+lib/libcxxabi/** linguist-vendored
+lib/libunwind/** linguist-vendored
+lib/tsan/** linguist-vendored
+deps/** linguist-vendored

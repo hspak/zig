@@ -1,5 +1,5 @@
 /* Assembler macros for x86-64.
-   Copyright (C) 2001-2020 Free Software Foundation, Inc.
+   Copyright (C) 2001-2023 Free Software Foundation, Inc.
    This file is part of the GNU C Library.
 
    The GNU C Library is free software; you can redistribute it and/or
@@ -20,6 +20,11 @@
 #define _X86_64_SYSDEP_H 1
 
 #include <sysdeps/x86/sysdep.h>
+#ifdef __ASSEMBLER__
+# define LP_SIZE 8
+#else
+# define LP_SIZE "8"
+#endif
 
 #ifdef	__ASSEMBLER__
 
@@ -68,9 +73,6 @@ lose:									      \
 # define JUMPTARGET(name)	name
 #endif
 
-/* Long and pointer size in bytes.  */
-#define LP_SIZE	8
-
 /* Instruction to operate on long and pointer.  */
 #define LP_OP(insn) insn##q
 
@@ -95,10 +97,47 @@ lose:									      \
 #define R14_LP	r14
 #define R15_LP	r15
 
-#else	/* __ASSEMBLER__ */
+/* Zero upper vector registers and return with xtest.  NB: Use VZEROALL
+   to avoid RTM abort triggered by VZEROUPPER inside transactionally.  */
+#define ZERO_UPPER_VEC_REGISTERS_RETURN_XTEST \
+	xtest;							\
+	jnz	1f;						\
+	vzeroupper;						\
+	ret;							\
+1:								\
+	vzeroall;						\
+	ret
 
-/* Long and pointer size in bytes.  */
-#define LP_SIZE "8"
+/* Can be used to replace vzeroupper that is not directly before a
+   return.  This is useful when hoisting a vzeroupper from multiple
+   return paths to decrease the total number of vzerouppers and code
+   size.  */
+#define COND_VZEROUPPER_XTEST							\
+    xtest;							\
+    jz 1f;							\
+    vzeroall;							\
+    jmp 2f;							\
+1:							\
+    vzeroupper;							\
+2:
+
+/* In RTM define this as COND_VZEROUPPER_XTEST.  */
+#ifndef COND_VZEROUPPER
+# define COND_VZEROUPPER vzeroupper
+#endif
+
+/* Zero upper vector registers and return.  */
+#ifndef ZERO_UPPER_VEC_REGISTERS_RETURN
+# define ZERO_UPPER_VEC_REGISTERS_RETURN \
+	VZEROUPPER;						\
+	ret
+#endif
+
+#ifndef VZEROUPPER_RETURN
+# define VZEROUPPER_RETURN	VZEROUPPER; ret
+#endif
+
+#else	/* __ASSEMBLER__ */
 
 /* Instruction to operate on long and pointer.  */
 #define LP_OP(insn) #insn "q"

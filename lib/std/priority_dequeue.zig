@@ -1,12 +1,6 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("std.zig");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
-const warn = std.debug.warn;
 const Order = std.math.Order;
 const testing = std.testing;
 const expect = testing.expect;
@@ -14,30 +8,29 @@ const expectEqual = testing.expectEqual;
 const expectError = testing.expectError;
 
 /// Priority Dequeue for storing generic data. Initialize with `init`.
-pub fn PriorityDequeue(comptime T: type) type {
+/// Provide `compareFn` that returns `Order.lt` when its second
+/// argument should get min-popped before its third argument,
+/// `Order.eq` if the arguments are of equal priority, or `Order.gt`
+/// if the third argument should be min-popped second.
+/// Popping the max element works in reverse. For example,
+/// to make `popMin` return the smallest number, provide
+/// `fn lessThan(context: void, a: T, b: T) Order { _ = context; return std.math.order(a, b); }`
+pub fn PriorityDequeue(comptime T: type, comptime Context: type, comptime compareFn: fn (context: Context, a: T, b: T) Order) type {
     return struct {
         const Self = @This();
 
         items: []T,
         len: usize,
-        allocator: *Allocator,
-        compareFn: fn (a: T, b: T) Order,
+        allocator: Allocator,
+        context: Context,
 
-        /// Initialize and return a new priority dequeue. Provide `compareFn`
-        /// that returns `Order.lt` when its first argument should
-        /// get min-popped before its second argument, `Order.eq` if the
-        /// arguments are of equal priority, or `Order.gt` if the second
-        /// argument should be min-popped first. Popping the max element works
-        /// in reverse. For example, to make `popMin` return the smallest
-        /// number, provide
-        ///
-        /// `fn lessThan(a: T, b: T) Order { return std.math.order(a, b); }`
-        pub fn init(allocator: *Allocator, compareFn: fn (T, T) Order) Self {
+        /// Initialize and return a new priority dequeue.
+        pub fn init(allocator: Allocator, context: Context) Self {
             return Self{
                 .items = &[_]T{},
                 .len = 0,
                 .allocator = allocator,
-                .compareFn = compareFn,
+                .context = context,
             };
         }
 
@@ -48,13 +41,13 @@ pub fn PriorityDequeue(comptime T: type) type {
 
         /// Insert a new element, maintaining priority.
         pub fn add(self: *Self, elem: T) !void {
-            try ensureCapacity(self, self.len + 1);
+            try self.ensureUnusedCapacity(1);
             addUnchecked(self, elem);
         }
 
         /// Add each element in `items` to the dequeue.
         pub fn addSlice(self: *Self, items: []const T) !void {
-            try self.ensureCapacity(self.len + items.len);
+            try self.ensureUnusedCapacity(items.len);
             for (items) |e| {
                 self.addUnchecked(e);
             }
@@ -76,9 +69,7 @@ pub fn PriorityDequeue(comptime T: type) type {
             // The first element is on a min layer;
             // next two are on a max layer;
             // next four are on a min layer, and so on.
-            const leading_zeros = @clz(usize, index + 1);
-            const highest_set_bit = @bitSizeOf(usize) - 1 - leading_zeros;
-            return (highest_set_bit & 1) == 0;
+            return 1 == @clz(index +% 1) & 1;
         }
 
         fn nextIsMinLayer(self: Self) bool {
@@ -96,7 +87,7 @@ pub fn PriorityDequeue(comptime T: type) type {
             const parent = self.items[parent_index];
 
             const min_layer = self.nextIsMinLayer();
-            const order = self.compareFn(child, parent);
+            const order = compareFn(self.context, child, parent);
             if ((min_layer and order == .gt) or (!min_layer and order == .lt)) {
                 // We must swap the item with it's parent if it is on the "wrong" layer
                 self.items[parent_index] = child;
@@ -129,7 +120,7 @@ pub fn PriorityDequeue(comptime T: type) type {
                 const grandparent = self.items[grandparent_index];
 
                 // If the grandparent is already better or equal, we have gone as far as we need to
-                if (self.compareFn(child, grandparent) != target_order) break;
+                if (compareFn(self.context, child, grandparent) != target_order) break;
 
                 // Otherwise swap the item with it's grandparent
                 self.items[grandparent_index] = child;
@@ -227,7 +218,7 @@ pub fn PriorityDequeue(comptime T: type) type {
                     const best_grandchild = self.bestItem(best_left, best_right, target_order);
 
                     // If the item is better than or equal to its best grandchild, we are done
-                    if (self.compareFn(best_grandchild.item, elem) != target_order) return;
+                    if (compareFn(self.context, best_grandchild.item, elem) != target_order) return;
 
                     // Otherwise, swap them
                     self.items[best_grandchild.index] = elem;
@@ -239,12 +230,12 @@ pub fn PriorityDequeue(comptime T: type) type {
                 } else {
                     // The children or grandchildren are the last layer
                     const first_child_index = firstChildIndex(index);
-                    if (first_child_index > self.len) return;
+                    if (first_child_index >= self.len) return;
 
                     const best_descendent = self.bestDescendent(first_child_index, first_grandchild_index, target_order);
 
                     // If the item is better than or equal to its best descendant, we are done
-                    if (self.compareFn(best_descendent.item, elem) != target_order) return;
+                    if (compareFn(self.context, best_descendent.item, elem) != target_order) return;
 
                     // Otherwise swap them
                     self.items[best_descendent.index] = elem;
@@ -268,7 +259,7 @@ pub fn PriorityDequeue(comptime T: type) type {
             const parent_index = parentIndex(child_index);
             const parent = self.items[parent_index];
 
-            if (self.compareFn(parent, child) == target_order) {
+            if (compareFn(self.context, parent, child) == target_order) {
                 self.items[parent_index] = child;
                 self.items[child_index] = parent;
             }
@@ -287,7 +278,7 @@ pub fn PriorityDequeue(comptime T: type) type {
         }
 
         fn bestItem(self: Self, item1: ItemAndIndex, item2: ItemAndIndex, target_order: Order) ItemAndIndex {
-            if (self.compareFn(item1.item, item2.item) == target_order) {
+            if (compareFn(self.context, item1.item, item2.item) == target_order) {
                 return item1;
             } else {
                 return item2;
@@ -345,12 +336,12 @@ pub fn PriorityDequeue(comptime T: type) type {
         /// Dequeue takes ownership of the passed in slice. The slice must have been
         /// allocated with `allocator`.
         /// De-initialize with `deinit`.
-        pub fn fromOwnedSlice(allocator: *Allocator, compareFn: fn (T, T) Order, items: []T) Self {
+        pub fn fromOwnedSlice(allocator: Allocator, items: []T, context: Context) Self {
             var queue = Self{
                 .items = items,
                 .len = items.len,
                 .allocator = allocator,
-                .compareFn = compareFn,
+                .context = context,
             };
 
             if (queue.len <= 1) return queue;
@@ -364,7 +355,8 @@ pub fn PriorityDequeue(comptime T: type) type {
             return queue;
         }
 
-        pub fn ensureCapacity(self: *Self, new_capacity: usize) !void {
+        /// Ensure that the dequeue can fit at least `new_capacity` items.
+        pub fn ensureTotalCapacity(self: *Self, new_capacity: usize) !void {
             var better_capacity = self.capacity();
             if (better_capacity >= new_capacity) return;
             while (true) {
@@ -372,6 +364,11 @@ pub fn PriorityDequeue(comptime T: type) type {
                 if (better_capacity >= new_capacity) break;
             }
             self.items = try self.allocator.realloc(self.items, better_capacity);
+        }
+
+        /// Ensure that the dequeue can fit at least `additional_count` **more** items.
+        pub fn ensureUnusedCapacity(self: *Self, additional_count: usize) !void {
+            return self.ensureTotalCapacity(self.len + additional_count);
         }
 
         /// Reduce allocated capacity to `new_len`.
@@ -387,27 +384,23 @@ pub fn PriorityDequeue(comptime T: type) type {
                     return;
                 },
             };
-            self.len = new_len;
-        }
-
-        /// Reduce length to `new_len`.
-        pub fn shrinkRetainingCapacity(self: *Self, new_len: usize) void {
-            assert(new_len <= self.items.len);
-
-            // Cannot shrink to smaller than the current queue size without invalidating the heap property
-            assert(new_len >= self.len);
-
-            self.len = new_len;
         }
 
         pub fn update(self: *Self, elem: T, new_elem: T) !void {
-            var old_index: usize = std.mem.indexOfScalar(T, self.items[0..self.len], elem) orelse return error.ElementNotFound;
+            const old_index = blk: {
+                var idx: usize = 0;
+                while (idx < self.len) : (idx += 1) {
+                    const item = self.items[idx];
+                    if (compareFn(self.context, item, elem) == .eq) break :blk idx;
+                }
+                return error.ElementNotFound;
+            };
             _ = self.removeIndex(old_index);
             self.addUnchecked(new_elem);
         }
 
         pub const Iterator = struct {
-            queue: *PriorityDequeue(T),
+            queue: *PriorityDequeue(T, Context, compareFn),
             count: usize,
 
             pub fn next(it: *Iterator) ?T {
@@ -423,7 +416,8 @@ pub fn PriorityDequeue(comptime T: type) type {
         };
 
         /// Return an iterator that walks the queue without consuming
-        /// it. Invalidated if the queue is modified.
+        /// it. The iteration order may differ from the priority order.
+        /// Invalidated if the queue is modified.
         pub fn iterator(self: *Self) Iterator {
             return Iterator{
                 .queue = self,
@@ -432,19 +426,20 @@ pub fn PriorityDequeue(comptime T: type) type {
         }
 
         fn dump(self: *Self) void {
-            warn("{{ ", .{});
-            warn("items: ", .{});
-            for (self.items) |e, i| {
+            const print = std.debug.print;
+            print("{{ ", .{});
+            print("items: ", .{});
+            for (self.items, 0..) |e, i| {
                 if (i >= self.len) break;
-                warn("{}, ", .{e});
+                print("{}, ", .{e});
             }
-            warn("array: ", .{});
-            for (self.items) |e, i| {
-                warn("{}, ", .{e});
+            print("array: ", .{});
+            for (self.items) |e| {
+                print("{}, ", .{e});
             }
-            warn("len: {} ", .{self.len});
-            warn("capacity: {}", .{self.capacity()});
-            warn(" }}\n", .{});
+            print("len: {} ", .{self.len});
+            print("capacity: {}", .{self.capacity()});
+            print(" }}\n", .{});
         }
 
         fn parentIndex(index: usize) usize {
@@ -465,14 +460,15 @@ pub fn PriorityDequeue(comptime T: type) type {
     };
 }
 
-fn lessThanComparison(a: u32, b: u32) Order {
+fn lessThanComparison(context: void, a: u32, b: u32) Order {
+    _ = context;
     return std.math.order(a, b);
 }
 
-const PDQ = PriorityDequeue(u32);
+const PDQ = PriorityDequeue(u32, void, lessThanComparison);
 
 test "std.PriorityDequeue: add and remove min" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(54);
@@ -482,23 +478,24 @@ test "std.PriorityDequeue: add and remove min" {
     try queue.add(25);
     try queue.add(13);
 
-    expectEqual(@as(u32, 7), queue.removeMin());
-    expectEqual(@as(u32, 12), queue.removeMin());
-    expectEqual(@as(u32, 13), queue.removeMin());
-    expectEqual(@as(u32, 23), queue.removeMin());
-    expectEqual(@as(u32, 25), queue.removeMin());
-    expectEqual(@as(u32, 54), queue.removeMin());
+    try expectEqual(@as(u32, 7), queue.removeMin());
+    try expectEqual(@as(u32, 12), queue.removeMin());
+    try expectEqual(@as(u32, 13), queue.removeMin());
+    try expectEqual(@as(u32, 23), queue.removeMin());
+    try expectEqual(@as(u32, 25), queue.removeMin());
+    try expectEqual(@as(u32, 54), queue.removeMin());
 }
 
 test "std.PriorityDequeue: add and remove min structs" {
     const S = struct {
         size: u32,
     };
-    var queue = PriorityDequeue(S).init(testing.allocator, struct {
-        fn order(a: S, b: S) Order {
+    var queue = PriorityDequeue(S, void, struct {
+        fn order(context: void, a: S, b: S) Order {
+            _ = context;
             return std.math.order(a.size, b.size);
         }
-    }.order);
+    }.order).init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(.{ .size = 54 });
@@ -508,16 +505,16 @@ test "std.PriorityDequeue: add and remove min structs" {
     try queue.add(.{ .size = 25 });
     try queue.add(.{ .size = 13 });
 
-    expectEqual(@as(u32, 7), queue.removeMin().size);
-    expectEqual(@as(u32, 12), queue.removeMin().size);
-    expectEqual(@as(u32, 13), queue.removeMin().size);
-    expectEqual(@as(u32, 23), queue.removeMin().size);
-    expectEqual(@as(u32, 25), queue.removeMin().size);
-    expectEqual(@as(u32, 54), queue.removeMin().size);
+    try expectEqual(@as(u32, 7), queue.removeMin().size);
+    try expectEqual(@as(u32, 12), queue.removeMin().size);
+    try expectEqual(@as(u32, 13), queue.removeMin().size);
+    try expectEqual(@as(u32, 23), queue.removeMin().size);
+    try expectEqual(@as(u32, 25), queue.removeMin().size);
+    try expectEqual(@as(u32, 54), queue.removeMin().size);
 }
 
 test "std.PriorityDequeue: add and remove max" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(54);
@@ -527,16 +524,16 @@ test "std.PriorityDequeue: add and remove max" {
     try queue.add(25);
     try queue.add(13);
 
-    expectEqual(@as(u32, 54), queue.removeMax());
-    expectEqual(@as(u32, 25), queue.removeMax());
-    expectEqual(@as(u32, 23), queue.removeMax());
-    expectEqual(@as(u32, 13), queue.removeMax());
-    expectEqual(@as(u32, 12), queue.removeMax());
-    expectEqual(@as(u32, 7), queue.removeMax());
+    try expectEqual(@as(u32, 54), queue.removeMax());
+    try expectEqual(@as(u32, 25), queue.removeMax());
+    try expectEqual(@as(u32, 23), queue.removeMax());
+    try expectEqual(@as(u32, 13), queue.removeMax());
+    try expectEqual(@as(u32, 12), queue.removeMax());
+    try expectEqual(@as(u32, 7), queue.removeMax());
 }
 
 test "std.PriorityDequeue: add and remove same min" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(1);
@@ -546,16 +543,16 @@ test "std.PriorityDequeue: add and remove same min" {
     try queue.add(1);
     try queue.add(1);
 
-    expectEqual(@as(u32, 1), queue.removeMin());
-    expectEqual(@as(u32, 1), queue.removeMin());
-    expectEqual(@as(u32, 1), queue.removeMin());
-    expectEqual(@as(u32, 1), queue.removeMin());
-    expectEqual(@as(u32, 2), queue.removeMin());
-    expectEqual(@as(u32, 2), queue.removeMin());
+    try expectEqual(@as(u32, 1), queue.removeMin());
+    try expectEqual(@as(u32, 1), queue.removeMin());
+    try expectEqual(@as(u32, 1), queue.removeMin());
+    try expectEqual(@as(u32, 1), queue.removeMin());
+    try expectEqual(@as(u32, 2), queue.removeMin());
+    try expectEqual(@as(u32, 2), queue.removeMin());
 }
 
 test "std.PriorityDequeue: add and remove same max" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(1);
@@ -565,78 +562,78 @@ test "std.PriorityDequeue: add and remove same max" {
     try queue.add(1);
     try queue.add(1);
 
-    expectEqual(@as(u32, 2), queue.removeMax());
-    expectEqual(@as(u32, 2), queue.removeMax());
-    expectEqual(@as(u32, 1), queue.removeMax());
-    expectEqual(@as(u32, 1), queue.removeMax());
-    expectEqual(@as(u32, 1), queue.removeMax());
-    expectEqual(@as(u32, 1), queue.removeMax());
+    try expectEqual(@as(u32, 2), queue.removeMax());
+    try expectEqual(@as(u32, 2), queue.removeMax());
+    try expectEqual(@as(u32, 1), queue.removeMax());
+    try expectEqual(@as(u32, 1), queue.removeMax());
+    try expectEqual(@as(u32, 1), queue.removeMax());
+    try expectEqual(@as(u32, 1), queue.removeMax());
 }
 
 test "std.PriorityDequeue: removeOrNull empty" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
 
-    expect(queue.removeMinOrNull() == null);
-    expect(queue.removeMaxOrNull() == null);
+    try expect(queue.removeMinOrNull() == null);
+    try expect(queue.removeMaxOrNull() == null);
 }
 
 test "std.PriorityDequeue: edge case 3 elements" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(9);
     try queue.add(3);
     try queue.add(2);
 
-    expectEqual(@as(u32, 2), queue.removeMin());
-    expectEqual(@as(u32, 3), queue.removeMin());
-    expectEqual(@as(u32, 9), queue.removeMin());
+    try expectEqual(@as(u32, 2), queue.removeMin());
+    try expectEqual(@as(u32, 3), queue.removeMin());
+    try expectEqual(@as(u32, 9), queue.removeMin());
 }
 
 test "std.PriorityDequeue: edge case 3 elements max" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(9);
     try queue.add(3);
     try queue.add(2);
 
-    expectEqual(@as(u32, 9), queue.removeMax());
-    expectEqual(@as(u32, 3), queue.removeMax());
-    expectEqual(@as(u32, 2), queue.removeMax());
+    try expectEqual(@as(u32, 9), queue.removeMax());
+    try expectEqual(@as(u32, 3), queue.removeMax());
+    try expectEqual(@as(u32, 2), queue.removeMax());
 }
 
 test "std.PriorityDequeue: peekMin" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
 
-    expect(queue.peekMin() == null);
+    try expect(queue.peekMin() == null);
 
     try queue.add(9);
     try queue.add(3);
     try queue.add(2);
 
-    expect(queue.peekMin().? == 2);
-    expect(queue.peekMin().? == 2);
+    try expect(queue.peekMin().? == 2);
+    try expect(queue.peekMin().? == 2);
 }
 
 test "std.PriorityDequeue: peekMax" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
 
-    expect(queue.peekMin() == null);
+    try expect(queue.peekMin() == null);
 
     try queue.add(9);
     try queue.add(3);
     try queue.add(2);
 
-    expect(queue.peekMax().? == 9);
-    expect(queue.peekMax().? == 9);
+    try expect(queue.peekMax().? == 9);
+    try expect(queue.peekMax().? == 9);
 }
 
-test "std.PriorityDequeue: sift up with odd indices" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+test "std.PriorityDequeue: sift up with odd indices, removeMin" {
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
     const items = [_]u32{ 15, 7, 21, 14, 13, 22, 12, 6, 7, 25, 5, 24, 11, 16, 15, 24, 2, 1 };
     for (items) |e| {
@@ -645,12 +642,12 @@ test "std.PriorityDequeue: sift up with odd indices" {
 
     const sorted_items = [_]u32{ 1, 2, 5, 6, 7, 7, 11, 12, 13, 14, 15, 15, 16, 21, 22, 24, 24, 25 };
     for (sorted_items) |e| {
-        expectEqual(e, queue.removeMin());
+        try expectEqual(e, queue.removeMin());
     }
 }
 
-test "std.PriorityDequeue: sift up with odd indices" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+test "std.PriorityDequeue: sift up with odd indices, removeMax" {
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
     const items = [_]u32{ 15, 7, 21, 14, 13, 22, 12, 6, 7, 25, 5, 24, 11, 16, 15, 24, 2, 1 };
     for (items) |e| {
@@ -659,68 +656,68 @@ test "std.PriorityDequeue: sift up with odd indices" {
 
     const sorted_items = [_]u32{ 25, 24, 24, 22, 21, 16, 15, 15, 14, 13, 12, 11, 7, 7, 6, 5, 2, 1 };
     for (sorted_items) |e| {
-        expectEqual(e, queue.removeMax());
+        try expectEqual(e, queue.removeMax());
     }
 }
 
 test "std.PriorityDequeue: addSlice min" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
     const items = [_]u32{ 15, 7, 21, 14, 13, 22, 12, 6, 7, 25, 5, 24, 11, 16, 15, 24, 2, 1 };
     try queue.addSlice(items[0..]);
 
     const sorted_items = [_]u32{ 1, 2, 5, 6, 7, 7, 11, 12, 13, 14, 15, 15, 16, 21, 22, 24, 24, 25 };
     for (sorted_items) |e| {
-        expectEqual(e, queue.removeMin());
+        try expectEqual(e, queue.removeMin());
     }
 }
 
 test "std.PriorityDequeue: addSlice max" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
     const items = [_]u32{ 15, 7, 21, 14, 13, 22, 12, 6, 7, 25, 5, 24, 11, 16, 15, 24, 2, 1 };
     try queue.addSlice(items[0..]);
 
     const sorted_items = [_]u32{ 25, 24, 24, 22, 21, 16, 15, 15, 14, 13, 12, 11, 7, 7, 6, 5, 2, 1 };
     for (sorted_items) |e| {
-        expectEqual(e, queue.removeMax());
+        try expectEqual(e, queue.removeMax());
     }
 }
 
 test "std.PriorityDequeue: fromOwnedSlice trivial case 0" {
     const items = [0]u32{};
     const queue_items = try testing.allocator.dupe(u32, &items);
-    var queue = PDQ.fromOwnedSlice(testing.allocator, lessThanComparison, queue_items[0..]);
+    var queue = PDQ.fromOwnedSlice(testing.allocator, queue_items[0..], {});
     defer queue.deinit();
-    expectEqual(@as(usize, 0), queue.len);
-    expect(queue.removeMinOrNull() == null);
+    try expectEqual(@as(usize, 0), queue.len);
+    try expect(queue.removeMinOrNull() == null);
 }
 
 test "std.PriorityDequeue: fromOwnedSlice trivial case 1" {
     const items = [1]u32{1};
     const queue_items = try testing.allocator.dupe(u32, &items);
-    var queue = PDQ.fromOwnedSlice(testing.allocator, lessThanComparison, queue_items[0..]);
+    var queue = PDQ.fromOwnedSlice(testing.allocator, queue_items[0..], {});
     defer queue.deinit();
 
-    expectEqual(@as(usize, 1), queue.len);
-    expectEqual(items[0], queue.removeMin());
-    expect(queue.removeMinOrNull() == null);
+    try expectEqual(@as(usize, 1), queue.len);
+    try expectEqual(items[0], queue.removeMin());
+    try expect(queue.removeMinOrNull() == null);
 }
 
 test "std.PriorityDequeue: fromOwnedSlice" {
     const items = [_]u32{ 15, 7, 21, 14, 13, 22, 12, 6, 7, 25, 5, 24, 11, 16, 15, 24, 2, 1 };
     const queue_items = try testing.allocator.dupe(u32, items[0..]);
-    var queue = PDQ.fromOwnedSlice(testing.allocator, lessThanComparison, queue_items[0..]);
+    var queue = PDQ.fromOwnedSlice(testing.allocator, queue_items[0..], {});
     defer queue.deinit();
 
     const sorted_items = [_]u32{ 1, 2, 5, 6, 7, 7, 11, 12, 13, 14, 15, 15, 16, 21, 22, 24, 24, 25 };
     for (sorted_items) |e| {
-        expectEqual(e, queue.removeMin());
+        try expectEqual(e, queue.removeMin());
     }
 }
 
 test "std.PriorityDequeue: update min queue" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(55);
@@ -729,13 +726,13 @@ test "std.PriorityDequeue: update min queue" {
     try queue.update(55, 5);
     try queue.update(44, 4);
     try queue.update(11, 1);
-    expectEqual(@as(u32, 1), queue.removeMin());
-    expectEqual(@as(u32, 4), queue.removeMin());
-    expectEqual(@as(u32, 5), queue.removeMin());
+    try expectEqual(@as(u32, 1), queue.removeMin());
+    try expectEqual(@as(u32, 4), queue.removeMin());
+    try expectEqual(@as(u32, 5), queue.removeMin());
 }
 
 test "std.PriorityDequeue: update same min queue" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(1);
@@ -744,14 +741,14 @@ test "std.PriorityDequeue: update same min queue" {
     try queue.add(2);
     try queue.update(1, 5);
     try queue.update(2, 4);
-    expectEqual(@as(u32, 1), queue.removeMin());
-    expectEqual(@as(u32, 2), queue.removeMin());
-    expectEqual(@as(u32, 4), queue.removeMin());
-    expectEqual(@as(u32, 5), queue.removeMin());
+    try expectEqual(@as(u32, 1), queue.removeMin());
+    try expectEqual(@as(u32, 2), queue.removeMin());
+    try expectEqual(@as(u32, 4), queue.removeMin());
+    try expectEqual(@as(u32, 5), queue.removeMin());
 }
 
 test "std.PriorityDequeue: update max queue" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(55);
@@ -761,13 +758,13 @@ test "std.PriorityDequeue: update max queue" {
     try queue.update(44, 1);
     try queue.update(11, 4);
 
-    expectEqual(@as(u32, 5), queue.removeMax());
-    expectEqual(@as(u32, 4), queue.removeMax());
-    expectEqual(@as(u32, 1), queue.removeMax());
+    try expectEqual(@as(u32, 5), queue.removeMax());
+    try expectEqual(@as(u32, 4), queue.removeMax());
+    try expectEqual(@as(u32, 1), queue.removeMax());
 }
 
 test "std.PriorityDequeue: update same max queue" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(1);
@@ -776,14 +773,23 @@ test "std.PriorityDequeue: update same max queue" {
     try queue.add(2);
     try queue.update(1, 5);
     try queue.update(2, 4);
-    expectEqual(@as(u32, 5), queue.removeMax());
-    expectEqual(@as(u32, 4), queue.removeMax());
-    expectEqual(@as(u32, 2), queue.removeMax());
-    expectEqual(@as(u32, 1), queue.removeMax());
+    try expectEqual(@as(u32, 5), queue.removeMax());
+    try expectEqual(@as(u32, 4), queue.removeMax());
+    try expectEqual(@as(u32, 2), queue.removeMax());
+    try expectEqual(@as(u32, 1), queue.removeMax());
+}
+
+test "std.PriorityDequeue: update after remove" {
+    var queue = PDQ.init(testing.allocator, {});
+    defer queue.deinit();
+
+    try queue.add(1);
+    try expectEqual(@as(u32, 1), queue.removeMin());
+    try expectError(error.ElementNotFound, queue.update(1, 1));
 }
 
 test "std.PriorityDequeue: iterator" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+    var queue = PDQ.init(testing.allocator, {});
     var map = std.AutoHashMap(u32, void).init(testing.allocator);
     defer {
         queue.deinit();
@@ -801,11 +807,11 @@ test "std.PriorityDequeue: iterator" {
         _ = map.remove(e);
     }
 
-    expectEqual(@as(usize, 0), map.count());
+    try expectEqual(@as(usize, 0), map.count());
 }
 
 test "std.PriorityDequeue: remove at index" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
 
     try queue.add(3);
@@ -821,71 +827,68 @@ test "std.PriorityDequeue: remove at index" {
         idx += 1;
     } else unreachable;
 
-    expectEqual(queue.removeIndex(two_idx), 2);
-    expectEqual(queue.removeMin(), 1);
-    expectEqual(queue.removeMin(), 3);
-    expectEqual(queue.removeMinOrNull(), null);
+    try expectEqual(queue.removeIndex(two_idx), 2);
+    try expectEqual(queue.removeMin(), 1);
+    try expectEqual(queue.removeMin(), 3);
+    try expectEqual(queue.removeMinOrNull(), null);
 }
 
 test "std.PriorityDequeue: iterator while empty" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
 
     var it = queue.iterator();
 
-    expectEqual(it.next(), null);
+    try expectEqual(it.next(), null);
 }
 
-test "std.PriorityDequeue: shrinkRetainingCapacity and shrinkAndFree" {
-    var queue = PDQ.init(testing.allocator, lessThanComparison);
+test "std.PriorityDequeue: shrinkAndFree" {
+    var queue = PDQ.init(testing.allocator, {});
     defer queue.deinit();
 
-    try queue.ensureCapacity(4);
-    expect(queue.capacity() >= 4);
+    try queue.ensureTotalCapacity(4);
+    try expect(queue.capacity() >= 4);
 
     try queue.add(1);
     try queue.add(2);
     try queue.add(3);
-    expect(queue.capacity() >= 4);
-    expectEqual(@as(usize, 3), queue.len);
-
-    queue.shrinkRetainingCapacity(3);
-    expect(queue.capacity() >= 4);
-    expectEqual(@as(usize, 3), queue.len);
+    try expect(queue.capacity() >= 4);
+    try expectEqual(@as(usize, 3), queue.len);
 
     queue.shrinkAndFree(3);
-    expectEqual(@as(usize, 3), queue.capacity());
-    expectEqual(@as(usize, 3), queue.len);
+    try expectEqual(@as(usize, 3), queue.capacity());
+    try expectEqual(@as(usize, 3), queue.len);
 
-    expectEqual(@as(u32, 3), queue.removeMax());
-    expectEqual(@as(u32, 2), queue.removeMax());
-    expectEqual(@as(u32, 1), queue.removeMax());
-    expect(queue.removeMaxOrNull() == null);
+    try expectEqual(@as(u32, 3), queue.removeMax());
+    try expectEqual(@as(u32, 2), queue.removeMax());
+    try expectEqual(@as(u32, 1), queue.removeMax());
+    try expect(queue.removeMaxOrNull() == null);
 }
 
 test "std.PriorityDequeue: fuzz testing min" {
     var prng = std.rand.DefaultPrng.init(0x12345678);
+    const random = prng.random();
 
     const test_case_count = 100;
     const queue_size = 1_000;
 
     var i: usize = 0;
     while (i < test_case_count) : (i += 1) {
-        try fuzzTestMin(&prng.random, queue_size);
+        try fuzzTestMin(random, queue_size);
     }
 }
 
-fn fuzzTestMin(rng: *std.rand.Random, comptime queue_size: usize) !void {
+fn fuzzTestMin(rng: std.rand.Random, comptime queue_size: usize) !void {
     const allocator = testing.allocator;
     const items = try generateRandomSlice(allocator, rng, queue_size);
 
-    var queue = PDQ.fromOwnedSlice(allocator, lessThanComparison, items);
+    var queue = PDQ.fromOwnedSlice(allocator, items, {});
     defer queue.deinit();
 
     var last_removed: ?u32 = null;
     while (queue.removeMinOrNull()) |next| {
         if (last_removed) |last| {
-            expect(last <= next);
+            try expect(last <= next);
         }
         last_removed = next;
     }
@@ -893,27 +896,28 @@ fn fuzzTestMin(rng: *std.rand.Random, comptime queue_size: usize) !void {
 
 test "std.PriorityDequeue: fuzz testing max" {
     var prng = std.rand.DefaultPrng.init(0x87654321);
+    const random = prng.random();
 
     const test_case_count = 100;
     const queue_size = 1_000;
 
     var i: usize = 0;
     while (i < test_case_count) : (i += 1) {
-        try fuzzTestMax(&prng.random, queue_size);
+        try fuzzTestMax(random, queue_size);
     }
 }
 
-fn fuzzTestMax(rng: *std.rand.Random, queue_size: usize) !void {
+fn fuzzTestMax(rng: std.rand.Random, queue_size: usize) !void {
     const allocator = testing.allocator;
     const items = try generateRandomSlice(allocator, rng, queue_size);
 
-    var queue = PDQ.fromOwnedSlice(testing.allocator, lessThanComparison, items);
+    var queue = PDQ.fromOwnedSlice(testing.allocator, items, {});
     defer queue.deinit();
 
     var last_removed: ?u32 = null;
     while (queue.removeMaxOrNull()) |next| {
         if (last_removed) |last| {
-            expect(last >= next);
+            try expect(last >= next);
         }
         last_removed = next;
     }
@@ -921,21 +925,22 @@ fn fuzzTestMax(rng: *std.rand.Random, queue_size: usize) !void {
 
 test "std.PriorityDequeue: fuzz testing min and max" {
     var prng = std.rand.DefaultPrng.init(0x87654321);
+    const random = prng.random();
 
     const test_case_count = 100;
     const queue_size = 1_000;
 
     var i: usize = 0;
     while (i < test_case_count) : (i += 1) {
-        try fuzzTestMinMax(&prng.random, queue_size);
+        try fuzzTestMinMax(random, queue_size);
     }
 }
 
-fn fuzzTestMinMax(rng: *std.rand.Random, queue_size: usize) !void {
+fn fuzzTestMinMax(rng: std.rand.Random, queue_size: usize) !void {
     const allocator = testing.allocator;
     const items = try generateRandomSlice(allocator, rng, queue_size);
 
-    var queue = PDQ.fromOwnedSlice(allocator, lessThanComparison, items);
+    var queue = PDQ.fromOwnedSlice(allocator, items, {});
     defer queue.deinit();
 
     var last_min: ?u32 = null;
@@ -945,22 +950,22 @@ fn fuzzTestMinMax(rng: *std.rand.Random, queue_size: usize) !void {
         if (i % 2 == 0) {
             const next = queue.removeMin();
             if (last_min) |last| {
-                expect(last <= next);
+                try expect(last <= next);
             }
             last_min = next;
         } else {
             const next = queue.removeMax();
             if (last_max) |last| {
-                expect(last >= next);
+                try expect(last >= next);
             }
             last_max = next;
         }
     }
 }
 
-fn generateRandomSlice(allocator: *std.mem.Allocator, rng: *std.rand.Random, size: usize) ![]u32 {
+fn generateRandomSlice(allocator: std.mem.Allocator, rng: std.rand.Random, size: usize) ![]u32 {
     var array = std.ArrayList(u32).init(allocator);
-    try array.ensureCapacity(size);
+    try array.ensureTotalCapacity(size);
 
     var i: usize = 0;
     while (i < size) : (i += 1) {
@@ -969,4 +974,54 @@ fn generateRandomSlice(allocator: *std.mem.Allocator, rng: *std.rand.Random, siz
     }
 
     return array.toOwnedSlice();
+}
+
+fn contextLessThanComparison(context: []const u32, a: usize, b: usize) Order {
+    return std.math.order(context[a], context[b]);
+}
+
+const CPDQ = PriorityDequeue(usize, []const u32, contextLessThanComparison);
+
+test "std.PriorityDequeue: add and remove" {
+    const context = [_]u32{ 5, 3, 4, 2, 2, 8, 0 };
+
+    var queue = CPDQ.init(testing.allocator, context[0..]);
+    defer queue.deinit();
+
+    try queue.add(0);
+    try queue.add(1);
+    try queue.add(2);
+    try queue.add(3);
+    try queue.add(4);
+    try queue.add(5);
+    try queue.add(6);
+    try expectEqual(@as(usize, 6), queue.removeMin());
+    try expectEqual(@as(usize, 5), queue.removeMax());
+    try expectEqual(@as(usize, 3), queue.removeMin());
+    try expectEqual(@as(usize, 0), queue.removeMax());
+    try expectEqual(@as(usize, 4), queue.removeMin());
+    try expectEqual(@as(usize, 2), queue.removeMax());
+    try expectEqual(@as(usize, 1), queue.removeMin());
+}
+
+var all_cmps_unique = true;
+
+test "std.PriorityDeque: don't compare a value to a copy of itself" {
+    var depq = PriorityDequeue(u32, void, struct {
+        fn uniqueLessThan(_: void, a: u32, b: u32) Order {
+            all_cmps_unique = all_cmps_unique and (a != b);
+            return std.math.order(a, b);
+        }
+    }.uniqueLessThan).init(testing.allocator, {});
+    defer depq.deinit();
+
+    try depq.add(1);
+    try depq.add(2);
+    try depq.add(3);
+    try depq.add(4);
+    try depq.add(5);
+    try depq.add(6);
+
+    _ = depq.removeIndex(2);
+    try expectEqual(all_cmps_unique, true);
 }

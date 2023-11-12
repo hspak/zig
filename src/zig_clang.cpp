@@ -24,6 +24,7 @@
 #include <clang/AST/APValue.h>
 #include <clang/AST/Attr.h>
 #include <clang/AST/Expr.h>
+#include <clang/AST/RecordLayout.h>
 
 #if __GNUC__ >= 8
 #pragma GCC diagnostic pop
@@ -163,6 +164,10 @@ void ZigClang_detect_enum_CK(clang::CastKind x) {
         case clang::CK_DerivedToBase:
         case clang::CK_DerivedToBaseMemberPointer:
         case clang::CK_Dynamic:
+        case clang::CK_FixedPointCast:
+        case clang::CK_FixedPointToBoolean:
+        case clang::CK_FixedPointToFloating:
+        case clang::CK_FixedPointToIntegral:
         case clang::CK_FloatingCast:
         case clang::CK_FloatingComplexCast:
         case clang::CK_FloatingComplexToBoolean:
@@ -170,6 +175,7 @@ void ZigClang_detect_enum_CK(clang::CastKind x) {
         case clang::CK_FloatingComplexToReal:
         case clang::CK_FloatingRealToComplex:
         case clang::CK_FloatingToBoolean:
+        case clang::CK_FloatingToFixedPoint:
         case clang::CK_FloatingToIntegral:
         case clang::CK_FunctionToPointerDecay:
         case clang::CK_IntToOCLSampler:
@@ -180,11 +186,13 @@ void ZigClang_detect_enum_CK(clang::CastKind x) {
         case clang::CK_IntegralComplexToReal:
         case clang::CK_IntegralRealToComplex:
         case clang::CK_IntegralToBoolean:
+        case clang::CK_IntegralToFixedPoint:
         case clang::CK_IntegralToFloating:
         case clang::CK_IntegralToPointer:
         case clang::CK_LValueBitCast:
-        case clang::CK_LValueToRValueBitCast:
         case clang::CK_LValueToRValue:
+        case clang::CK_LValueToRValueBitCast:
+        case clang::CK_MatrixCast:
         case clang::CK_MemberPointerToBoolean:
         case clang::CK_NoOp:
         case clang::CK_NonAtomicToAtomic:
@@ -200,10 +208,6 @@ void ZigClang_detect_enum_CK(clang::CastKind x) {
         case clang::CK_UserDefinedConversion:
         case clang::CK_VectorSplat:
         case clang::CK_ZeroToOCLOpaqueType:
-        case clang::CK_FixedPointCast:
-        case clang::CK_FixedPointToIntegral:
-        case clang::CK_IntegralToFixedPoint:
-        case clang::CK_FixedPointToBoolean:
             break;
     }
 };
@@ -233,10 +237,13 @@ static_assert((clang::CastKind)ZigClangCK_IntegralToPointer == clang::CK_Integra
 static_assert((clang::CastKind)ZigClangCK_PointerToIntegral == clang::CK_PointerToIntegral, "");
 static_assert((clang::CastKind)ZigClangCK_PointerToBoolean == clang::CK_PointerToBoolean, "");
 static_assert((clang::CastKind)ZigClangCK_ToVoid == clang::CK_ToVoid, "");
+static_assert((clang::CastKind)ZigClangCK_MatrixCast == clang::CK_MatrixCast, "");
 static_assert((clang::CastKind)ZigClangCK_VectorSplat == clang::CK_VectorSplat, "");
 static_assert((clang::CastKind)ZigClangCK_IntegralCast == clang::CK_IntegralCast, "");
 static_assert((clang::CastKind)ZigClangCK_IntegralToBoolean == clang::CK_IntegralToBoolean, "");
 static_assert((clang::CastKind)ZigClangCK_IntegralToFloating == clang::CK_IntegralToFloating, "");
+static_assert((clang::CastKind)ZigClangCK_FloatingToFixedPoint == clang::CK_FloatingToFixedPoint, "");
+static_assert((clang::CastKind)ZigClangCK_FixedPointToFloating == clang::CK_FixedPointToFloating, "");
 static_assert((clang::CastKind)ZigClangCK_FixedPointCast == clang::CK_FixedPointCast, "");
 static_assert((clang::CastKind)ZigClangCK_FixedPointToIntegral == clang::CK_FixedPointToIntegral, "");
 static_assert((clang::CastKind)ZigClangCK_IntegralToFixedPoint == clang::CK_IntegralToFixedPoint, "");
@@ -287,13 +294,14 @@ void ZigClang_detect_enum_TypeClass(clang::Type::TypeClass ty) {
         case clang::Type::DependentSizedArray:
         case clang::Type::DependentSizedExtVector:
         case clang::Type::DependentAddressSpace:
-        case clang::Type::DependentExtInt:
+        case clang::Type::DependentBitInt:
         case clang::Type::Vector:
         case clang::Type::DependentVector:
         case clang::Type::ExtVector:
         case clang::Type::FunctionProto:
         case clang::Type::FunctionNoProto:
         case clang::Type::UnresolvedUsing:
+        case clang::Type::Using:
         case clang::Type::Paren:
         case clang::Type::Typedef:
         case clang::Type::MacroQualified:
@@ -308,8 +316,9 @@ void ZigClang_detect_enum_TypeClass(clang::Type::TypeClass ty) {
         case clang::Type::Record:
         case clang::Type::Enum:
         case clang::Type::Elaborated:
-        case clang::Type::ExtInt:
         case clang::Type::Attributed:
+        case clang::Type::BTFTagAttributed:
+        case clang::Type::BitInt:
         case clang::Type::TemplateTypeParm:
         case clang::Type::SubstTemplateTypeParm:
         case clang::Type::SubstTemplateTypeParmPack:
@@ -338,6 +347,8 @@ static_assert((clang::Type::TypeClass)ZigClangType_IncompleteArray == clang::Typ
 static_assert((clang::Type::TypeClass)ZigClangType_VariableArray == clang::Type::VariableArray, "");
 static_assert((clang::Type::TypeClass)ZigClangType_Atomic == clang::Type::Atomic, "");
 static_assert((clang::Type::TypeClass)ZigClangType_Attributed == clang::Type::Attributed, "");
+static_assert((clang::Type::TypeClass)ZigClangType_BTFTagAttributed == clang::Type::BTFTagAttributed, "");
+static_assert((clang::Type::TypeClass)ZigClangType_BitInt == clang::Type::BitInt, "");
 static_assert((clang::Type::TypeClass)ZigClangType_BlockPointer == clang::Type::BlockPointer, "");
 static_assert((clang::Type::TypeClass)ZigClangType_Builtin == clang::Type::Builtin, "");
 static_assert((clang::Type::TypeClass)ZigClangType_Complex == clang::Type::Complex, "");
@@ -345,13 +356,12 @@ static_assert((clang::Type::TypeClass)ZigClangType_Decltype == clang::Type::Decl
 static_assert((clang::Type::TypeClass)ZigClangType_Auto == clang::Type::Auto, "");
 static_assert((clang::Type::TypeClass)ZigClangType_DeducedTemplateSpecialization == clang::Type::DeducedTemplateSpecialization, "");
 static_assert((clang::Type::TypeClass)ZigClangType_DependentAddressSpace == clang::Type::DependentAddressSpace, "");
-static_assert((clang::Type::TypeClass)ZigClangType_DependentExtInt == clang::Type::DependentExtInt, "");
+static_assert((clang::Type::TypeClass)ZigClangType_DependentBitInt == clang::Type::DependentBitInt, "");
 static_assert((clang::Type::TypeClass)ZigClangType_DependentName == clang::Type::DependentName, "");
 static_assert((clang::Type::TypeClass)ZigClangType_DependentSizedExtVector == clang::Type::DependentSizedExtVector, "");
 static_assert((clang::Type::TypeClass)ZigClangType_DependentTemplateSpecialization == clang::Type::DependentTemplateSpecialization, "");
 static_assert((clang::Type::TypeClass)ZigClangType_DependentVector == clang::Type::DependentVector, "");
 static_assert((clang::Type::TypeClass)ZigClangType_Elaborated == clang::Type::Elaborated, "");
-static_assert((clang::Type::TypeClass)ZigClangType_ExtInt == clang::Type::ExtInt, "");
 static_assert((clang::Type::TypeClass)ZigClangType_FunctionNoProto == clang::Type::FunctionNoProto, "");
 static_assert((clang::Type::TypeClass)ZigClangType_FunctionProto == clang::Type::FunctionProto, "");
 static_assert((clang::Type::TypeClass)ZigClangType_InjectedClassName == clang::Type::InjectedClassName, "");
@@ -380,226 +390,247 @@ static_assert((clang::Type::TypeClass)ZigClangType_TypeOf == clang::Type::TypeOf
 static_assert((clang::Type::TypeClass)ZigClangType_Typedef == clang::Type::Typedef, "");
 static_assert((clang::Type::TypeClass)ZigClangType_UnaryTransform == clang::Type::UnaryTransform, "");
 static_assert((clang::Type::TypeClass)ZigClangType_UnresolvedUsing == clang::Type::UnresolvedUsing, "");
+static_assert((clang::Type::TypeClass)ZigClangType_Using == clang::Type::Using, "");
 static_assert((clang::Type::TypeClass)ZigClangType_Vector == clang::Type::Vector, "");
 static_assert((clang::Type::TypeClass)ZigClangType_ExtVector == clang::Type::ExtVector, "");
 
 // Detect additions to the enum
 void ZigClang_detect_enum_StmtClass(clang::Stmt::StmtClass x) {
-    switch (static_cast<ZigClangStmtClass>(x)) {
-        case ZigClangStmt_NoStmtClass:
-        case ZigClangStmt_GCCAsmStmtClass:
-        case ZigClangStmt_MSAsmStmtClass:
-        case ZigClangStmt_BreakStmtClass:
-        case ZigClangStmt_CXXCatchStmtClass:
-        case ZigClangStmt_CXXForRangeStmtClass:
-        case ZigClangStmt_CXXTryStmtClass:
-        case ZigClangStmt_CapturedStmtClass:
-        case ZigClangStmt_CompoundStmtClass:
-        case ZigClangStmt_ContinueStmtClass:
-        case ZigClangStmt_CoreturnStmtClass:
-        case ZigClangStmt_CoroutineBodyStmtClass:
-        case ZigClangStmt_DeclStmtClass:
-        case ZigClangStmt_DoStmtClass:
-        case ZigClangStmt_ForStmtClass:
-        case ZigClangStmt_GotoStmtClass:
-        case ZigClangStmt_IfStmtClass:
-        case ZigClangStmt_IndirectGotoStmtClass:
-        case ZigClangStmt_MSDependentExistsStmtClass:
-        case ZigClangStmt_NullStmtClass:
-        case ZigClangStmt_OMPAtomicDirectiveClass:
-        case ZigClangStmt_OMPBarrierDirectiveClass:
-        case ZigClangStmt_OMPCancelDirectiveClass:
-        case ZigClangStmt_OMPCancellationPointDirectiveClass:
-        case ZigClangStmt_OMPCriticalDirectiveClass:
-        case ZigClangStmt_OMPDepobjDirectiveClass:
-        case ZigClangStmt_OMPFlushDirectiveClass:
-        case ZigClangStmt_OMPDistributeDirectiveClass:
-        case ZigClangStmt_OMPDistributeParallelForDirectiveClass:
-        case ZigClangStmt_OMPDistributeParallelForSimdDirectiveClass:
-        case ZigClangStmt_OMPDistributeSimdDirectiveClass:
-        case ZigClangStmt_OMPForDirectiveClass:
-        case ZigClangStmt_OMPForSimdDirectiveClass:
-        case ZigClangStmt_OMPMasterTaskLoopDirectiveClass:
-        case ZigClangStmt_OMPMasterTaskLoopSimdDirectiveClass:
-        case ZigClangStmt_OMPParallelForDirectiveClass:
-        case ZigClangStmt_OMPParallelForSimdDirectiveClass:
-        case ZigClangStmt_OMPParallelMasterTaskLoopDirectiveClass:
-        case ZigClangStmt_OMPParallelMasterTaskLoopSimdDirectiveClass:
-        case ZigClangStmt_OMPSimdDirectiveClass:
-        case ZigClangStmt_OMPTargetParallelForSimdDirectiveClass:
-        case ZigClangStmt_OMPTargetSimdDirectiveClass:
-        case ZigClangStmt_OMPTargetTeamsDistributeDirectiveClass:
-        case ZigClangStmt_OMPTargetTeamsDistributeParallelForDirectiveClass:
-        case ZigClangStmt_OMPTargetTeamsDistributeParallelForSimdDirectiveClass:
-        case ZigClangStmt_OMPTargetTeamsDistributeSimdDirectiveClass:
-        case ZigClangStmt_OMPTaskLoopDirectiveClass:
-        case ZigClangStmt_OMPTaskLoopSimdDirectiveClass:
-        case ZigClangStmt_OMPTeamsDistributeDirectiveClass:
-        case ZigClangStmt_OMPTeamsDistributeParallelForDirectiveClass:
-        case ZigClangStmt_OMPTeamsDistributeParallelForSimdDirectiveClass:
-        case ZigClangStmt_OMPTeamsDistributeSimdDirectiveClass:
-        case ZigClangStmt_OMPMasterDirectiveClass:
-        case ZigClangStmt_OMPOrderedDirectiveClass:
-        case ZigClangStmt_OMPParallelDirectiveClass:
-        case ZigClangStmt_OMPParallelMasterDirectiveClass:
-        case ZigClangStmt_OMPParallelSectionsDirectiveClass:
-        case ZigClangStmt_OMPScanDirectiveClass:
-        case ZigClangStmt_OMPSectionDirectiveClass:
-        case ZigClangStmt_OMPSectionsDirectiveClass:
-        case ZigClangStmt_OMPSingleDirectiveClass:
-        case ZigClangStmt_OMPTargetDataDirectiveClass:
-        case ZigClangStmt_OMPTargetDirectiveClass:
-        case ZigClangStmt_OMPTargetEnterDataDirectiveClass:
-        case ZigClangStmt_OMPTargetExitDataDirectiveClass:
-        case ZigClangStmt_OMPTargetParallelDirectiveClass:
-        case ZigClangStmt_OMPTargetParallelForDirectiveClass:
-        case ZigClangStmt_OMPTargetTeamsDirectiveClass:
-        case ZigClangStmt_OMPTargetUpdateDirectiveClass:
-        case ZigClangStmt_OMPTaskDirectiveClass:
-        case ZigClangStmt_OMPTaskgroupDirectiveClass:
-        case ZigClangStmt_OMPTaskwaitDirectiveClass:
-        case ZigClangStmt_OMPTaskyieldDirectiveClass:
-        case ZigClangStmt_OMPTeamsDirectiveClass:
-        case ZigClangStmt_ObjCAtCatchStmtClass:
-        case ZigClangStmt_ObjCAtFinallyStmtClass:
-        case ZigClangStmt_ObjCAtSynchronizedStmtClass:
-        case ZigClangStmt_ObjCAtThrowStmtClass:
-        case ZigClangStmt_ObjCAtTryStmtClass:
-        case ZigClangStmt_ObjCAutoreleasePoolStmtClass:
-        case ZigClangStmt_ObjCForCollectionStmtClass:
-        case ZigClangStmt_ReturnStmtClass:
-        case ZigClangStmt_SEHExceptStmtClass:
-        case ZigClangStmt_SEHFinallyStmtClass:
-        case ZigClangStmt_SEHLeaveStmtClass:
-        case ZigClangStmt_SEHTryStmtClass:
-        case ZigClangStmt_CaseStmtClass:
-        case ZigClangStmt_DefaultStmtClass:
-        case ZigClangStmt_SwitchStmtClass:
-        case ZigClangStmt_AttributedStmtClass:
-        case ZigClangStmt_BinaryConditionalOperatorClass:
-        case ZigClangStmt_ConditionalOperatorClass:
-        case ZigClangStmt_AddrLabelExprClass:
-        case ZigClangStmt_ArrayInitIndexExprClass:
-        case ZigClangStmt_ArrayInitLoopExprClass:
-        case ZigClangStmt_ArraySubscriptExprClass:
-        case ZigClangStmt_ArrayTypeTraitExprClass:
-        case ZigClangStmt_AsTypeExprClass:
-        case ZigClangStmt_AtomicExprClass:
-        case ZigClangStmt_BinaryOperatorClass:
-        case ZigClangStmt_CompoundAssignOperatorClass:
-        case ZigClangStmt_BlockExprClass:
-        case ZigClangStmt_CXXBindTemporaryExprClass:
-        case ZigClangStmt_CXXBoolLiteralExprClass:
-        case ZigClangStmt_CXXConstructExprClass:
-        case ZigClangStmt_CXXTemporaryObjectExprClass:
-        case ZigClangStmt_CXXDefaultArgExprClass:
-        case ZigClangStmt_CXXDefaultInitExprClass:
-        case ZigClangStmt_CXXDeleteExprClass:
-        case ZigClangStmt_CXXDependentScopeMemberExprClass:
-        case ZigClangStmt_CXXFoldExprClass:
-        case ZigClangStmt_CXXInheritedCtorInitExprClass:
-        case ZigClangStmt_CXXNewExprClass:
-        case ZigClangStmt_CXXNoexceptExprClass:
-        case ZigClangStmt_CXXNullPtrLiteralExprClass:
-        case ZigClangStmt_CXXPseudoDestructorExprClass:
-        case ZigClangStmt_CXXRewrittenBinaryOperatorClass:
-        case ZigClangStmt_CXXScalarValueInitExprClass:
-        case ZigClangStmt_CXXStdInitializerListExprClass:
-        case ZigClangStmt_CXXThisExprClass:
-        case ZigClangStmt_CXXThrowExprClass:
-        case ZigClangStmt_CXXTypeidExprClass:
-        case ZigClangStmt_CXXUnresolvedConstructExprClass:
-        case ZigClangStmt_CXXUuidofExprClass:
-        case ZigClangStmt_CallExprClass:
-        case ZigClangStmt_CUDAKernelCallExprClass:
-        case ZigClangStmt_CXXMemberCallExprClass:
-        case ZigClangStmt_CXXOperatorCallExprClass:
-        case ZigClangStmt_UserDefinedLiteralClass:
-        case ZigClangStmt_BuiltinBitCastExprClass:
-        case ZigClangStmt_CStyleCastExprClass:
-        case ZigClangStmt_CXXFunctionalCastExprClass:
-        case ZigClangStmt_CXXAddrspaceCastExprClass:
-        case ZigClangStmt_CXXConstCastExprClass:
-        case ZigClangStmt_CXXDynamicCastExprClass:
-        case ZigClangStmt_CXXReinterpretCastExprClass:
-        case ZigClangStmt_CXXStaticCastExprClass:
-        case ZigClangStmt_ObjCBridgedCastExprClass:
-        case ZigClangStmt_ImplicitCastExprClass:
-        case ZigClangStmt_CharacterLiteralClass:
-        case ZigClangStmt_ChooseExprClass:
-        case ZigClangStmt_CompoundLiteralExprClass:
-        case ZigClangStmt_ConceptSpecializationExprClass:
-        case ZigClangStmt_ConvertVectorExprClass:
-        case ZigClangStmt_CoawaitExprClass:
-        case ZigClangStmt_CoyieldExprClass:
-        case ZigClangStmt_DeclRefExprClass:
-        case ZigClangStmt_DependentCoawaitExprClass:
-        case ZigClangStmt_DependentScopeDeclRefExprClass:
-        case ZigClangStmt_DesignatedInitExprClass:
-        case ZigClangStmt_DesignatedInitUpdateExprClass:
-        case ZigClangStmt_ExpressionTraitExprClass:
-        case ZigClangStmt_ExtVectorElementExprClass:
-        case ZigClangStmt_FixedPointLiteralClass:
-        case ZigClangStmt_FloatingLiteralClass:
-        case ZigClangStmt_ConstantExprClass:
-        case ZigClangStmt_ExprWithCleanupsClass:
-        case ZigClangStmt_FunctionParmPackExprClass:
-        case ZigClangStmt_GNUNullExprClass:
-        case ZigClangStmt_GenericSelectionExprClass:
-        case ZigClangStmt_ImaginaryLiteralClass:
-        case ZigClangStmt_ImplicitValueInitExprClass:
-        case ZigClangStmt_InitListExprClass:
-        case ZigClangStmt_IntegerLiteralClass:
-        case ZigClangStmt_LambdaExprClass:
-        case ZigClangStmt_MSPropertyRefExprClass:
-        case ZigClangStmt_MSPropertySubscriptExprClass:
-        case ZigClangStmt_MaterializeTemporaryExprClass:
-        case ZigClangStmt_MatrixSubscriptExprClass:
-        case ZigClangStmt_MemberExprClass:
-        case ZigClangStmt_NoInitExprClass:
-        case ZigClangStmt_OMPArraySectionExprClass:
-        case ZigClangStmt_OMPArrayShapingExprClass:
-        case ZigClangStmt_OMPIteratorExprClass:
-        case ZigClangStmt_ObjCArrayLiteralClass:
-        case ZigClangStmt_ObjCAvailabilityCheckExprClass:
-        case ZigClangStmt_ObjCBoolLiteralExprClass:
-        case ZigClangStmt_ObjCBoxedExprClass:
-        case ZigClangStmt_ObjCDictionaryLiteralClass:
-        case ZigClangStmt_ObjCEncodeExprClass:
-        case ZigClangStmt_ObjCIndirectCopyRestoreExprClass:
-        case ZigClangStmt_ObjCIsaExprClass:
-        case ZigClangStmt_ObjCIvarRefExprClass:
-        case ZigClangStmt_ObjCMessageExprClass:
-        case ZigClangStmt_ObjCPropertyRefExprClass:
-        case ZigClangStmt_ObjCProtocolExprClass:
-        case ZigClangStmt_ObjCSelectorExprClass:
-        case ZigClangStmt_ObjCStringLiteralClass:
-        case ZigClangStmt_ObjCSubscriptRefExprClass:
-        case ZigClangStmt_OffsetOfExprClass:
-        case ZigClangStmt_OpaqueValueExprClass:
-        case ZigClangStmt_UnresolvedLookupExprClass:
-        case ZigClangStmt_UnresolvedMemberExprClass:
-        case ZigClangStmt_PackExpansionExprClass:
-        case ZigClangStmt_ParenExprClass:
-        case ZigClangStmt_ParenListExprClass:
-        case ZigClangStmt_PredefinedExprClass:
-        case ZigClangStmt_PseudoObjectExprClass:
-        case ZigClangStmt_RecoveryExprClass:
-        case ZigClangStmt_RequiresExprClass:
-        case ZigClangStmt_ShuffleVectorExprClass:
-        case ZigClangStmt_SizeOfPackExprClass:
-        case ZigClangStmt_SourceLocExprClass:
-        case ZigClangStmt_StmtExprClass:
-        case ZigClangStmt_StringLiteralClass:
-        case ZigClangStmt_SubstNonTypeTemplateParmExprClass:
-        case ZigClangStmt_SubstNonTypeTemplateParmPackExprClass:
-        case ZigClangStmt_TypeTraitExprClass:
-        case ZigClangStmt_TypoExprClass:
-        case ZigClangStmt_UnaryExprOrTypeTraitExprClass:
-        case ZigClangStmt_UnaryOperatorClass:
-        case ZigClangStmt_VAArgExprClass:
-        case ZigClangStmt_LabelStmtClass:
-        case ZigClangStmt_WhileStmtClass:
+    switch (x) {
+        case clang::Stmt::NoStmtClass:
+        case clang::Stmt::GCCAsmStmtClass:
+        case clang::Stmt::MSAsmStmtClass:
+        case clang::Stmt::BreakStmtClass:
+        case clang::Stmt::CXXCatchStmtClass:
+        case clang::Stmt::CXXForRangeStmtClass:
+        case clang::Stmt::CXXTryStmtClass:
+        case clang::Stmt::CapturedStmtClass:
+        case clang::Stmt::CompoundStmtClass:
+        case clang::Stmt::ContinueStmtClass:
+        case clang::Stmt::CoreturnStmtClass:
+        case clang::Stmt::CoroutineBodyStmtClass:
+        case clang::Stmt::DeclStmtClass:
+        case clang::Stmt::DoStmtClass:
+        case clang::Stmt::ForStmtClass:
+        case clang::Stmt::GotoStmtClass:
+        case clang::Stmt::IfStmtClass:
+        case clang::Stmt::IndirectGotoStmtClass:
+        case clang::Stmt::MSDependentExistsStmtClass:
+        case clang::Stmt::NullStmtClass:
+        case clang::Stmt::OMPCanonicalLoopClass:
+        case clang::Stmt::OMPAtomicDirectiveClass:
+        case clang::Stmt::OMPBarrierDirectiveClass:
+        case clang::Stmt::OMPCancelDirectiveClass:
+        case clang::Stmt::OMPCancellationPointDirectiveClass:
+        case clang::Stmt::OMPCriticalDirectiveClass:
+        case clang::Stmt::OMPDepobjDirectiveClass:
+        case clang::Stmt::OMPDispatchDirectiveClass:
+        case clang::Stmt::OMPErrorDirectiveClass:
+        case clang::Stmt::OMPFlushDirectiveClass:
+        case clang::Stmt::OMPInteropDirectiveClass:
+        case clang::Stmt::OMPDistributeDirectiveClass:
+        case clang::Stmt::OMPDistributeParallelForDirectiveClass:
+        case clang::Stmt::OMPDistributeParallelForSimdDirectiveClass:
+        case clang::Stmt::OMPDistributeSimdDirectiveClass:
+        case clang::Stmt::OMPForDirectiveClass:
+        case clang::Stmt::OMPForSimdDirectiveClass:
+        case clang::Stmt::OMPGenericLoopDirectiveClass:
+        case clang::Stmt::OMPMaskedTaskLoopDirectiveClass:
+        case clang::Stmt::OMPMaskedTaskLoopSimdDirectiveClass:
+        case clang::Stmt::OMPMasterTaskLoopDirectiveClass:
+        case clang::Stmt::OMPMasterTaskLoopSimdDirectiveClass:
+        case clang::Stmt::OMPParallelForDirectiveClass:
+        case clang::Stmt::OMPParallelForSimdDirectiveClass:
+        case clang::Stmt::OMPParallelGenericLoopDirectiveClass:
+        case clang::Stmt::OMPParallelMaskedTaskLoopDirectiveClass:
+        case clang::Stmt::OMPParallelMaskedTaskLoopSimdDirectiveClass:
+        case clang::Stmt::OMPParallelMasterTaskLoopDirectiveClass:
+        case clang::Stmt::OMPParallelMasterTaskLoopSimdDirectiveClass:
+        case clang::Stmt::OMPSimdDirectiveClass:
+        case clang::Stmt::OMPTargetParallelForSimdDirectiveClass:
+        case clang::Stmt::OMPTargetParallelGenericLoopDirectiveClass:
+        case clang::Stmt::OMPTargetSimdDirectiveClass:
+        case clang::Stmt::OMPTargetTeamsDistributeDirectiveClass:
+        case clang::Stmt::OMPTargetTeamsDistributeParallelForDirectiveClass:
+        case clang::Stmt::OMPTargetTeamsDistributeParallelForSimdDirectiveClass:
+        case clang::Stmt::OMPTargetTeamsDistributeSimdDirectiveClass:
+        case clang::Stmt::OMPTargetTeamsGenericLoopDirectiveClass:
+        case clang::Stmt::OMPTaskLoopDirectiveClass:
+        case clang::Stmt::OMPTaskLoopSimdDirectiveClass:
+        case clang::Stmt::OMPTeamsDistributeDirectiveClass:
+        case clang::Stmt::OMPTeamsDistributeParallelForDirectiveClass:
+        case clang::Stmt::OMPTeamsDistributeParallelForSimdDirectiveClass:
+        case clang::Stmt::OMPTeamsDistributeSimdDirectiveClass:
+        case clang::Stmt::OMPTeamsGenericLoopDirectiveClass:
+        case clang::Stmt::OMPTileDirectiveClass:
+        case clang::Stmt::OMPUnrollDirectiveClass:
+        case clang::Stmt::OMPMaskedDirectiveClass:
+        case clang::Stmt::OMPMasterDirectiveClass:
+        case clang::Stmt::OMPMetaDirectiveClass:
+        case clang::Stmt::OMPOrderedDirectiveClass:
+        case clang::Stmt::OMPParallelDirectiveClass:
+        case clang::Stmt::OMPParallelMaskedDirectiveClass:
+        case clang::Stmt::OMPParallelMasterDirectiveClass:
+        case clang::Stmt::OMPParallelSectionsDirectiveClass:
+        case clang::Stmt::OMPScanDirectiveClass:
+        case clang::Stmt::OMPSectionDirectiveClass:
+        case clang::Stmt::OMPSectionsDirectiveClass:
+        case clang::Stmt::OMPSingleDirectiveClass:
+        case clang::Stmt::OMPTargetDataDirectiveClass:
+        case clang::Stmt::OMPTargetDirectiveClass:
+        case clang::Stmt::OMPTargetEnterDataDirectiveClass:
+        case clang::Stmt::OMPTargetExitDataDirectiveClass:
+        case clang::Stmt::OMPTargetParallelDirectiveClass:
+        case clang::Stmt::OMPTargetParallelForDirectiveClass:
+        case clang::Stmt::OMPTargetTeamsDirectiveClass:
+        case clang::Stmt::OMPTargetUpdateDirectiveClass:
+        case clang::Stmt::OMPTaskDirectiveClass:
+        case clang::Stmt::OMPTaskgroupDirectiveClass:
+        case clang::Stmt::OMPTaskwaitDirectiveClass:
+        case clang::Stmt::OMPTaskyieldDirectiveClass:
+        case clang::Stmt::OMPTeamsDirectiveClass:
+        case clang::Stmt::ObjCAtCatchStmtClass:
+        case clang::Stmt::ObjCAtFinallyStmtClass:
+        case clang::Stmt::ObjCAtSynchronizedStmtClass:
+        case clang::Stmt::ObjCAtThrowStmtClass:
+        case clang::Stmt::ObjCAtTryStmtClass:
+        case clang::Stmt::ObjCAutoreleasePoolStmtClass:
+        case clang::Stmt::ObjCForCollectionStmtClass:
+        case clang::Stmt::ReturnStmtClass:
+        case clang::Stmt::SEHExceptStmtClass:
+        case clang::Stmt::SEHFinallyStmtClass:
+        case clang::Stmt::SEHLeaveStmtClass:
+        case clang::Stmt::SEHTryStmtClass:
+        case clang::Stmt::CaseStmtClass:
+        case clang::Stmt::DefaultStmtClass:
+        case clang::Stmt::SwitchStmtClass:
+        case clang::Stmt::AttributedStmtClass:
+        case clang::Stmt::BinaryConditionalOperatorClass:
+        case clang::Stmt::ConditionalOperatorClass:
+        case clang::Stmt::AddrLabelExprClass:
+        case clang::Stmt::ArrayInitIndexExprClass:
+        case clang::Stmt::ArrayInitLoopExprClass:
+        case clang::Stmt::ArraySubscriptExprClass:
+        case clang::Stmt::ArrayTypeTraitExprClass:
+        case clang::Stmt::AsTypeExprClass:
+        case clang::Stmt::AtomicExprClass:
+        case clang::Stmt::BinaryOperatorClass:
+        case clang::Stmt::CompoundAssignOperatorClass:
+        case clang::Stmt::BlockExprClass:
+        case clang::Stmt::CXXBindTemporaryExprClass:
+        case clang::Stmt::CXXBoolLiteralExprClass:
+        case clang::Stmt::CXXConstructExprClass:
+        case clang::Stmt::CXXTemporaryObjectExprClass:
+        case clang::Stmt::CXXDefaultArgExprClass:
+        case clang::Stmt::CXXDefaultInitExprClass:
+        case clang::Stmt::CXXDeleteExprClass:
+        case clang::Stmt::CXXDependentScopeMemberExprClass:
+        case clang::Stmt::CXXFoldExprClass:
+        case clang::Stmt::CXXInheritedCtorInitExprClass:
+        case clang::Stmt::CXXNewExprClass:
+        case clang::Stmt::CXXNoexceptExprClass:
+        case clang::Stmt::CXXNullPtrLiteralExprClass:
+        case clang::Stmt::CXXParenListInitExprClass:
+        case clang::Stmt::CXXPseudoDestructorExprClass:
+        case clang::Stmt::CXXRewrittenBinaryOperatorClass:
+        case clang::Stmt::CXXScalarValueInitExprClass:
+        case clang::Stmt::CXXStdInitializerListExprClass:
+        case clang::Stmt::CXXThisExprClass:
+        case clang::Stmt::CXXThrowExprClass:
+        case clang::Stmt::CXXTypeidExprClass:
+        case clang::Stmt::CXXUnresolvedConstructExprClass:
+        case clang::Stmt::CXXUuidofExprClass:
+        case clang::Stmt::CallExprClass:
+        case clang::Stmt::CUDAKernelCallExprClass:
+        case clang::Stmt::CXXMemberCallExprClass:
+        case clang::Stmt::CXXOperatorCallExprClass:
+        case clang::Stmt::UserDefinedLiteralClass:
+        case clang::Stmt::BuiltinBitCastExprClass:
+        case clang::Stmt::CStyleCastExprClass:
+        case clang::Stmt::CXXFunctionalCastExprClass:
+        case clang::Stmt::CXXAddrspaceCastExprClass:
+        case clang::Stmt::CXXConstCastExprClass:
+        case clang::Stmt::CXXDynamicCastExprClass:
+        case clang::Stmt::CXXReinterpretCastExprClass:
+        case clang::Stmt::CXXStaticCastExprClass:
+        case clang::Stmt::ObjCBridgedCastExprClass:
+        case clang::Stmt::ImplicitCastExprClass:
+        case clang::Stmt::CharacterLiteralClass:
+        case clang::Stmt::ChooseExprClass:
+        case clang::Stmt::CompoundLiteralExprClass:
+        case clang::Stmt::ConceptSpecializationExprClass:
+        case clang::Stmt::ConvertVectorExprClass:
+        case clang::Stmt::CoawaitExprClass:
+        case clang::Stmt::CoyieldExprClass:
+        case clang::Stmt::DeclRefExprClass:
+        case clang::Stmt::DependentCoawaitExprClass:
+        case clang::Stmt::DependentScopeDeclRefExprClass:
+        case clang::Stmt::DesignatedInitExprClass:
+        case clang::Stmt::DesignatedInitUpdateExprClass:
+        case clang::Stmt::ExpressionTraitExprClass:
+        case clang::Stmt::ExtVectorElementExprClass:
+        case clang::Stmt::FixedPointLiteralClass:
+        case clang::Stmt::FloatingLiteralClass:
+        case clang::Stmt::ConstantExprClass:
+        case clang::Stmt::ExprWithCleanupsClass:
+        case clang::Stmt::FunctionParmPackExprClass:
+        case clang::Stmt::GNUNullExprClass:
+        case clang::Stmt::GenericSelectionExprClass:
+        case clang::Stmt::ImaginaryLiteralClass:
+        case clang::Stmt::ImplicitValueInitExprClass:
+        case clang::Stmt::InitListExprClass:
+        case clang::Stmt::IntegerLiteralClass:
+        case clang::Stmt::LambdaExprClass:
+        case clang::Stmt::MSPropertyRefExprClass:
+        case clang::Stmt::MSPropertySubscriptExprClass:
+        case clang::Stmt::MaterializeTemporaryExprClass:
+        case clang::Stmt::MatrixSubscriptExprClass:
+        case clang::Stmt::MemberExprClass:
+        case clang::Stmt::NoInitExprClass:
+        case clang::Stmt::OMPArraySectionExprClass:
+        case clang::Stmt::OMPArrayShapingExprClass:
+        case clang::Stmt::OMPIteratorExprClass:
+        case clang::Stmt::ObjCArrayLiteralClass:
+        case clang::Stmt::ObjCAvailabilityCheckExprClass:
+        case clang::Stmt::ObjCBoolLiteralExprClass:
+        case clang::Stmt::ObjCBoxedExprClass:
+        case clang::Stmt::ObjCDictionaryLiteralClass:
+        case clang::Stmt::ObjCEncodeExprClass:
+        case clang::Stmt::ObjCIndirectCopyRestoreExprClass:
+        case clang::Stmt::ObjCIsaExprClass:
+        case clang::Stmt::ObjCIvarRefExprClass:
+        case clang::Stmt::ObjCMessageExprClass:
+        case clang::Stmt::ObjCPropertyRefExprClass:
+        case clang::Stmt::ObjCProtocolExprClass:
+        case clang::Stmt::ObjCSelectorExprClass:
+        case clang::Stmt::ObjCStringLiteralClass:
+        case clang::Stmt::ObjCSubscriptRefExprClass:
+        case clang::Stmt::OffsetOfExprClass:
+        case clang::Stmt::OpaqueValueExprClass:
+        case clang::Stmt::UnresolvedLookupExprClass:
+        case clang::Stmt::UnresolvedMemberExprClass:
+        case clang::Stmt::PackExpansionExprClass:
+        case clang::Stmt::ParenExprClass:
+        case clang::Stmt::ParenListExprClass:
+        case clang::Stmt::PredefinedExprClass:
+        case clang::Stmt::PseudoObjectExprClass:
+        case clang::Stmt::RecoveryExprClass:
+        case clang::Stmt::RequiresExprClass:
+        case clang::Stmt::SYCLUniqueStableNameExprClass:
+        case clang::Stmt::ShuffleVectorExprClass:
+        case clang::Stmt::SizeOfPackExprClass:
+        case clang::Stmt::SourceLocExprClass:
+        case clang::Stmt::StmtExprClass:
+        case clang::Stmt::StringLiteralClass:
+        case clang::Stmt::SubstNonTypeTemplateParmExprClass:
+        case clang::Stmt::SubstNonTypeTemplateParmPackExprClass:
+        case clang::Stmt::TypeTraitExprClass:
+        case clang::Stmt::TypoExprClass:
+        case clang::Stmt::UnaryExprOrTypeTraitExprClass:
+        case clang::Stmt::UnaryOperatorClass:
+        case clang::Stmt::VAArgExprClass:
+        case clang::Stmt::LabelStmtClass:
+        case clang::Stmt::WhileStmtClass:
             break;
     }
 }
@@ -624,41 +655,59 @@ static_assert((clang::Stmt::StmtClass)ZigClangStmt_IfStmtClass == clang::Stmt::I
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_IndirectGotoStmtClass == clang::Stmt::IndirectGotoStmtClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_MSDependentExistsStmtClass == clang::Stmt::MSDependentExistsStmtClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_NullStmtClass == clang::Stmt::NullStmtClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPCanonicalLoopClass == clang::Stmt::OMPCanonicalLoopClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPAtomicDirectiveClass == clang::Stmt::OMPAtomicDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPBarrierDirectiveClass == clang::Stmt::OMPBarrierDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPCancelDirectiveClass == clang::Stmt::OMPCancelDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPCancellationPointDirectiveClass == clang::Stmt::OMPCancellationPointDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPCriticalDirectiveClass == clang::Stmt::OMPCriticalDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPDepobjDirectiveClass == clang::Stmt::OMPDepobjDirectiveClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPDispatchDirectiveClass == clang::Stmt::OMPDispatchDirectiveClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPErrorDirectiveClass == clang::Stmt::OMPErrorDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPFlushDirectiveClass == clang::Stmt::OMPFlushDirectiveClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPInteropDirectiveClass == clang::Stmt::OMPInteropDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPDistributeDirectiveClass == clang::Stmt::OMPDistributeDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPDistributeParallelForDirectiveClass == clang::Stmt::OMPDistributeParallelForDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPDistributeParallelForSimdDirectiveClass == clang::Stmt::OMPDistributeParallelForSimdDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPDistributeSimdDirectiveClass == clang::Stmt::OMPDistributeSimdDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPForDirectiveClass == clang::Stmt::OMPForDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPForSimdDirectiveClass == clang::Stmt::OMPForSimdDirectiveClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPGenericLoopDirectiveClass == clang::Stmt::OMPGenericLoopDirectiveClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPMaskedTaskLoopDirectiveClass == clang::Stmt::OMPMaskedTaskLoopDirectiveClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPMaskedTaskLoopSimdDirectiveClass == clang::Stmt::OMPMaskedTaskLoopSimdDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPMasterTaskLoopDirectiveClass == clang::Stmt::OMPMasterTaskLoopDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPMasterTaskLoopSimdDirectiveClass == clang::Stmt::OMPMasterTaskLoopSimdDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPParallelForDirectiveClass == clang::Stmt::OMPParallelForDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPParallelForSimdDirectiveClass == clang::Stmt::OMPParallelForSimdDirectiveClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPParallelGenericLoopDirectiveClass == clang::Stmt::OMPParallelGenericLoopDirectiveClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPParallelMaskedTaskLoopDirectiveClass == clang::Stmt::OMPParallelMaskedTaskLoopDirectiveClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPParallelMaskedTaskLoopSimdDirectiveClass == clang::Stmt::OMPParallelMaskedTaskLoopSimdDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPParallelMasterTaskLoopDirectiveClass == clang::Stmt::OMPParallelMasterTaskLoopDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPParallelMasterTaskLoopSimdDirectiveClass == clang::Stmt::OMPParallelMasterTaskLoopSimdDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPSimdDirectiveClass == clang::Stmt::OMPSimdDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPTargetParallelForSimdDirectiveClass == clang::Stmt::OMPTargetParallelForSimdDirectiveClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPTargetParallelGenericLoopDirectiveClass == clang::Stmt::OMPTargetParallelGenericLoopDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPTargetSimdDirectiveClass == clang::Stmt::OMPTargetSimdDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPTargetTeamsDistributeDirectiveClass == clang::Stmt::OMPTargetTeamsDistributeDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPTargetTeamsDistributeParallelForDirectiveClass == clang::Stmt::OMPTargetTeamsDistributeParallelForDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPTargetTeamsDistributeParallelForSimdDirectiveClass == clang::Stmt::OMPTargetTeamsDistributeParallelForSimdDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPTargetTeamsDistributeSimdDirectiveClass == clang::Stmt::OMPTargetTeamsDistributeSimdDirectiveClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPTargetTeamsGenericLoopDirectiveClass == clang::Stmt::OMPTargetTeamsGenericLoopDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPTaskLoopDirectiveClass == clang::Stmt::OMPTaskLoopDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPTaskLoopSimdDirectiveClass == clang::Stmt::OMPTaskLoopSimdDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPTeamsDistributeDirectiveClass == clang::Stmt::OMPTeamsDistributeDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPTeamsDistributeParallelForDirectiveClass == clang::Stmt::OMPTeamsDistributeParallelForDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPTeamsDistributeParallelForSimdDirectiveClass == clang::Stmt::OMPTeamsDistributeParallelForSimdDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPTeamsDistributeSimdDirectiveClass == clang::Stmt::OMPTeamsDistributeSimdDirectiveClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPTeamsGenericLoopDirectiveClass == clang::Stmt::OMPTeamsGenericLoopDirectiveClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPTileDirectiveClass == clang::Stmt::OMPTileDirectiveClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPUnrollDirectiveClass == clang::Stmt::OMPUnrollDirectiveClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPMaskedDirectiveClass == clang::Stmt::OMPMaskedDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPMasterDirectiveClass == clang::Stmt::OMPMasterDirectiveClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPMetaDirectiveClass == clang::Stmt::OMPMetaDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPOrderedDirectiveClass == clang::Stmt::OMPOrderedDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPParallelDirectiveClass == clang::Stmt::OMPParallelDirectiveClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPParallelMaskedDirectiveClass == clang::Stmt::OMPParallelMaskedDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPParallelMasterDirectiveClass == clang::Stmt::OMPParallelMasterDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPParallelSectionsDirectiveClass == clang::Stmt::OMPParallelSectionsDirectiveClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_OMPScanDirectiveClass == clang::Stmt::OMPScanDirectiveClass, "");
@@ -719,6 +768,7 @@ static_assert((clang::Stmt::StmtClass)ZigClangStmt_CXXInheritedCtorInitExprClass
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_CXXNewExprClass == clang::Stmt::CXXNewExprClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_CXXNoexceptExprClass == clang::Stmt::CXXNoexceptExprClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_CXXNullPtrLiteralExprClass == clang::Stmt::CXXNullPtrLiteralExprClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_CXXParenListInitExprClass == clang::Stmt::CXXParenListInitExprClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_CXXPseudoDestructorExprClass == clang::Stmt::CXXPseudoDestructorExprClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_CXXRewrittenBinaryOperatorClass == clang::Stmt::CXXRewrittenBinaryOperatorClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_CXXScalarValueInitExprClass == clang::Stmt::CXXScalarValueInitExprClass, "");
@@ -804,6 +854,7 @@ static_assert((clang::Stmt::StmtClass)ZigClangStmt_PredefinedExprClass == clang:
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_PseudoObjectExprClass == clang::Stmt::PseudoObjectExprClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_RecoveryExprClass == clang::Stmt::RecoveryExprClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_RequiresExprClass == clang::Stmt::RequiresExprClass, "");
+static_assert((clang::Stmt::StmtClass)ZigClangStmt_SYCLUniqueStableNameExprClass == clang::Stmt::SYCLUniqueStableNameExprClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_ShuffleVectorExprClass == clang::Stmt::ShuffleVectorExprClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_SizeOfPackExprClass == clang::Stmt::SizeOfPackExprClass, "");
 static_assert((clang::Stmt::StmtClass)ZigClangStmt_SourceLocExprClass == clang::Stmt::SourceLocExprClass, "");
@@ -868,9 +919,13 @@ void ZigClang_detect_enum_DeclKind(clang::Decl::Kind x) {
         case clang::Decl::FileScopeAsm:
         case clang::Decl::Friend:
         case clang::Decl::FriendTemplate:
+        case clang::Decl::ImplicitConceptSpecialization:
         case clang::Decl::Import:
         case clang::Decl::LifetimeExtendedTemporary:
         case clang::Decl::LinkageSpec:
+        case clang::Decl::Using:
+        case clang::Decl::UsingEnum:
+        case clang::Decl::HLSLBuffer:
         case clang::Decl::Label:
         case clang::Decl::Namespace:
         case clang::Decl::NamespaceAlias:
@@ -899,7 +954,7 @@ void ZigClang_detect_enum_DeclKind(clang::Decl::Kind x) {
         case clang::Decl::TypeAlias:
         case clang::Decl::Typedef:
         case clang::Decl::UnresolvedUsingTypename:
-        case clang::Decl::Using:
+        case clang::Decl::UnresolvedUsingIfExists:
         case clang::Decl::UsingDirective:
         case clang::Decl::UsingPack:
         case clang::Decl::UsingShadow:
@@ -928,6 +983,8 @@ void ZigClang_detect_enum_DeclKind(clang::Decl::Kind x) {
         case clang::Decl::MSGuid:
         case clang::Decl::OMPDeclareMapper:
         case clang::Decl::OMPDeclareReduction:
+        case clang::Decl::TemplateParamObject:
+        case clang::Decl::UnnamedGlobalConstant:
         case clang::Decl::UnresolvedUsingValue:
         case clang::Decl::OMPAllocate:
         case clang::Decl::OMPRequires:
@@ -937,6 +994,7 @@ void ZigClang_detect_enum_DeclKind(clang::Decl::Kind x) {
         case clang::Decl::PragmaDetectMismatch:
         case clang::Decl::RequiresExprBody:
         case clang::Decl::StaticAssert:
+        case clang::Decl::TopLevelStmt:
         case clang::Decl::TranslationUnit:
             break;
     }
@@ -952,9 +1010,13 @@ static_assert((clang::Decl::Kind)ZigClangDeclExternCContext == clang::Decl::Exte
 static_assert((clang::Decl::Kind)ZigClangDeclFileScopeAsm == clang::Decl::FileScopeAsm, "");
 static_assert((clang::Decl::Kind)ZigClangDeclFriend == clang::Decl::Friend, "");
 static_assert((clang::Decl::Kind)ZigClangDeclFriendTemplate == clang::Decl::FriendTemplate, "");
+static_assert((clang::Decl::Kind)ZigClangDeclImplicitConceptSpecialization == clang::Decl::ImplicitConceptSpecialization, "");
 static_assert((clang::Decl::Kind)ZigClangDeclImport == clang::Decl::Import, "");
 static_assert((clang::Decl::Kind)ZigClangDeclLifetimeExtendedTemporary == clang::Decl::LifetimeExtendedTemporary, "");
 static_assert((clang::Decl::Kind)ZigClangDeclLinkageSpec == clang::Decl::LinkageSpec, "");
+static_assert((clang::Decl::Kind)ZigClangDeclUsing == clang::Decl::Using, "");
+static_assert((clang::Decl::Kind)ZigClangDeclUsingEnum == clang::Decl::UsingEnum, "");
+static_assert((clang::Decl::Kind)ZigClangDeclHLSLBuffer == clang::Decl::HLSLBuffer, "");
 static_assert((clang::Decl::Kind)ZigClangDeclLabel == clang::Decl::Label, "");
 static_assert((clang::Decl::Kind)ZigClangDeclNamespace == clang::Decl::Namespace, "");
 static_assert((clang::Decl::Kind)ZigClangDeclNamespaceAlias == clang::Decl::NamespaceAlias, "");
@@ -983,8 +1045,8 @@ static_assert((clang::Decl::Kind)ZigClangDeclObjCTypeParam == clang::Decl::ObjCT
 static_assert((clang::Decl::Kind)ZigClangDeclTypeAlias == clang::Decl::TypeAlias, "");
 static_assert((clang::Decl::Kind)ZigClangDeclTypedef == clang::Decl::Typedef, "");
 static_assert((clang::Decl::Kind)ZigClangDeclUnresolvedUsingTypename == clang::Decl::UnresolvedUsingTypename, "");
+static_assert((clang::Decl::Kind)ZigClangDeclUnresolvedUsingIfExists == clang::Decl::UnresolvedUsingIfExists, "");
 static_assert((clang::Decl::Kind)ZigClangDeclOMPAllocate == clang::Decl::OMPAllocate, "");
-static_assert((clang::Decl::Kind)ZigClangDeclUsing == clang::Decl::Using, "");
 static_assert((clang::Decl::Kind)ZigClangDeclUsingDirective == clang::Decl::UsingDirective, "");
 static_assert((clang::Decl::Kind)ZigClangDeclUsingPack == clang::Decl::UsingPack, "");
 static_assert((clang::Decl::Kind)ZigClangDeclUsingShadow == clang::Decl::UsingShadow, "");
@@ -1013,6 +1075,8 @@ static_assert((clang::Decl::Kind)ZigClangDeclIndirectField == clang::Decl::Indir
 static_assert((clang::Decl::Kind)ZigClangDeclMSGuid == clang::Decl::MSGuid, "");
 static_assert((clang::Decl::Kind)ZigClangDeclOMPDeclareMapper == clang::Decl::OMPDeclareMapper, "");
 static_assert((clang::Decl::Kind)ZigClangDeclOMPDeclareReduction == clang::Decl::OMPDeclareReduction, "");
+static_assert((clang::Decl::Kind)ZigClangDeclTemplateParamObject == clang::Decl::TemplateParamObject, "");
+static_assert((clang::Decl::Kind)ZigClangDeclUnnamedGlobalConstant == clang::Decl::UnnamedGlobalConstant, "");
 static_assert((clang::Decl::Kind)ZigClangDeclUnresolvedUsingValue == clang::Decl::UnresolvedUsingValue, "");
 static_assert((clang::Decl::Kind)ZigClangDeclOMPRequires == clang::Decl::OMPRequires, "");
 static_assert((clang::Decl::Kind)ZigClangDeclOMPThreadPrivate == clang::Decl::OMPThreadPrivate, "");
@@ -1021,6 +1085,7 @@ static_assert((clang::Decl::Kind)ZigClangDeclPragmaComment == clang::Decl::Pragm
 static_assert((clang::Decl::Kind)ZigClangDeclPragmaDetectMismatch == clang::Decl::PragmaDetectMismatch, "");
 static_assert((clang::Decl::Kind)ZigClangDeclRequiresExprBody == clang::Decl::RequiresExprBody, "");
 static_assert((clang::Decl::Kind)ZigClangDeclStaticAssert == clang::Decl::StaticAssert, "");
+static_assert((clang::Decl::Kind)ZigClangDeclTopLevelStmt == clang::Decl::TopLevelStmt, "");
 static_assert((clang::Decl::Kind)ZigClangDeclTranslationUnit == clang::Decl::TranslationUnit, "");
 
 void ZigClang_detect_enum_BuiltinTypeKind(clang::BuiltinType::Kind x) {
@@ -1069,10 +1134,10 @@ void ZigClang_detect_enum_BuiltinTypeKind(clang::BuiltinType::Kind x) {
         case clang::BuiltinType::OCLIntelSubgroupAVCImeResult:
         case clang::BuiltinType::OCLIntelSubgroupAVCRefResult:
         case clang::BuiltinType::OCLIntelSubgroupAVCSicResult:
-        case clang::BuiltinType::OCLIntelSubgroupAVCImeResultSingleRefStreamout:
-        case clang::BuiltinType::OCLIntelSubgroupAVCImeResultDualRefStreamout:
-        case clang::BuiltinType::OCLIntelSubgroupAVCImeSingleRefStreamin:
-        case clang::BuiltinType::OCLIntelSubgroupAVCImeDualRefStreamin:
+        case clang::BuiltinType::OCLIntelSubgroupAVCImeResultSingleReferenceStreamout:
+        case clang::BuiltinType::OCLIntelSubgroupAVCImeResultDualReferenceStreamout:
+        case clang::BuiltinType::OCLIntelSubgroupAVCImeSingleReferenceStreamin:
+        case clang::BuiltinType::OCLIntelSubgroupAVCImeDualReferenceStreamin:
         case clang::BuiltinType::SveInt8:
         case clang::BuiltinType::SveInt16:
         case clang::BuiltinType::SveInt32:
@@ -1122,6 +1187,304 @@ void ZigClang_detect_enum_BuiltinTypeKind(clang::BuiltinType::Kind x) {
         case clang::BuiltinType::SveFloat64x4:
         case clang::BuiltinType::SveBFloat16x4:
         case clang::BuiltinType::SveBool:
+        case clang::BuiltinType::SveBoolx2:
+        case clang::BuiltinType::SveBoolx4:
+        case clang::BuiltinType::SveCount:
+        case clang::BuiltinType::VectorQuad:
+        case clang::BuiltinType::VectorPair:
+        case clang::BuiltinType::RvvInt8mf8:
+        case clang::BuiltinType::RvvInt8mf4:
+        case clang::BuiltinType::RvvInt8mf2:
+        case clang::BuiltinType::RvvInt8m1:
+        case clang::BuiltinType::RvvInt8m2:
+        case clang::BuiltinType::RvvInt8m4:
+        case clang::BuiltinType::RvvInt8m8:
+        case clang::BuiltinType::RvvUint8mf8:
+        case clang::BuiltinType::RvvUint8mf4:
+        case clang::BuiltinType::RvvUint8mf2:
+        case clang::BuiltinType::RvvUint8m1:
+        case clang::BuiltinType::RvvUint8m2:
+        case clang::BuiltinType::RvvUint8m4:
+        case clang::BuiltinType::RvvUint8m8:
+        case clang::BuiltinType::RvvInt16mf4:
+        case clang::BuiltinType::RvvInt16mf2:
+        case clang::BuiltinType::RvvInt16m1:
+        case clang::BuiltinType::RvvInt16m2:
+        case clang::BuiltinType::RvvInt16m4:
+        case clang::BuiltinType::RvvInt16m8:
+        case clang::BuiltinType::RvvUint16mf4:
+        case clang::BuiltinType::RvvUint16mf2:
+        case clang::BuiltinType::RvvUint16m1:
+        case clang::BuiltinType::RvvUint16m2:
+        case clang::BuiltinType::RvvUint16m4:
+        case clang::BuiltinType::RvvUint16m8:
+        case clang::BuiltinType::RvvInt32mf2:
+        case clang::BuiltinType::RvvInt32m1:
+        case clang::BuiltinType::RvvInt32m2:
+        case clang::BuiltinType::RvvInt32m4:
+        case clang::BuiltinType::RvvInt32m8:
+        case clang::BuiltinType::RvvUint32mf2:
+        case clang::BuiltinType::RvvUint32m1:
+        case clang::BuiltinType::RvvUint32m2:
+        case clang::BuiltinType::RvvUint32m4:
+        case clang::BuiltinType::RvvUint32m8:
+        case clang::BuiltinType::RvvInt64m1:
+        case clang::BuiltinType::RvvInt64m2:
+        case clang::BuiltinType::RvvInt64m4:
+        case clang::BuiltinType::RvvInt64m8:
+        case clang::BuiltinType::RvvUint64m1:
+        case clang::BuiltinType::RvvUint64m2:
+        case clang::BuiltinType::RvvUint64m4:
+        case clang::BuiltinType::RvvUint64m8:
+        case clang::BuiltinType::RvvFloat16mf4:
+        case clang::BuiltinType::RvvFloat16mf2:
+        case clang::BuiltinType::RvvFloat16m1:
+        case clang::BuiltinType::RvvFloat16m2:
+        case clang::BuiltinType::RvvFloat16m4:
+        case clang::BuiltinType::RvvFloat16m8:
+        case clang::BuiltinType::RvvFloat32mf2:
+        case clang::BuiltinType::RvvFloat32m1:
+        case clang::BuiltinType::RvvFloat32m2:
+        case clang::BuiltinType::RvvFloat32m4:
+        case clang::BuiltinType::RvvFloat32m8:
+        case clang::BuiltinType::RvvFloat64m1:
+        case clang::BuiltinType::RvvFloat64m2:
+        case clang::BuiltinType::RvvFloat64m4:
+        case clang::BuiltinType::RvvFloat64m8:
+        case clang::BuiltinType::RvvBool1:
+        case clang::BuiltinType::RvvBool2:
+        case clang::BuiltinType::RvvBool4:
+        case clang::BuiltinType::RvvBool8:
+        case clang::BuiltinType::RvvBool16:
+        case clang::BuiltinType::RvvBool32:
+        case clang::BuiltinType::RvvBool64:
+        case clang::BuiltinType::RvvInt8mf8x2:
+        case clang::BuiltinType::RvvInt8mf8x3:
+        case clang::BuiltinType::RvvInt8mf8x4:
+        case clang::BuiltinType::RvvInt8mf8x5:
+        case clang::BuiltinType::RvvInt8mf8x6:
+        case clang::BuiltinType::RvvInt8mf8x7:
+        case clang::BuiltinType::RvvInt8mf8x8:
+        case clang::BuiltinType::RvvInt8mf4x2:
+        case clang::BuiltinType::RvvInt8mf4x3:
+        case clang::BuiltinType::RvvInt8mf4x4:
+        case clang::BuiltinType::RvvInt8mf4x5:
+        case clang::BuiltinType::RvvInt8mf4x6:
+        case clang::BuiltinType::RvvInt8mf4x7:
+        case clang::BuiltinType::RvvInt8mf4x8:
+        case clang::BuiltinType::RvvInt8mf2x2:
+        case clang::BuiltinType::RvvInt8mf2x3:
+        case clang::BuiltinType::RvvInt8mf2x4:
+        case clang::BuiltinType::RvvInt8mf2x5:
+        case clang::BuiltinType::RvvInt8mf2x6:
+        case clang::BuiltinType::RvvInt8mf2x7:
+        case clang::BuiltinType::RvvInt8mf2x8:
+        case clang::BuiltinType::RvvInt8m1x2:
+        case clang::BuiltinType::RvvInt8m1x3:
+        case clang::BuiltinType::RvvInt8m1x4:
+        case clang::BuiltinType::RvvInt8m1x5:
+        case clang::BuiltinType::RvvInt8m1x6:
+        case clang::BuiltinType::RvvInt8m1x7:
+        case clang::BuiltinType::RvvInt8m1x8:
+        case clang::BuiltinType::RvvInt8m2x2:
+        case clang::BuiltinType::RvvInt8m2x3:
+        case clang::BuiltinType::RvvInt8m2x4:
+        case clang::BuiltinType::RvvInt8m4x2:
+        case clang::BuiltinType::RvvUint8mf8x2:
+        case clang::BuiltinType::RvvUint8mf8x3:
+        case clang::BuiltinType::RvvUint8mf8x4:
+        case clang::BuiltinType::RvvUint8mf8x5:
+        case clang::BuiltinType::RvvUint8mf8x6:
+        case clang::BuiltinType::RvvUint8mf8x7:
+        case clang::BuiltinType::RvvUint8mf8x8:
+        case clang::BuiltinType::RvvUint8mf4x2:
+        case clang::BuiltinType::RvvUint8mf4x3:
+        case clang::BuiltinType::RvvUint8mf4x4:
+        case clang::BuiltinType::RvvUint8mf4x5:
+        case clang::BuiltinType::RvvUint8mf4x6:
+        case clang::BuiltinType::RvvUint8mf4x7:
+        case clang::BuiltinType::RvvUint8mf4x8:
+        case clang::BuiltinType::RvvUint8mf2x2:
+        case clang::BuiltinType::RvvUint8mf2x3:
+        case clang::BuiltinType::RvvUint8mf2x4:
+        case clang::BuiltinType::RvvUint8mf2x5:
+        case clang::BuiltinType::RvvUint8mf2x6:
+        case clang::BuiltinType::RvvUint8mf2x7:
+        case clang::BuiltinType::RvvUint8mf2x8:
+        case clang::BuiltinType::RvvUint8m1x2:
+        case clang::BuiltinType::RvvUint8m1x3:
+        case clang::BuiltinType::RvvUint8m1x4:
+        case clang::BuiltinType::RvvUint8m1x5:
+        case clang::BuiltinType::RvvUint8m1x6:
+        case clang::BuiltinType::RvvUint8m1x7:
+        case clang::BuiltinType::RvvUint8m1x8:
+        case clang::BuiltinType::RvvUint8m2x2:
+        case clang::BuiltinType::RvvUint8m2x3:
+        case clang::BuiltinType::RvvUint8m2x4:
+        case clang::BuiltinType::RvvUint8m4x2:
+        case clang::BuiltinType::RvvInt16mf4x2:
+        case clang::BuiltinType::RvvInt16mf4x3:
+        case clang::BuiltinType::RvvInt16mf4x4:
+        case clang::BuiltinType::RvvInt16mf4x5:
+        case clang::BuiltinType::RvvInt16mf4x6:
+        case clang::BuiltinType::RvvInt16mf4x7:
+        case clang::BuiltinType::RvvInt16mf4x8:
+        case clang::BuiltinType::RvvInt16mf2x2:
+        case clang::BuiltinType::RvvInt16mf2x3:
+        case clang::BuiltinType::RvvInt16mf2x4:
+        case clang::BuiltinType::RvvInt16mf2x5:
+        case clang::BuiltinType::RvvInt16mf2x6:
+        case clang::BuiltinType::RvvInt16mf2x7:
+        case clang::BuiltinType::RvvInt16mf2x8:
+        case clang::BuiltinType::RvvInt16m1x2:
+        case clang::BuiltinType::RvvInt16m1x3:
+        case clang::BuiltinType::RvvInt16m1x4:
+        case clang::BuiltinType::RvvInt16m1x5:
+        case clang::BuiltinType::RvvInt16m1x6:
+        case clang::BuiltinType::RvvInt16m1x7:
+        case clang::BuiltinType::RvvInt16m1x8:
+        case clang::BuiltinType::RvvInt16m2x2:
+        case clang::BuiltinType::RvvInt16m2x3:
+        case clang::BuiltinType::RvvInt16m2x4:
+        case clang::BuiltinType::RvvInt16m4x2:
+        case clang::BuiltinType::RvvUint16mf4x2:
+        case clang::BuiltinType::RvvUint16mf4x3:
+        case clang::BuiltinType::RvvUint16mf4x4:
+        case clang::BuiltinType::RvvUint16mf4x5:
+        case clang::BuiltinType::RvvUint16mf4x6:
+        case clang::BuiltinType::RvvUint16mf4x7:
+        case clang::BuiltinType::RvvUint16mf4x8:
+        case clang::BuiltinType::RvvUint16mf2x2:
+        case clang::BuiltinType::RvvUint16mf2x3:
+        case clang::BuiltinType::RvvUint16mf2x4:
+        case clang::BuiltinType::RvvUint16mf2x5:
+        case clang::BuiltinType::RvvUint16mf2x6:
+        case clang::BuiltinType::RvvUint16mf2x7:
+        case clang::BuiltinType::RvvUint16mf2x8:
+        case clang::BuiltinType::RvvUint16m1x2:
+        case clang::BuiltinType::RvvUint16m1x3:
+        case clang::BuiltinType::RvvUint16m1x4:
+        case clang::BuiltinType::RvvUint16m1x5:
+        case clang::BuiltinType::RvvUint16m1x6:
+        case clang::BuiltinType::RvvUint16m1x7:
+        case clang::BuiltinType::RvvUint16m1x8:
+        case clang::BuiltinType::RvvUint16m2x2:
+        case clang::BuiltinType::RvvUint16m2x3:
+        case clang::BuiltinType::RvvUint16m2x4:
+        case clang::BuiltinType::RvvUint16m4x2:
+        case clang::BuiltinType::RvvInt32mf2x2:
+        case clang::BuiltinType::RvvInt32mf2x3:
+        case clang::BuiltinType::RvvInt32mf2x4:
+        case clang::BuiltinType::RvvInt32mf2x5:
+        case clang::BuiltinType::RvvInt32mf2x6:
+        case clang::BuiltinType::RvvInt32mf2x7:
+        case clang::BuiltinType::RvvInt32mf2x8:
+        case clang::BuiltinType::RvvInt32m1x2:
+        case clang::BuiltinType::RvvInt32m1x3:
+        case clang::BuiltinType::RvvInt32m1x4:
+        case clang::BuiltinType::RvvInt32m1x5:
+        case clang::BuiltinType::RvvInt32m1x6:
+        case clang::BuiltinType::RvvInt32m1x7:
+        case clang::BuiltinType::RvvInt32m1x8:
+        case clang::BuiltinType::RvvInt32m2x2:
+        case clang::BuiltinType::RvvInt32m2x3:
+        case clang::BuiltinType::RvvInt32m2x4:
+        case clang::BuiltinType::RvvInt32m4x2:
+        case clang::BuiltinType::RvvUint32mf2x2:
+        case clang::BuiltinType::RvvUint32mf2x3:
+        case clang::BuiltinType::RvvUint32mf2x4:
+        case clang::BuiltinType::RvvUint32mf2x5:
+        case clang::BuiltinType::RvvUint32mf2x6:
+        case clang::BuiltinType::RvvUint32mf2x7:
+        case clang::BuiltinType::RvvUint32mf2x8:
+        case clang::BuiltinType::RvvUint32m1x2:
+        case clang::BuiltinType::RvvUint32m1x3:
+        case clang::BuiltinType::RvvUint32m1x4:
+        case clang::BuiltinType::RvvUint32m1x5:
+        case clang::BuiltinType::RvvUint32m1x6:
+        case clang::BuiltinType::RvvUint32m1x7:
+        case clang::BuiltinType::RvvUint32m1x8:
+        case clang::BuiltinType::RvvUint32m2x2:
+        case clang::BuiltinType::RvvUint32m2x3:
+        case clang::BuiltinType::RvvUint32m2x4:
+        case clang::BuiltinType::RvvUint32m4x2:
+        case clang::BuiltinType::RvvInt64m1x2:
+        case clang::BuiltinType::RvvInt64m1x3:
+        case clang::BuiltinType::RvvInt64m1x4:
+        case clang::BuiltinType::RvvInt64m1x5:
+        case clang::BuiltinType::RvvInt64m1x6:
+        case clang::BuiltinType::RvvInt64m1x7:
+        case clang::BuiltinType::RvvInt64m1x8:
+        case clang::BuiltinType::RvvInt64m2x2:
+        case clang::BuiltinType::RvvInt64m2x3:
+        case clang::BuiltinType::RvvInt64m2x4:
+        case clang::BuiltinType::RvvInt64m4x2:
+        case clang::BuiltinType::RvvUint64m1x2:
+        case clang::BuiltinType::RvvUint64m1x3:
+        case clang::BuiltinType::RvvUint64m1x4:
+        case clang::BuiltinType::RvvUint64m1x5:
+        case clang::BuiltinType::RvvUint64m1x6:
+        case clang::BuiltinType::RvvUint64m1x7:
+        case clang::BuiltinType::RvvUint64m1x8:
+        case clang::BuiltinType::RvvUint64m2x2:
+        case clang::BuiltinType::RvvUint64m2x3:
+        case clang::BuiltinType::RvvUint64m2x4:
+        case clang::BuiltinType::RvvUint64m4x2:
+        case clang::BuiltinType::RvvFloat16mf4x2:
+        case clang::BuiltinType::RvvFloat16mf4x3:
+        case clang::BuiltinType::RvvFloat16mf4x4:
+        case clang::BuiltinType::RvvFloat16mf4x5:
+        case clang::BuiltinType::RvvFloat16mf4x6:
+        case clang::BuiltinType::RvvFloat16mf4x7:
+        case clang::BuiltinType::RvvFloat16mf4x8:
+        case clang::BuiltinType::RvvFloat16mf2x2:
+        case clang::BuiltinType::RvvFloat16mf2x3:
+        case clang::BuiltinType::RvvFloat16mf2x4:
+        case clang::BuiltinType::RvvFloat16mf2x5:
+        case clang::BuiltinType::RvvFloat16mf2x6:
+        case clang::BuiltinType::RvvFloat16mf2x7:
+        case clang::BuiltinType::RvvFloat16mf2x8:
+        case clang::BuiltinType::RvvFloat16m1x2:
+        case clang::BuiltinType::RvvFloat16m1x3:
+        case clang::BuiltinType::RvvFloat16m1x4:
+        case clang::BuiltinType::RvvFloat16m1x5:
+        case clang::BuiltinType::RvvFloat16m1x6:
+        case clang::BuiltinType::RvvFloat16m1x7:
+        case clang::BuiltinType::RvvFloat16m1x8:
+        case clang::BuiltinType::RvvFloat16m2x2:
+        case clang::BuiltinType::RvvFloat16m2x3:
+        case clang::BuiltinType::RvvFloat16m2x4:
+        case clang::BuiltinType::RvvFloat16m4x2:
+        case clang::BuiltinType::RvvFloat32mf2x2:
+        case clang::BuiltinType::RvvFloat32mf2x3:
+        case clang::BuiltinType::RvvFloat32mf2x4:
+        case clang::BuiltinType::RvvFloat32mf2x5:
+        case clang::BuiltinType::RvvFloat32mf2x6:
+        case clang::BuiltinType::RvvFloat32mf2x7:
+        case clang::BuiltinType::RvvFloat32mf2x8:
+        case clang::BuiltinType::RvvFloat32m1x2:
+        case clang::BuiltinType::RvvFloat32m1x3:
+        case clang::BuiltinType::RvvFloat32m1x4:
+        case clang::BuiltinType::RvvFloat32m1x5:
+        case clang::BuiltinType::RvvFloat32m1x6:
+        case clang::BuiltinType::RvvFloat32m1x7:
+        case clang::BuiltinType::RvvFloat32m1x8:
+        case clang::BuiltinType::RvvFloat32m2x2:
+        case clang::BuiltinType::RvvFloat32m2x3:
+        case clang::BuiltinType::RvvFloat32m2x4:
+        case clang::BuiltinType::RvvFloat32m4x2:
+        case clang::BuiltinType::RvvFloat64m1x2:
+        case clang::BuiltinType::RvvFloat64m1x3:
+        case clang::BuiltinType::RvvFloat64m1x4:
+        case clang::BuiltinType::RvvFloat64m1x5:
+        case clang::BuiltinType::RvvFloat64m1x6:
+        case clang::BuiltinType::RvvFloat64m1x7:
+        case clang::BuiltinType::RvvFloat64m1x8:
+        case clang::BuiltinType::RvvFloat64m2x2:
+        case clang::BuiltinType::RvvFloat64m2x3:
+        case clang::BuiltinType::RvvFloat64m2x4:
+        case clang::BuiltinType::RvvFloat64m4x2:
+        case clang::BuiltinType::WasmExternRef:
         case clang::BuiltinType::Void:
         case clang::BuiltinType::Bool:
         case clang::BuiltinType::Char_U:
@@ -1174,6 +1537,7 @@ void ZigClang_detect_enum_BuiltinTypeKind(clang::BuiltinType::Kind x) {
         case clang::BuiltinType::Float16:
         case clang::BuiltinType::BFloat16:
         case clang::BuiltinType::Float128:
+        case clang::BuiltinType::Ibm128:
         case clang::BuiltinType::NullPtr:
         case clang::BuiltinType::ObjCId:
         case clang::BuiltinType::ObjCClass:
@@ -1242,10 +1606,10 @@ static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeOCLIntelSubgroupAVCMc
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeOCLIntelSubgroupAVCImeResult == clang::BuiltinType::OCLIntelSubgroupAVCImeResult, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeOCLIntelSubgroupAVCRefResult == clang::BuiltinType::OCLIntelSubgroupAVCRefResult, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeOCLIntelSubgroupAVCSicResult == clang::BuiltinType::OCLIntelSubgroupAVCSicResult, "");
-static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeOCLIntelSubgroupAVCImeResultSingleRefStreamout == clang::BuiltinType::OCLIntelSubgroupAVCImeResultSingleRefStreamout, "");
-static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeOCLIntelSubgroupAVCImeResultDualRefStreamout == clang::BuiltinType::OCLIntelSubgroupAVCImeResultDualRefStreamout, "");
-static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeOCLIntelSubgroupAVCImeSingleRefStreamin == clang::BuiltinType::OCLIntelSubgroupAVCImeSingleRefStreamin, "");
-static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeOCLIntelSubgroupAVCImeDualRefStreamin == clang::BuiltinType::OCLIntelSubgroupAVCImeDualRefStreamin, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeOCLIntelSubgroupAVCImeResultSingleReferenceStreamout == clang::BuiltinType::OCLIntelSubgroupAVCImeResultSingleReferenceStreamout, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeOCLIntelSubgroupAVCImeResultDualReferenceStreamout == clang::BuiltinType::OCLIntelSubgroupAVCImeResultDualReferenceStreamout, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeOCLIntelSubgroupAVCImeSingleReferenceStreamin == clang::BuiltinType::OCLIntelSubgroupAVCImeSingleReferenceStreamin, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeOCLIntelSubgroupAVCImeDualReferenceStreamin == clang::BuiltinType::OCLIntelSubgroupAVCImeDualReferenceStreamin, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeSveInt8 == clang::BuiltinType::SveInt8, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeSveInt16 == clang::BuiltinType::SveInt16, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeSveInt32 == clang::BuiltinType::SveInt32, "");
@@ -1295,6 +1659,304 @@ static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeSveFloat32x4 == clang
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeSveFloat64x4 == clang::BuiltinType::SveFloat64x4, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeSveBFloat16x4 == clang::BuiltinType::SveBFloat16x4, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeSveBool == clang::BuiltinType::SveBool, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeSveBoolx2 == clang::BuiltinType::SveBoolx2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeSveBoolx4 == clang::BuiltinType::SveBoolx4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeSveCount == clang::BuiltinType::SveCount, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeVectorQuad == clang::BuiltinType::VectorQuad, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeVectorPair == clang::BuiltinType::VectorPair, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf8 == clang::BuiltinType::RvvInt8mf8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf4 == clang::BuiltinType::RvvInt8mf4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf2 == clang::BuiltinType::RvvInt8mf2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8m1 == clang::BuiltinType::RvvInt8m1, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8m2 == clang::BuiltinType::RvvInt8m2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8m4 == clang::BuiltinType::RvvInt8m4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8m8 == clang::BuiltinType::RvvInt8m8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf8 == clang::BuiltinType::RvvUint8mf8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf4 == clang::BuiltinType::RvvUint8mf4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf2 == clang::BuiltinType::RvvUint8mf2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8m1 == clang::BuiltinType::RvvUint8m1, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8m2 == clang::BuiltinType::RvvUint8m2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8m4 == clang::BuiltinType::RvvUint8m4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8m8 == clang::BuiltinType::RvvUint8m8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16mf4 == clang::BuiltinType::RvvInt16mf4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16mf2 == clang::BuiltinType::RvvInt16mf2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16m1 == clang::BuiltinType::RvvInt16m1, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16m2 == clang::BuiltinType::RvvInt16m2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16m4 == clang::BuiltinType::RvvInt16m4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16m8 == clang::BuiltinType::RvvInt16m8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16mf4 == clang::BuiltinType::RvvUint16mf4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16mf2 == clang::BuiltinType::RvvUint16mf2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16m1 == clang::BuiltinType::RvvUint16m1, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16m2 == clang::BuiltinType::RvvUint16m2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16m4 == clang::BuiltinType::RvvUint16m4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16m8 == clang::BuiltinType::RvvUint16m8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32mf2 == clang::BuiltinType::RvvInt32mf2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32m1 == clang::BuiltinType::RvvInt32m1, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32m2 == clang::BuiltinType::RvvInt32m2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32m4 == clang::BuiltinType::RvvInt32m4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32m8 == clang::BuiltinType::RvvInt32m8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32mf2 == clang::BuiltinType::RvvUint32mf2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32m1 == clang::BuiltinType::RvvUint32m1, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32m2 == clang::BuiltinType::RvvUint32m2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32m4 == clang::BuiltinType::RvvUint32m4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32m8 == clang::BuiltinType::RvvUint32m8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt64m1 == clang::BuiltinType::RvvInt64m1, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt64m2 == clang::BuiltinType::RvvInt64m2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt64m4 == clang::BuiltinType::RvvInt64m4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt64m8 == clang::BuiltinType::RvvInt64m8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint64m1 == clang::BuiltinType::RvvUint64m1, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint64m2 == clang::BuiltinType::RvvUint64m2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint64m4 == clang::BuiltinType::RvvUint64m4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint64m8 == clang::BuiltinType::RvvUint64m8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16mf4 == clang::BuiltinType::RvvFloat16mf4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16mf2 == clang::BuiltinType::RvvFloat16mf2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16m1 == clang::BuiltinType::RvvFloat16m1, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16m2 == clang::BuiltinType::RvvFloat16m2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16m4 == clang::BuiltinType::RvvFloat16m4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16m8 == clang::BuiltinType::RvvFloat16m8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32mf2 == clang::BuiltinType::RvvFloat32mf2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32m1 == clang::BuiltinType::RvvFloat32m1, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32m2 == clang::BuiltinType::RvvFloat32m2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32m4 == clang::BuiltinType::RvvFloat32m4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32m8 == clang::BuiltinType::RvvFloat32m8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat64m1 == clang::BuiltinType::RvvFloat64m1, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat64m2 == clang::BuiltinType::RvvFloat64m2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat64m4 == clang::BuiltinType::RvvFloat64m4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat64m8 == clang::BuiltinType::RvvFloat64m8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvBool1 == clang::BuiltinType::RvvBool1, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvBool2 == clang::BuiltinType::RvvBool2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvBool4 == clang::BuiltinType::RvvBool4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvBool8 == clang::BuiltinType::RvvBool8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvBool16 == clang::BuiltinType::RvvBool16, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvBool32 == clang::BuiltinType::RvvBool32, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvBool64 == clang::BuiltinType::RvvBool64, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf8x2 == clang::BuiltinType::RvvInt8mf8x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf8x3 == clang::BuiltinType::RvvInt8mf8x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf8x4 == clang::BuiltinType::RvvInt8mf8x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf8x5 == clang::BuiltinType::RvvInt8mf8x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf8x6 == clang::BuiltinType::RvvInt8mf8x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf8x7 == clang::BuiltinType::RvvInt8mf8x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf8x8 == clang::BuiltinType::RvvInt8mf8x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf4x2 == clang::BuiltinType::RvvInt8mf4x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf4x3 == clang::BuiltinType::RvvInt8mf4x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf4x4 == clang::BuiltinType::RvvInt8mf4x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf4x5 == clang::BuiltinType::RvvInt8mf4x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf4x6 == clang::BuiltinType::RvvInt8mf4x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf4x7 == clang::BuiltinType::RvvInt8mf4x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf4x8 == clang::BuiltinType::RvvInt8mf4x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf2x2 == clang::BuiltinType::RvvInt8mf2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf2x3 == clang::BuiltinType::RvvInt8mf2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf2x4 == clang::BuiltinType::RvvInt8mf2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf2x5 == clang::BuiltinType::RvvInt8mf2x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf2x6 == clang::BuiltinType::RvvInt8mf2x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf2x7 == clang::BuiltinType::RvvInt8mf2x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8mf2x8 == clang::BuiltinType::RvvInt8mf2x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8m1x2 == clang::BuiltinType::RvvInt8m1x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8m1x3 == clang::BuiltinType::RvvInt8m1x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8m1x4 == clang::BuiltinType::RvvInt8m1x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8m1x5 == clang::BuiltinType::RvvInt8m1x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8m1x6 == clang::BuiltinType::RvvInt8m1x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8m1x7 == clang::BuiltinType::RvvInt8m1x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8m1x8 == clang::BuiltinType::RvvInt8m1x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8m2x2 == clang::BuiltinType::RvvInt8m2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8m2x3 == clang::BuiltinType::RvvInt8m2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8m2x4 == clang::BuiltinType::RvvInt8m2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt8m4x2 == clang::BuiltinType::RvvInt8m4x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf8x2 == clang::BuiltinType::RvvUint8mf8x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf8x3 == clang::BuiltinType::RvvUint8mf8x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf8x4 == clang::BuiltinType::RvvUint8mf8x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf8x5 == clang::BuiltinType::RvvUint8mf8x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf8x6 == clang::BuiltinType::RvvUint8mf8x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf8x7 == clang::BuiltinType::RvvUint8mf8x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf8x8 == clang::BuiltinType::RvvUint8mf8x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf4x2 == clang::BuiltinType::RvvUint8mf4x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf4x3 == clang::BuiltinType::RvvUint8mf4x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf4x4 == clang::BuiltinType::RvvUint8mf4x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf4x5 == clang::BuiltinType::RvvUint8mf4x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf4x6 == clang::BuiltinType::RvvUint8mf4x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf4x7 == clang::BuiltinType::RvvUint8mf4x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf4x8 == clang::BuiltinType::RvvUint8mf4x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf2x2 == clang::BuiltinType::RvvUint8mf2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf2x3 == clang::BuiltinType::RvvUint8mf2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf2x4 == clang::BuiltinType::RvvUint8mf2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf2x5 == clang::BuiltinType::RvvUint8mf2x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf2x6 == clang::BuiltinType::RvvUint8mf2x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf2x7 == clang::BuiltinType::RvvUint8mf2x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8mf2x8 == clang::BuiltinType::RvvUint8mf2x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8m1x2 == clang::BuiltinType::RvvUint8m1x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8m1x3 == clang::BuiltinType::RvvUint8m1x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8m1x4 == clang::BuiltinType::RvvUint8m1x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8m1x5 == clang::BuiltinType::RvvUint8m1x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8m1x6 == clang::BuiltinType::RvvUint8m1x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8m1x7 == clang::BuiltinType::RvvUint8m1x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8m1x8 == clang::BuiltinType::RvvUint8m1x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8m2x2 == clang::BuiltinType::RvvUint8m2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8m2x3 == clang::BuiltinType::RvvUint8m2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8m2x4 == clang::BuiltinType::RvvUint8m2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint8m4x2 == clang::BuiltinType::RvvUint8m4x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16mf4x2 == clang::BuiltinType::RvvInt16mf4x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16mf4x3 == clang::BuiltinType::RvvInt16mf4x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16mf4x4 == clang::BuiltinType::RvvInt16mf4x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16mf4x5 == clang::BuiltinType::RvvInt16mf4x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16mf4x6 == clang::BuiltinType::RvvInt16mf4x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16mf4x7 == clang::BuiltinType::RvvInt16mf4x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16mf4x8 == clang::BuiltinType::RvvInt16mf4x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16mf2x2 == clang::BuiltinType::RvvInt16mf2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16mf2x3 == clang::BuiltinType::RvvInt16mf2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16mf2x4 == clang::BuiltinType::RvvInt16mf2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16mf2x5 == clang::BuiltinType::RvvInt16mf2x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16mf2x6 == clang::BuiltinType::RvvInt16mf2x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16mf2x7 == clang::BuiltinType::RvvInt16mf2x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16mf2x8 == clang::BuiltinType::RvvInt16mf2x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16m1x2 == clang::BuiltinType::RvvInt16m1x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16m1x3 == clang::BuiltinType::RvvInt16m1x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16m1x4 == clang::BuiltinType::RvvInt16m1x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16m1x5 == clang::BuiltinType::RvvInt16m1x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16m1x6 == clang::BuiltinType::RvvInt16m1x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16m1x7 == clang::BuiltinType::RvvInt16m1x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16m1x8 == clang::BuiltinType::RvvInt16m1x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16m2x2 == clang::BuiltinType::RvvInt16m2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16m2x3 == clang::BuiltinType::RvvInt16m2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16m2x4 == clang::BuiltinType::RvvInt16m2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt16m4x2 == clang::BuiltinType::RvvInt16m4x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16mf4x2 == clang::BuiltinType::RvvUint16mf4x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16mf4x3 == clang::BuiltinType::RvvUint16mf4x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16mf4x4 == clang::BuiltinType::RvvUint16mf4x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16mf4x5 == clang::BuiltinType::RvvUint16mf4x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16mf4x6 == clang::BuiltinType::RvvUint16mf4x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16mf4x7 == clang::BuiltinType::RvvUint16mf4x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16mf4x8 == clang::BuiltinType::RvvUint16mf4x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16mf2x2 == clang::BuiltinType::RvvUint16mf2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16mf2x3 == clang::BuiltinType::RvvUint16mf2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16mf2x4 == clang::BuiltinType::RvvUint16mf2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16mf2x5 == clang::BuiltinType::RvvUint16mf2x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16mf2x6 == clang::BuiltinType::RvvUint16mf2x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16mf2x7 == clang::BuiltinType::RvvUint16mf2x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16mf2x8 == clang::BuiltinType::RvvUint16mf2x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16m1x2 == clang::BuiltinType::RvvUint16m1x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16m1x3 == clang::BuiltinType::RvvUint16m1x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16m1x4 == clang::BuiltinType::RvvUint16m1x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16m1x5 == clang::BuiltinType::RvvUint16m1x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16m1x6 == clang::BuiltinType::RvvUint16m1x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16m1x7 == clang::BuiltinType::RvvUint16m1x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16m1x8 == clang::BuiltinType::RvvUint16m1x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16m2x2 == clang::BuiltinType::RvvUint16m2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16m2x3 == clang::BuiltinType::RvvUint16m2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16m2x4 == clang::BuiltinType::RvvUint16m2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint16m4x2 == clang::BuiltinType::RvvUint16m4x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32mf2x2 == clang::BuiltinType::RvvInt32mf2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32mf2x3 == clang::BuiltinType::RvvInt32mf2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32mf2x4 == clang::BuiltinType::RvvInt32mf2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32mf2x5 == clang::BuiltinType::RvvInt32mf2x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32mf2x6 == clang::BuiltinType::RvvInt32mf2x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32mf2x7 == clang::BuiltinType::RvvInt32mf2x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32mf2x8 == clang::BuiltinType::RvvInt32mf2x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32m1x2 == clang::BuiltinType::RvvInt32m1x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32m1x3 == clang::BuiltinType::RvvInt32m1x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32m1x4 == clang::BuiltinType::RvvInt32m1x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32m1x5 == clang::BuiltinType::RvvInt32m1x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32m1x6 == clang::BuiltinType::RvvInt32m1x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32m1x7 == clang::BuiltinType::RvvInt32m1x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32m1x8 == clang::BuiltinType::RvvInt32m1x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32m2x2 == clang::BuiltinType::RvvInt32m2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32m2x3 == clang::BuiltinType::RvvInt32m2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32m2x4 == clang::BuiltinType::RvvInt32m2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt32m4x2 == clang::BuiltinType::RvvInt32m4x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32mf2x2 == clang::BuiltinType::RvvUint32mf2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32mf2x3 == clang::BuiltinType::RvvUint32mf2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32mf2x4 == clang::BuiltinType::RvvUint32mf2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32mf2x5 == clang::BuiltinType::RvvUint32mf2x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32mf2x6 == clang::BuiltinType::RvvUint32mf2x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32mf2x7 == clang::BuiltinType::RvvUint32mf2x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32mf2x8 == clang::BuiltinType::RvvUint32mf2x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32m1x2 == clang::BuiltinType::RvvUint32m1x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32m1x3 == clang::BuiltinType::RvvUint32m1x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32m1x4 == clang::BuiltinType::RvvUint32m1x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32m1x5 == clang::BuiltinType::RvvUint32m1x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32m1x6 == clang::BuiltinType::RvvUint32m1x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32m1x7 == clang::BuiltinType::RvvUint32m1x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32m1x8 == clang::BuiltinType::RvvUint32m1x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32m2x2 == clang::BuiltinType::RvvUint32m2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32m2x3 == clang::BuiltinType::RvvUint32m2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32m2x4 == clang::BuiltinType::RvvUint32m2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint32m4x2 == clang::BuiltinType::RvvUint32m4x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt64m1x2 == clang::BuiltinType::RvvInt64m1x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt64m1x3 == clang::BuiltinType::RvvInt64m1x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt64m1x4 == clang::BuiltinType::RvvInt64m1x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt64m1x5 == clang::BuiltinType::RvvInt64m1x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt64m1x6 == clang::BuiltinType::RvvInt64m1x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt64m1x7 == clang::BuiltinType::RvvInt64m1x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt64m1x8 == clang::BuiltinType::RvvInt64m1x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt64m2x2 == clang::BuiltinType::RvvInt64m2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt64m2x3 == clang::BuiltinType::RvvInt64m2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt64m2x4 == clang::BuiltinType::RvvInt64m2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvInt64m4x2 == clang::BuiltinType::RvvInt64m4x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint64m1x2 == clang::BuiltinType::RvvUint64m1x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint64m1x3 == clang::BuiltinType::RvvUint64m1x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint64m1x4 == clang::BuiltinType::RvvUint64m1x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint64m1x5 == clang::BuiltinType::RvvUint64m1x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint64m1x6 == clang::BuiltinType::RvvUint64m1x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint64m1x7 == clang::BuiltinType::RvvUint64m1x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint64m1x8 == clang::BuiltinType::RvvUint64m1x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint64m2x2 == clang::BuiltinType::RvvUint64m2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint64m2x3 == clang::BuiltinType::RvvUint64m2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint64m2x4 == clang::BuiltinType::RvvUint64m2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvUint64m4x2 == clang::BuiltinType::RvvUint64m4x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16mf4x2 == clang::BuiltinType::RvvFloat16mf4x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16mf4x3 == clang::BuiltinType::RvvFloat16mf4x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16mf4x4 == clang::BuiltinType::RvvFloat16mf4x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16mf4x5 == clang::BuiltinType::RvvFloat16mf4x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16mf4x6 == clang::BuiltinType::RvvFloat16mf4x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16mf4x7 == clang::BuiltinType::RvvFloat16mf4x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16mf4x8 == clang::BuiltinType::RvvFloat16mf4x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16mf2x2 == clang::BuiltinType::RvvFloat16mf2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16mf2x3 == clang::BuiltinType::RvvFloat16mf2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16mf2x4 == clang::BuiltinType::RvvFloat16mf2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16mf2x5 == clang::BuiltinType::RvvFloat16mf2x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16mf2x6 == clang::BuiltinType::RvvFloat16mf2x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16mf2x7 == clang::BuiltinType::RvvFloat16mf2x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16mf2x8 == clang::BuiltinType::RvvFloat16mf2x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16m1x2 == clang::BuiltinType::RvvFloat16m1x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16m1x3 == clang::BuiltinType::RvvFloat16m1x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16m1x4 == clang::BuiltinType::RvvFloat16m1x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16m1x5 == clang::BuiltinType::RvvFloat16m1x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16m1x6 == clang::BuiltinType::RvvFloat16m1x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16m1x7 == clang::BuiltinType::RvvFloat16m1x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16m1x8 == clang::BuiltinType::RvvFloat16m1x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16m2x2 == clang::BuiltinType::RvvFloat16m2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16m2x3 == clang::BuiltinType::RvvFloat16m2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16m2x4 == clang::BuiltinType::RvvFloat16m2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat16m4x2 == clang::BuiltinType::RvvFloat16m4x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32mf2x2 == clang::BuiltinType::RvvFloat32mf2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32mf2x3 == clang::BuiltinType::RvvFloat32mf2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32mf2x4 == clang::BuiltinType::RvvFloat32mf2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32mf2x5 == clang::BuiltinType::RvvFloat32mf2x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32mf2x6 == clang::BuiltinType::RvvFloat32mf2x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32mf2x7 == clang::BuiltinType::RvvFloat32mf2x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32mf2x8 == clang::BuiltinType::RvvFloat32mf2x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32m1x2 == clang::BuiltinType::RvvFloat32m1x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32m1x3 == clang::BuiltinType::RvvFloat32m1x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32m1x4 == clang::BuiltinType::RvvFloat32m1x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32m1x5 == clang::BuiltinType::RvvFloat32m1x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32m1x6 == clang::BuiltinType::RvvFloat32m1x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32m1x7 == clang::BuiltinType::RvvFloat32m1x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32m1x8 == clang::BuiltinType::RvvFloat32m1x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32m2x2 == clang::BuiltinType::RvvFloat32m2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32m2x3 == clang::BuiltinType::RvvFloat32m2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32m2x4 == clang::BuiltinType::RvvFloat32m2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat32m4x2 == clang::BuiltinType::RvvFloat32m4x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat64m1x2 == clang::BuiltinType::RvvFloat64m1x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat64m1x3 == clang::BuiltinType::RvvFloat64m1x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat64m1x4 == clang::BuiltinType::RvvFloat64m1x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat64m1x5 == clang::BuiltinType::RvvFloat64m1x5, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat64m1x6 == clang::BuiltinType::RvvFloat64m1x6, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat64m1x7 == clang::BuiltinType::RvvFloat64m1x7, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat64m1x8 == clang::BuiltinType::RvvFloat64m1x8, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat64m2x2 == clang::BuiltinType::RvvFloat64m2x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat64m2x3 == clang::BuiltinType::RvvFloat64m2x3, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat64m2x4 == clang::BuiltinType::RvvFloat64m2x4, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeRvvFloat64m4x2 == clang::BuiltinType::RvvFloat64m4x2, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeWasmExternRef == clang::BuiltinType::WasmExternRef, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeVoid == clang::BuiltinType::Void, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeBool == clang::BuiltinType::Bool, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeChar_U == clang::BuiltinType::Char_U, "");
@@ -1347,6 +2009,7 @@ static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeLongDouble == clang::
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeFloat16 == clang::BuiltinType::Float16, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeBFloat16 == clang::BuiltinType::BFloat16, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeFloat128 == clang::BuiltinType::Float128, "");
+static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeIbm128 == clang::BuiltinType::Ibm128, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeNullPtr == clang::BuiltinType::NullPtr, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeObjCId == clang::BuiltinType::ObjCId, "");
 static_assert((clang::BuiltinType::Kind)ZigClangBuiltinTypeObjCClass == clang::BuiltinType::ObjCClass, "");
@@ -1385,9 +2048,12 @@ void ZigClang_detect_enum_CallingConv(clang::CallingConv x) {
         case clang::CC_SpirFunction:
         case clang::CC_OpenCLKernel:
         case clang::CC_Swift:
+        case clang::CC_SwiftAsync:
         case clang::CC_PreserveMost:
         case clang::CC_PreserveAll:
         case clang::CC_AArch64VectorCall:
+        case clang::CC_AArch64SVEPCS:
+        case clang::CC_AMDGPUKernelCall:
             break;
     }
 }
@@ -1407,9 +2073,12 @@ static_assert((clang::CallingConv)ZigClangCallingConv_IntelOclBicc == clang::CC_
 static_assert((clang::CallingConv)ZigClangCallingConv_SpirFunction == clang::CC_SpirFunction, "");
 static_assert((clang::CallingConv)ZigClangCallingConv_OpenCLKernel == clang::CC_OpenCLKernel, "");
 static_assert((clang::CallingConv)ZigClangCallingConv_Swift == clang::CC_Swift, "");
+static_assert((clang::CallingConv)ZigClangCallingConv_SwiftAsync == clang::CC_SwiftAsync, "");
 static_assert((clang::CallingConv)ZigClangCallingConv_PreserveMost == clang::CC_PreserveMost, "");
 static_assert((clang::CallingConv)ZigClangCallingConv_PreserveAll == clang::CC_PreserveAll, "");
 static_assert((clang::CallingConv)ZigClangCallingConv_AArch64VectorCall == clang::CC_AArch64VectorCall, "");
+static_assert((clang::CallingConv)ZigClangCallingConv_AArch64SVEPCS == clang::CC_AArch64SVEPCS, "");
+static_assert((clang::CallingConv)ZigClangCallingConv_AMDGPUKernelCall == clang::CC_AMDGPUKernelCall, "");
 
 void ZigClang_detect_enum_StorageClass(clang::StorageClass x) {
     switch (x) {
@@ -1449,22 +2118,6 @@ static_assert((llvm::RoundingMode)ZigClangAPFloat_roundingMode_TowardZero == llv
 static_assert((llvm::RoundingMode)ZigClangAPFloat_roundingMode_NearestTiesToAway == llvm::RoundingMode::NearestTiesToAway, "");
 static_assert((llvm::RoundingMode)ZigClangAPFloat_roundingMode_Dynamic == llvm::RoundingMode::Dynamic, "");
 static_assert((llvm::RoundingMode)ZigClangAPFloat_roundingMode_Invalid == llvm::RoundingMode::Invalid, "");
-
-void ZigClang_detect_enum_StringKind(clang::StringLiteral::StringKind x) {
-    switch (x) {
-        case clang::StringLiteral::Ascii:
-        case clang::StringLiteral::Wide:
-        case clang::StringLiteral::UTF8:
-        case clang::StringLiteral::UTF16:
-        case clang::StringLiteral::UTF32:
-            break;
-    }
-}
-static_assert((clang::StringLiteral::StringKind)ZigClangStringLiteral_StringKind_Ascii == clang::StringLiteral::Ascii, "");
-static_assert((clang::StringLiteral::StringKind)ZigClangStringLiteral_StringKind_Wide == clang::StringLiteral::Wide, "");
-static_assert((clang::StringLiteral::StringKind)ZigClangStringLiteral_StringKind_UTF8 == clang::StringLiteral::UTF8, "");
-static_assert((clang::StringLiteral::StringKind)ZigClangStringLiteral_StringKind_UTF16 == clang::StringLiteral::UTF16, "");
-static_assert((clang::StringLiteral::StringKind)ZigClangStringLiteral_StringKind_UTF32 == clang::StringLiteral::UTF32, "");
 
 void ZigClang_detect_enum_CharacterKind(clang::CharacterLiteral::CharacterKind x) {
     switch (x) {
@@ -1517,15 +2170,19 @@ static_assert((clang::PreprocessedEntity::EntityKind)ZigClangPreprocessedEntity_
 static_assert((clang::PreprocessedEntity::EntityKind)ZigClangPreprocessedEntity_InclusionDirectiveKind == clang::PreprocessedEntity::InclusionDirectiveKind, "");
 
 
-void ZigClang_detect_enum_ConstExprUsage(clang::Expr::ConstExprUsage x) {
+void ZigClang_detect_enum_ConstantExprKind(clang::Expr::ConstantExprKind x) {
     switch (x) {
-        case clang::Expr::EvaluateForCodeGen:
-        case clang::Expr::EvaluateForMangling:
+        case clang::Expr::ConstantExprKind::Normal:
+        case clang::Expr::ConstantExprKind::NonClassTemplateArgument:
+        case clang::Expr::ConstantExprKind::ClassTemplateArgument:
+        case clang::Expr::ConstantExprKind::ImmediateInvocation:
             break;
     }
 }
-static_assert((clang::Expr::ConstExprUsage)ZigClangExpr_EvaluateForCodeGen == clang::Expr::EvaluateForCodeGen, "");
-static_assert((clang::Expr::ConstExprUsage)ZigClangExpr_EvaluateForMangling == clang::Expr::EvaluateForMangling, "");
+static_assert((clang::Expr::ConstantExprKind)ZigClangExpr_ConstantExprKind_Normal == clang::Expr::ConstantExprKind::Normal, "");
+static_assert((clang::Expr::ConstantExprKind)ZigClangExpr_ConstantExprKind_NonClassTemplateArgument == clang::Expr::ConstantExprKind::NonClassTemplateArgument, "");
+static_assert((clang::Expr::ConstantExprKind)ZigClangExpr_ConstantExprKind_ClassTemplateArgument == clang::Expr::ConstantExprKind::ClassTemplateArgument, "");
+static_assert((clang::Expr::ConstantExprKind)ZigClangExpr_ConstantExprKind_ImmediateInvocation == clang::Expr::ConstantExprKind::ImmediateInvocation, "");
 
 
 static_assert(sizeof(ZigClangAPValue) == sizeof(clang::APValue), "");
@@ -1754,10 +2411,7 @@ const char* ZigClangVarDecl_getSectionAttribute(const struct ZigClangVarDecl *se
 
 bool ZigClangRecordDecl_getPackedAttribute(const ZigClangRecordDecl *zig_record_decl) {
     const clang::RecordDecl *record_decl = reinterpret_cast<const clang::RecordDecl *>(zig_record_decl);
-    if (record_decl->getAttr<clang::PackedAttr>()) {
-      return true;
-    }
-  return false;
+    return record_decl->hasAttr<clang::PackedAttr>();
 }
 
 unsigned ZigClangVarDecl_getAlignedAttribute(const struct ZigClangVarDecl *self, const ZigClangASTContext* ctx) {
@@ -1768,6 +2422,14 @@ unsigned ZigClangVarDecl_getAlignedAttribute(const struct ZigClangVarDecl *self,
     }
     // Zero means no explicit alignment factor was specified
     return 0;
+}
+
+const struct ZigClangFunctionDecl *ZigClangVarDecl_getCleanupAttribute(const struct ZigClangVarDecl *self) {
+    auto casted_self = reinterpret_cast<const clang::VarDecl *>(self);
+    if (const clang::CleanupAttr *CA = casted_self->getAttr<clang::CleanupAttr>()) {
+        return reinterpret_cast<const ZigClangFunctionDecl *>(CA->getFunctionDecl());
+    }
+    return nullptr;
 }
 
 unsigned ZigClangFieldDecl_getAlignedAttribute(const struct ZigClangFieldDecl *self, const ZigClangASTContext* ctx) {
@@ -1790,6 +2452,16 @@ unsigned ZigClangFunctionDecl_getAlignedAttribute(const struct ZigClangFunctionD
     return 0;
 }
 
+bool ZigClangVarDecl_getPackedAttribute(const struct ZigClangVarDecl *self) {
+    auto casted_self = reinterpret_cast<const clang::VarDecl *>(self);
+    return casted_self->hasAttr<clang::PackedAttr>();
+}
+
+bool ZigClangFieldDecl_getPackedAttribute(const struct ZigClangFieldDecl *self) {
+    auto casted_self = reinterpret_cast<const clang::FieldDecl *>(self);
+    return casted_self->hasAttr<clang::PackedAttr>();
+}
+
 ZigClangQualType ZigClangParmVarDecl_getOriginalType(const struct ZigClangParmVarDecl *self) {
     return bitcast(reinterpret_cast<const clang::ParmVarDecl *>(self)->getOriginalType());
 }
@@ -1804,6 +2476,11 @@ const ZigClangEnumDecl *ZigClangEnumDecl_getDefinition(const ZigClangEnumDecl *z
     const clang::EnumDecl *enum_decl = reinterpret_cast<const clang::EnumDecl *>(zig_enum_decl);
     const clang::EnumDecl *definition = enum_decl->getDefinition();
     return reinterpret_cast<const ZigClangEnumDecl *>(definition);
+}
+
+const ZigClangStringLiteral *ZigClangFileScopeAsmDecl_getAsmString(const ZigClangFileScopeAsmDecl *self) {
+    const clang::StringLiteral *result = reinterpret_cast<const clang::FileScopeAsmDecl*>(self)->getAsmString();
+    return reinterpret_cast<const ZigClangStringLiteral *>(result);
 }
 
 bool ZigClangRecordDecl_isUnion(const ZigClangRecordDecl *record_decl) {
@@ -1938,6 +2615,11 @@ bool ZigClangFunctionDecl_isInlineSpecified(const struct ZigClangFunctionDecl *s
     return casted->isInlineSpecified();
 }
 
+bool ZigClangFunctionDecl_hasAlwaysInlineAttr(const struct ZigClangFunctionDecl *self) {
+    auto casted = reinterpret_cast<const clang::FunctionDecl *>(self);
+    return casted->hasAttr<clang::AlwaysInlineAttr>();
+}
+
 const char* ZigClangFunctionDecl_getSectionAttribute(const struct ZigClangFunctionDecl *self, size_t *len) {
     auto casted = reinterpret_cast<const clang::FunctionDecl *>(self);
     if (const clang::SectionAttr *SA = casted->getAttr<clang::SectionAttr>()) {
@@ -2046,6 +2728,11 @@ bool ZigClangType_isRecordType(const ZigClangType *self) {
     return casted->isRecordType();
 }
 
+bool ZigClangType_isVectorType(const ZigClangType *self) {
+    auto casted = reinterpret_cast<const clang::Type *>(self);
+    return casted->isVectorType();
+}
+
 bool ZigClangType_isIncompleteOrZeroLengthArrayType(const ZigClangQualType *self,
         const struct ZigClangASTContext *ctx)
 {
@@ -2143,16 +2830,22 @@ bool ZigClangExpr_EvaluateAsFloat(const ZigClangExpr *self, ZigClangAPFloat **re
 }
 
 bool ZigClangExpr_EvaluateAsConstantExpr(const ZigClangExpr *self, ZigClangExprEvalResult *result,
-        ZigClangExpr_ConstExprUsage usage, const struct ZigClangASTContext *ctx)
+        ZigClangExpr_ConstantExprKind kind, const struct ZigClangASTContext *ctx)
 {
     auto casted_self = reinterpret_cast<const clang::Expr *>(self);
     auto casted_ctx = reinterpret_cast<const clang::ASTContext *>(ctx);
     clang::Expr::EvalResult eval_result;
-    if (!casted_self->EvaluateAsConstantExpr(eval_result, (clang::Expr::ConstExprUsage)usage, *casted_ctx)) {
+    if (!casted_self->EvaluateAsConstantExpr(eval_result, *casted_ctx, (clang::Expr::ConstantExprKind)kind)) {
         return false;
     }
     *result = bitcast(eval_result);
     return true;
+}
+
+const ZigClangStringLiteral *ZigClangExpr_castToStringLiteral(const struct ZigClangExpr *self) {
+    auto casted_self = reinterpret_cast<const clang::Expr *>(self);
+    auto cast = clang::dyn_cast<const clang::StringLiteral>(casted_self);
+    return reinterpret_cast<const ZigClangStringLiteral *>(cast);
 }
 
 const ZigClangExpr *ZigClangInitListExpr_getInit(const ZigClangInitListExpr *self, unsigned i) {
@@ -2165,6 +2858,16 @@ const ZigClangExpr *ZigClangInitListExpr_getArrayFiller(const ZigClangInitListEx
     auto casted = reinterpret_cast<const clang::InitListExpr *>(self);
     const clang::Expr *result = casted->getArrayFiller();
     return reinterpret_cast<const ZigClangExpr *>(result);
+}
+
+bool ZigClangInitListExpr_hasArrayFiller(const ZigClangInitListExpr *self) {
+    auto casted = reinterpret_cast<const clang::InitListExpr *>(self);
+    return casted->hasArrayFiller();
+}
+
+bool ZigClangInitListExpr_isStringLiteralInit(const ZigClangInitListExpr *self) {
+    auto casted = reinterpret_cast<const clang::InitListExpr *>(self);
+    return casted->isStringLiteralInit();
 }
 
 const ZigClangFieldDecl *ZigClangInitListExpr_getInitializedFieldInUnion(const ZigClangInitListExpr *self) {
@@ -2279,14 +2982,37 @@ ZigClangASTUnit *ZigClangLoadFromCommandLine(const char **args_begin, const char
     bool single_file_parse = false;
     bool for_serialization = false;
     bool retain_excluded_conditional_blocks = false;
+    bool store_preambles_in_memory = false;
+    llvm::StringRef preamble_storage_path = llvm::StringRef();
+    clang::ArrayRef<clang::ASTUnit::RemappedFile> remapped_files = std::nullopt;
     std::unique_ptr<clang::ASTUnit> err_unit;
-    clang::ASTUnit *ast_unit = clang::ASTUnit::LoadFromCommandLine(
-            args_begin, args_end,
-            pch_container_ops, diags, resources_path,
-            only_local_decls, clang::CaptureDiagsKind::All, clang::None, true, 0, clang::TU_Complete,
-            false, false, allow_pch_with_compiler_errors, clang::SkipFunctionBodiesScope::None,
-            single_file_parse, user_files_are_volatile, for_serialization, retain_excluded_conditional_blocks,
-            clang::None, &err_unit, nullptr);
+    llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem> VFS = nullptr;
+    std::optional<llvm::StringRef> ModuleFormat = std::nullopt;
+    std::unique_ptr<clang::ASTUnit> ast_unit_unique_ptr = clang::ASTUnit::LoadFromCommandLine(
+        args_begin, args_end,
+        pch_container_ops,
+        diags,
+        resources_path,
+        store_preambles_in_memory,
+        preamble_storage_path,
+        only_local_decls,
+        clang::CaptureDiagsKind::All,
+        remapped_files,
+        true, // remapped files keep original name
+        0, // precompiled preable after n parses
+        clang::TU_Complete,
+        false, // cache code completion results
+        false, // include brief comments in code completion
+        allow_pch_with_compiler_errors,
+        clang::SkipFunctionBodiesScope::None,
+        single_file_parse,
+        user_files_are_volatile,
+        for_serialization,
+        retain_excluded_conditional_blocks,
+        ModuleFormat,
+        &err_unit,
+        VFS);
+    clang::ASTUnit * ast_unit = ast_unit_unique_ptr.release();
 
     *errors_len = 0;
 
@@ -2327,6 +3053,11 @@ ZigClangASTUnit *ZigClangLoadFromCommandLine(const char **args_begin, const char
             msg->msg_len = msg_str_ref.size();
 
             clang::FullSourceLoc fsl = it->getLocation();
+
+            // Ensure the source location is valid before expanding it
+            if (fsl.isInvalid()) {
+                continue;
+            }
             // Expand the location if possible
             fsl = fsl.getFileLoc();
 
@@ -2425,6 +3156,11 @@ enum ZigClangStorageClass ZigClangVarDecl_getStorageClass(const struct ZigClangV
     return (ZigClangStorageClass)casted->getStorageClass();
 }
 
+bool ZigClangVarDecl_isStaticLocal(const struct ZigClangVarDecl *self) {
+    auto casted = reinterpret_cast<const clang::VarDecl *>(self);
+    return casted->isStaticLocal();
+}
+
 enum ZigClangBuiltinTypeKind ZigClangBuiltinType_getKind(const struct ZigClangBuiltinType *self) {
     auto casted = reinterpret_cast<const clang::BuiltinType *>(self);
     return (ZigClangBuiltinTypeKind)casted->getKind();
@@ -2509,9 +3245,19 @@ double ZigClangFloatingLiteral_getValueAsApproximateDouble(const ZigClangFloatin
     return casted->getValueAsApproximateDouble();
 }
 
-enum ZigClangStringLiteral_StringKind ZigClangStringLiteral_getKind(const struct ZigClangStringLiteral *self) {
+struct ZigClangSourceLocation ZigClangFloatingLiteral_getBeginLoc(const struct ZigClangFloatingLiteral *self) {
+    auto casted = reinterpret_cast<const clang::FloatingLiteral *>(self);
+    return bitcast(casted->getBeginLoc());
+}
+
+ZigClangAPFloatBase_Semantics ZigClangFloatingLiteral_getRawSemantics(const ZigClangFloatingLiteral *self) {
+    auto casted = reinterpret_cast<const clang::FloatingLiteral *>(self);
+    return static_cast<ZigClangAPFloatBase_Semantics>(casted->getRawSemantics());
+}
+
+enum ZigClangCharacterLiteral_CharacterKind ZigClangStringLiteral_getKind(const struct ZigClangStringLiteral *self) {
     auto casted = reinterpret_cast<const clang::StringLiteral *>(self);
-    return (ZigClangStringLiteral_StringKind)casted->getKind();
+    return (ZigClangCharacterLiteral_CharacterKind)casted->getKind();
 }
 
 uint32_t ZigClangStringLiteral_getCodeUnit(const struct ZigClangStringLiteral *self, size_t i) {
@@ -2604,9 +3350,9 @@ struct ZigClangQualType ZigClangMacroQualifiedType_getModifiedType(const struct 
     return bitcast(casted->getModifiedType());
 }
 
-struct ZigClangQualType ZigClangTypeOfType_getUnderlyingType(const struct ZigClangTypeOfType *self) {
+struct ZigClangQualType ZigClangTypeOfType_getUnmodifiedType(const struct ZigClangTypeOfType *self) {
     auto casted = reinterpret_cast<const clang::TypeOfType *>(self);
-    return bitcast(casted->getUnderlyingType());
+    return bitcast(casted->getUnmodifiedType());
 }
 
 const struct ZigClangExpr *ZigClangTypeOfExprType_getUnderlyingExpr(const struct ZigClangTypeOfExprType *self) {
@@ -2679,6 +3425,22 @@ struct ZigClangQualType ZigClangCStyleCastExpr_getType(const struct ZigClangCSty
     return bitcast(casted->getType());
 }
 
+const struct ZigClangASTRecordLayout *ZigClangRecordDecl_getASTRecordLayout(const struct ZigClangRecordDecl *self, const struct ZigClangASTContext *ctx) {
+    auto casted_self = reinterpret_cast<const clang::RecordDecl *>(self);
+    auto casted_ctx = reinterpret_cast<const clang::ASTContext *>(ctx);
+    const clang::ASTRecordLayout &layout = casted_ctx->getASTRecordLayout(casted_self);
+    return reinterpret_cast<const struct ZigClangASTRecordLayout *>(&layout);
+}
+
+uint64_t ZigClangASTRecordLayout_getFieldOffset(const struct ZigClangASTRecordLayout *self, unsigned field_no) {
+    return reinterpret_cast<const clang::ASTRecordLayout *>(self)->getFieldOffset(field_no);
+}
+
+int64_t ZigClangASTRecordLayout_getAlignment(const struct ZigClangASTRecordLayout *self) {
+    auto casted_self = reinterpret_cast<const clang::ASTRecordLayout *>(self);
+    return casted_self->getAlignment().getQuantity();
+}
+
 bool ZigClangIntegerLiteral_EvaluateAsInt(const struct ZigClangIntegerLiteral *self, struct ZigClangExprEvalResult *result, const struct ZigClangASTContext *ctx) {
     auto casted_self = reinterpret_cast<const clang::IntegerLiteral *>(self);
     auto casted_ctx = reinterpret_cast<const clang::ASTContext *>(ctx);
@@ -2695,7 +3457,7 @@ struct ZigClangSourceLocation ZigClangIntegerLiteral_getBeginLoc(const struct Zi
     return bitcast(casted->getBeginLoc());
 }
 
-bool ZigClangIntegerLiteral_isZero(const struct ZigClangIntegerLiteral *self, bool *result, const struct ZigClangASTContext *ctx) {
+bool ZigClangIntegerLiteral_getSignum(const struct ZigClangIntegerLiteral *self, int *result, const struct ZigClangASTContext *ctx) {
     auto casted_self = reinterpret_cast<const clang::IntegerLiteral *>(self);
     auto casted_ctx = reinterpret_cast<const clang::ASTContext *>(ctx);
     clang::Expr::EvalResult eval_result;
@@ -2704,7 +3466,17 @@ bool ZigClangIntegerLiteral_isZero(const struct ZigClangIntegerLiteral *self, bo
     }
     const llvm::APSInt result_int = eval_result.Val.getInt();
     const llvm::APSInt zero(result_int.getBitWidth(), result_int.isUnsigned());
-    *result = zero == result_int;
+
+    if (zero == result_int) {
+        *result = 0;
+    } else if (result_int < zero) {
+        *result = -1;
+    } else if (result_int > zero) {
+        *result = 1;
+    } else {
+        return false;
+    }
+
     return true;
 }
 
@@ -2738,6 +3510,16 @@ struct ZigClangQualType ZigClangBinaryOperator_getType(const struct ZigClangBina
     return bitcast(casted->getType());
 }
 
+const struct ZigClangExpr *ZigClangConvertVectorExpr_getSrcExpr(const struct ZigClangConvertVectorExpr *self) {
+    auto casted = reinterpret_cast<const clang::ConvertVectorExpr *>(self);
+    return reinterpret_cast<const struct ZigClangExpr *>(casted->getSrcExpr());
+}
+
+struct ZigClangQualType ZigClangConvertVectorExpr_getTypeSourceInfo_getType(const struct ZigClangConvertVectorExpr *self) {
+    auto casted = reinterpret_cast<const clang::ConvertVectorExpr *>(self);
+    return bitcast(casted->getTypeSourceInfo()->getType());
+}
+
 struct ZigClangQualType ZigClangDecayedType_getDecayedType(const struct ZigClangDecayedType *self) {
     auto casted = reinterpret_cast<const clang::DecayedType *>(self);
     return bitcast(casted->getDecayedType());
@@ -2746,6 +3528,18 @@ struct ZigClangQualType ZigClangDecayedType_getDecayedType(const struct ZigClang
 const struct ZigClangCompoundStmt *ZigClangStmtExpr_getSubStmt(const struct ZigClangStmtExpr *self) {
     auto casted = reinterpret_cast<const clang::StmtExpr *>(self);
     return reinterpret_cast<const ZigClangCompoundStmt *>(casted->getSubStmt());
+}
+
+enum ZigClangCK ZigClangCastExpr_getCastKind(const struct ZigClangCastExpr *self) {
+    auto casted = reinterpret_cast<const clang::CastExpr *>(self);
+    return (ZigClangCK)casted->getCastKind();
+}
+
+const struct ZigClangFieldDecl *ZigClangCastExpr_getTargetFieldForToUnionCast(const struct ZigClangCastExpr *self, ZigClangQualType union_type, ZigClangQualType op_type) {
+    clang::QualType union_qt = bitcast(union_type);
+    clang::QualType op_qt = bitcast(op_type);
+    auto casted = reinterpret_cast<const clang::CastExpr *>(self);
+    return reinterpret_cast<const ZigClangFieldDecl *>(casted->getTargetFieldForToUnionCast(union_qt, op_qt));
 }
 
 struct ZigClangSourceLocation ZigClangCharacterLiteral_getBeginLoc(const struct ZigClangCharacterLiteral *self) {
@@ -2761,6 +3555,11 @@ enum ZigClangCharacterLiteral_CharacterKind ZigClangCharacterLiteral_getKind(con
 unsigned ZigClangCharacterLiteral_getValue(const struct ZigClangCharacterLiteral *self) {
     auto casted = reinterpret_cast<const clang::CharacterLiteral *>(self);
     return casted->getValue();
+}
+
+const struct ZigClangExpr *ZigClangChooseExpr_getChosenSubExpr(const struct ZigClangChooseExpr *self) {
+    auto casted = reinterpret_cast<const clang::ChooseExpr *>(self);
+    return reinterpret_cast<const ZigClangExpr *>(casted->getChosenSubExpr());
 }
 
 const struct ZigClangExpr *ZigClangAbstractConditionalOperator_getCond(const struct ZigClangAbstractConditionalOperator *self) {
@@ -2843,6 +3642,16 @@ struct ZigClangQualType ZigClangValueDecl_getType(const struct ZigClangValueDecl
     return bitcast(casted->getType());
 }
 
+struct ZigClangQualType ZigClangVectorType_getElementType(const struct ZigClangVectorType *self) {
+    auto casted = reinterpret_cast<const clang::VectorType *>(self);
+    return bitcast(casted->getElementType());
+}
+
+unsigned ZigClangVectorType_getNumElements(const struct ZigClangVectorType *self) {
+    auto casted = reinterpret_cast<const clang::VectorType *>(self);
+    return casted->getNumElements();
+}
+
 const struct ZigClangExpr *ZigClangWhileStmt_getCond(const struct ZigClangWhileStmt *self) {
     auto casted = reinterpret_cast<const clang::WhileStmt *>(self);
     return reinterpret_cast<const struct ZigClangExpr *>(casted->getCond());
@@ -2922,6 +3731,15 @@ struct ZigClangSourceLocation ZigClangUnaryExprOrTypeTraitExpr_getBeginLoc(
     return bitcast(casted->getBeginLoc());
 }
 
+unsigned ZigClangShuffleVectorExpr_getNumSubExprs(const ZigClangShuffleVectorExpr *self) {
+    auto casted = reinterpret_cast<const clang::ShuffleVectorExpr *>(self);
+    return casted->getNumSubExprs();
+}
+
+const struct ZigClangExpr *ZigClangShuffleVectorExpr_getExpr(const struct ZigClangShuffleVectorExpr *self, unsigned idx) {
+    auto casted = reinterpret_cast<const clang::ShuffleVectorExpr *>(self);
+    return reinterpret_cast<const struct ZigClangExpr *>(casted->getExpr(idx));
+}
 
 enum ZigClangUnaryExprOrTypeTrait_Kind ZigClangUnaryExprOrTypeTraitExpr_getKind(
     const struct ZigClangUnaryExprOrTypeTraitExpr *self)
@@ -3034,6 +3852,13 @@ struct ZigClangSourceLocation ZigClangMacroDefinitionRecord_getSourceRange_getEn
     return bitcast(casted->getSourceRange().getEnd());
 }
 
+struct ZigClangSourceLocation ZigClangLexer_getLocForEndOfToken(ZigClangSourceLocation loc, const ZigClangSourceManager *sm, const ZigClangASTUnit *unit) {
+    const clang::SourceManager *casted_sm = reinterpret_cast<const clang::SourceManager *>(sm);
+    const clang::ASTUnit *casted_unit = reinterpret_cast<const clang::ASTUnit *>(unit);
+    clang::SourceLocation endloc = clang::Lexer::getLocForEndOfToken(bitcast(loc), 0, *casted_sm, casted_unit->getLangOpts());
+    return bitcast(endloc);
+}
+
 ZigClangRecordDecl_field_iterator ZigClangRecordDecl_field_begin(const struct ZigClangRecordDecl *self) {
     auto casted = reinterpret_cast<const clang::RecordDecl *>(self);
     return bitcast(casted->field_begin());
@@ -3061,6 +3886,11 @@ ZigClangSourceLocation ZigClangFieldDecl_getLocation(const struct ZigClangFieldD
 const struct ZigClangRecordDecl *ZigClangFieldDecl_getParent(const struct ZigClangFieldDecl *self) {
     auto casted = reinterpret_cast<const clang::FieldDecl *>(self);
     return reinterpret_cast<const ZigClangRecordDecl *>(casted->getParent());
+}
+
+unsigned ZigClangFieldDecl_getFieldIndex(const struct ZigClangFieldDecl *self) {
+    auto casted = reinterpret_cast<const clang::FieldDecl *>(self);
+    return casted->getFieldIndex();
 }
 
 ZigClangQualType ZigClangFieldDecl_getType(const struct ZigClangFieldDecl *self) {
@@ -3128,14 +3958,50 @@ bool ZigClangEnumDecl_enumerator_iterator_neq(
     return casted_a != casted_b;
 }
 
-const struct ZigClangExpr *ZigClangEnumConstantDecl_getInitExpr(const struct ZigClangEnumConstantDecl *self) {
-    auto casted = reinterpret_cast<const clang::EnumConstantDecl *>(self);
-    const clang::Expr *result = casted->getInitExpr();
-    return reinterpret_cast<const ZigClangExpr *>(result);
-}
-
 const struct ZigClangAPSInt *ZigClangEnumConstantDecl_getInitVal(const struct ZigClangEnumConstantDecl *self) {
     auto casted = reinterpret_cast<const clang::EnumConstantDecl *>(self);
     const llvm::APSInt *result = &casted->getInitVal();
     return reinterpret_cast<const ZigClangAPSInt *>(result);
 }
+
+// Get a pointer to a static variable in libc++ from LLVM and make sure that
+// it matches our own.
+//
+// This check is needed because if static/dynamic linking is mixed incorrectly,
+// it's possible for Clang and LLVM to end up with duplicate "copies" of libc++.
+//
+// This is not benign: Static variables are not shared, so equality comparisons
+// that depend on pointers to static variables will fail. One such failure is
+// std::generic_category(), which causes POSIX error codes to compare as unequal
+// when passed between LLVM and Clang.
+//
+// See also: https://github.com/ziglang/zig/issues/11168
+bool ZigClangIsLLVMUsingSeparateLibcxx() {
+
+    // Temporarily create an InMemoryFileSystem, so that we can perform a file 
+    // lookup that is guaranteed to fail.
+    auto FS = new llvm::vfs::InMemoryFileSystem(true);
+    auto StatusOrErr = FS->status("foo.txt");
+    delete FS;
+
+    // This should return a POSIX (generic_category) error code, but if LLVM has
+    // its own copy of libc++ this will actually be a separate category instance.
+    assert(!StatusOrErr);
+    auto EC = StatusOrErr.getError();
+    return EC.category() != std::generic_category();
+}
+
+static_assert((llvm::APFloatBase::Semantics)ZigClangAPFloatBase_Semantics_IEEEhalf == llvm::APFloatBase::S_IEEEhalf, "");
+static_assert((llvm::APFloatBase::Semantics)ZigClangAPFloatBase_Semantics_BFloat == llvm::APFloatBase::S_BFloat);
+static_assert((llvm::APFloatBase::Semantics)ZigClangAPFloatBase_Semantics_IEEEsingle == llvm::APFloatBase::S_IEEEsingle);
+static_assert((llvm::APFloatBase::Semantics)ZigClangAPFloatBase_Semantics_IEEEdouble == llvm::APFloatBase::S_IEEEdouble);
+static_assert((llvm::APFloatBase::Semantics)ZigClangAPFloatBase_Semantics_IEEEquad == llvm::APFloatBase::S_IEEEquad);
+static_assert((llvm::APFloatBase::Semantics)ZigClangAPFloatBase_Semantics_PPCDoubleDouble == llvm::APFloatBase::S_PPCDoubleDouble);
+static_assert((llvm::APFloatBase::Semantics)ZigClangAPFloatBase_Semantics_Float8E5M2 == llvm::APFloatBase::S_Float8E5M2);
+static_assert((llvm::APFloatBase::Semantics)ZigClangAPFloatBase_Semantics_Float8E5M2FNUZ == llvm::APFloatBase::S_Float8E5M2FNUZ);
+static_assert((llvm::APFloatBase::Semantics)ZigClangAPFloatBase_Semantics_Float8E4M3FN == llvm::APFloatBase::S_Float8E4M3FN);
+static_assert((llvm::APFloatBase::Semantics)ZigClangAPFloatBase_Semantics_Float8E4M3FNUZ == llvm::APFloatBase::S_Float8E4M3FNUZ);
+static_assert((llvm::APFloatBase::Semantics)ZigClangAPFloatBase_Semantics_Float8E4M3B11FNUZ == llvm::APFloatBase::S_Float8E4M3B11FNUZ);
+static_assert((llvm::APFloatBase::Semantics)ZigClangAPFloatBase_Semantics_FloatTF32 == llvm::APFloatBase::S_FloatTF32);
+static_assert((llvm::APFloatBase::Semantics)ZigClangAPFloatBase_Semantics_x87DoubleExtended == llvm::APFloatBase::S_x87DoubleExtended);
+static_assert((llvm::APFloatBase::Semantics)ZigClangAPFloatBase_Semantics_MaxSemantics == llvm::APFloatBase::S_MaxSemantics);

@@ -1,17 +1,39 @@
-const Builder = @import("std").build.Builder;
+const std = @import("std");
+const builtin = @import("builtin");
 
-pub fn build(b: *Builder) void {
-    const opts = b.standardReleaseOptions();
+pub fn build(b: *std.Build) void {
+    const test_step = b.step("test", "Test it");
+    b.default_step = test_step;
 
-    const lib = b.addSharedLibrary("add", "add.zig", b.version(1, 0, 0));
-    lib.setBuildMode(opts);
+    const optimize: std.builtin.OptimizeMode = .Debug;
+    const target: std.zig.CrossTarget = .{};
 
-    const main = b.addExecutable("main", "main.zig");
-    main.setBuildMode(opts);
+    if (builtin.os.tag == .wasi) return;
 
-    const run = main.run();
+    if (builtin.os.tag == .windows) {
+        // https://github.com/ziglang/zig/issues/16960
+        return;
+    }
+
+    const lib = b.addSharedLibrary(.{
+        .name = "add",
+        .root_source_file = .{ .path = "add.zig" },
+        .version = .{ .major = 1, .minor = 0, .patch = 0 },
+        .optimize = optimize,
+        .target = target,
+    });
+
+    const main = b.addExecutable(.{
+        .name = "main",
+        .root_source_file = .{ .path = "main.zig" },
+        .optimize = optimize,
+        .target = target,
+    });
+
+    const run = b.addRunArtifact(main);
     run.addArtifactArg(lib);
+    run.skip_foreign_checks = true;
+    run.expectExitCode(0);
 
-    const test_step = b.step("test", "Test the program");
     test_step.dependOn(&run.step);
 }

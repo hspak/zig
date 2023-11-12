@@ -79,6 +79,7 @@
 
 #include <sys/cdefs.h>
 
+
 #define VM_64_BIT_DATA_OBJECTS
 
 typedef unsigned long long      memory_object_offset_t;
@@ -95,6 +96,11 @@ typedef unsigned long long      vm_object_id_t;
 
 
 typedef mach_port_t     memory_object_t;
+/*
+ * vestigial, maintained for source compatibility,
+ * no MIG interface will accept or return non NULL
+ * objects for those.
+ */
 typedef mach_port_t     memory_object_control_t;
 
 
@@ -151,6 +157,12 @@ typedef int             memory_object_copy_strategy_t;
  *	examined without also
  *	examining pager_ready and
  *	internal.
+ */
+
+#define         MEMORY_OBJECT_COPY_DELAY_FORK   6
+/*
+ * ...  Like MEMORY_OBJECT_COPY_DELAY for vm_map_fork() but like
+ *      MEMORY_OBJECT_COPY_NONE otherwise.
  */
 
 typedef int             memory_object_return_t;

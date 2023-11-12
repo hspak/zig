@@ -91,6 +91,7 @@ struct ZigClangAPFloat;
 struct ZigClangAPInt;
 struct ZigClangAPSInt;
 struct ZigClangASTContext;
+struct ZigClangASTRecordLayout;
 struct ZigClangASTUnit;
 struct ZigClangArraySubscriptExpr;
 struct ZigClangArrayType;
@@ -102,7 +103,9 @@ struct ZigClangBuiltinType;
 struct ZigClangCStyleCastExpr;
 struct ZigClangCallExpr;
 struct ZigClangCaseStmt;
+struct ZigClangCastExpr;
 struct ZigClangCharacterLiteral;
+struct ZigClangChooseExpr;
 struct ZigClangCompoundAssignOperator;
 struct ZigClangCompoundStmt;
 struct ZigClangConditionalOperator;
@@ -124,6 +127,7 @@ struct ZigClangEnumType;
 struct ZigClangExpr;
 struct ZigClangFieldDecl;
 struct ZigClangFileID;
+struct ZigClangFileScopeAsmDecl;
 struct ZigClangFloatingLiteral;
 struct ZigClangForStmt;
 struct ZigClangFullSourceLoc;
@@ -248,6 +252,8 @@ enum ZigClangTypeClass {
     ZigClangType_VariableArray,
     ZigClangType_Atomic,
     ZigClangType_Attributed,
+    ZigClangType_BTFTagAttributed,
+    ZigClangType_BitInt,
     ZigClangType_BlockPointer,
     ZigClangType_Builtin,
     ZigClangType_Complex,
@@ -255,13 +261,12 @@ enum ZigClangTypeClass {
     ZigClangType_Auto,
     ZigClangType_DeducedTemplateSpecialization,
     ZigClangType_DependentAddressSpace,
-    ZigClangType_DependentExtInt,
+    ZigClangType_DependentBitInt,
     ZigClangType_DependentName,
     ZigClangType_DependentSizedExtVector,
     ZigClangType_DependentTemplateSpecialization,
     ZigClangType_DependentVector,
     ZigClangType_Elaborated,
-    ZigClangType_ExtInt,
     ZigClangType_FunctionNoProto,
     ZigClangType_FunctionProto,
     ZigClangType_InjectedClassName,
@@ -290,6 +295,7 @@ enum ZigClangTypeClass {
     ZigClangType_Typedef,
     ZigClangType_UnaryTransform,
     ZigClangType_UnresolvedUsing,
+    ZigClangType_Using,
     ZigClangType_Vector,
     ZigClangType_ExtVector,
 };
@@ -315,41 +321,59 @@ enum ZigClangStmtClass {
     ZigClangStmt_IndirectGotoStmtClass,
     ZigClangStmt_MSDependentExistsStmtClass,
     ZigClangStmt_NullStmtClass,
+    ZigClangStmt_OMPCanonicalLoopClass,
     ZigClangStmt_OMPAtomicDirectiveClass,
     ZigClangStmt_OMPBarrierDirectiveClass,
     ZigClangStmt_OMPCancelDirectiveClass,
     ZigClangStmt_OMPCancellationPointDirectiveClass,
     ZigClangStmt_OMPCriticalDirectiveClass,
     ZigClangStmt_OMPDepobjDirectiveClass,
+    ZigClangStmt_OMPDispatchDirectiveClass,
+    ZigClangStmt_OMPErrorDirectiveClass,
     ZigClangStmt_OMPFlushDirectiveClass,
+    ZigClangStmt_OMPInteropDirectiveClass,
     ZigClangStmt_OMPDistributeDirectiveClass,
     ZigClangStmt_OMPDistributeParallelForDirectiveClass,
     ZigClangStmt_OMPDistributeParallelForSimdDirectiveClass,
     ZigClangStmt_OMPDistributeSimdDirectiveClass,
     ZigClangStmt_OMPForDirectiveClass,
     ZigClangStmt_OMPForSimdDirectiveClass,
+    ZigClangStmt_OMPGenericLoopDirectiveClass,
+    ZigClangStmt_OMPMaskedTaskLoopDirectiveClass,
+    ZigClangStmt_OMPMaskedTaskLoopSimdDirectiveClass,
     ZigClangStmt_OMPMasterTaskLoopDirectiveClass,
     ZigClangStmt_OMPMasterTaskLoopSimdDirectiveClass,
     ZigClangStmt_OMPParallelForDirectiveClass,
     ZigClangStmt_OMPParallelForSimdDirectiveClass,
+    ZigClangStmt_OMPParallelGenericLoopDirectiveClass,
+    ZigClangStmt_OMPParallelMaskedTaskLoopDirectiveClass,
+    ZigClangStmt_OMPParallelMaskedTaskLoopSimdDirectiveClass,
     ZigClangStmt_OMPParallelMasterTaskLoopDirectiveClass,
     ZigClangStmt_OMPParallelMasterTaskLoopSimdDirectiveClass,
     ZigClangStmt_OMPSimdDirectiveClass,
     ZigClangStmt_OMPTargetParallelForSimdDirectiveClass,
+    ZigClangStmt_OMPTargetParallelGenericLoopDirectiveClass,
     ZigClangStmt_OMPTargetSimdDirectiveClass,
     ZigClangStmt_OMPTargetTeamsDistributeDirectiveClass,
     ZigClangStmt_OMPTargetTeamsDistributeParallelForDirectiveClass,
     ZigClangStmt_OMPTargetTeamsDistributeParallelForSimdDirectiveClass,
     ZigClangStmt_OMPTargetTeamsDistributeSimdDirectiveClass,
+    ZigClangStmt_OMPTargetTeamsGenericLoopDirectiveClass,
     ZigClangStmt_OMPTaskLoopDirectiveClass,
     ZigClangStmt_OMPTaskLoopSimdDirectiveClass,
     ZigClangStmt_OMPTeamsDistributeDirectiveClass,
     ZigClangStmt_OMPTeamsDistributeParallelForDirectiveClass,
     ZigClangStmt_OMPTeamsDistributeParallelForSimdDirectiveClass,
     ZigClangStmt_OMPTeamsDistributeSimdDirectiveClass,
+    ZigClangStmt_OMPTeamsGenericLoopDirectiveClass,
+    ZigClangStmt_OMPTileDirectiveClass,
+    ZigClangStmt_OMPUnrollDirectiveClass,
+    ZigClangStmt_OMPMaskedDirectiveClass,
     ZigClangStmt_OMPMasterDirectiveClass,
+    ZigClangStmt_OMPMetaDirectiveClass,
     ZigClangStmt_OMPOrderedDirectiveClass,
     ZigClangStmt_OMPParallelDirectiveClass,
+    ZigClangStmt_OMPParallelMaskedDirectiveClass,
     ZigClangStmt_OMPParallelMasterDirectiveClass,
     ZigClangStmt_OMPParallelSectionsDirectiveClass,
     ZigClangStmt_OMPScanDirectiveClass,
@@ -410,6 +434,7 @@ enum ZigClangStmtClass {
     ZigClangStmt_CXXNewExprClass,
     ZigClangStmt_CXXNoexceptExprClass,
     ZigClangStmt_CXXNullPtrLiteralExprClass,
+    ZigClangStmt_CXXParenListInitExprClass,
     ZigClangStmt_CXXPseudoDestructorExprClass,
     ZigClangStmt_CXXRewrittenBinaryOperatorClass,
     ZigClangStmt_CXXScalarValueInitExprClass,
@@ -495,6 +520,7 @@ enum ZigClangStmtClass {
     ZigClangStmt_PseudoObjectExprClass,
     ZigClangStmt_RecoveryExprClass,
     ZigClangStmt_RequiresExprClass,
+    ZigClangStmt_SYCLUniqueStableNameExprClass,
     ZigClangStmt_ShuffleVectorExprClass,
     ZigClangStmt_SizeOfPackExprClass,
     ZigClangStmt_SourceLocExprClass,
@@ -537,10 +563,13 @@ enum ZigClangCK {
     ZigClangCK_PointerToIntegral,
     ZigClangCK_PointerToBoolean,
     ZigClangCK_ToVoid,
+    ZigClangCK_MatrixCast,
     ZigClangCK_VectorSplat,
     ZigClangCK_IntegralCast,
     ZigClangCK_IntegralToBoolean,
     ZigClangCK_IntegralToFloating,
+    ZigClangCK_FloatingToFixedPoint,
+    ZigClangCK_FixedPointToFloating,
     ZigClangCK_FixedPointCast,
     ZigClangCK_FixedPointToIntegral,
     ZigClangCK_IntegralToFixedPoint,
@@ -587,9 +616,13 @@ enum ZigClangDeclKind {
     ZigClangDeclFileScopeAsm,
     ZigClangDeclFriend,
     ZigClangDeclFriendTemplate,
+    ZigClangDeclImplicitConceptSpecialization,
     ZigClangDeclImport,
     ZigClangDeclLifetimeExtendedTemporary,
     ZigClangDeclLinkageSpec,
+    ZigClangDeclUsing,
+    ZigClangDeclUsingEnum,
+    ZigClangDeclHLSLBuffer,
     ZigClangDeclLabel,
     ZigClangDeclNamespace,
     ZigClangDeclNamespaceAlias,
@@ -618,7 +651,7 @@ enum ZigClangDeclKind {
     ZigClangDeclTypeAlias,
     ZigClangDeclTypedef,
     ZigClangDeclUnresolvedUsingTypename,
-    ZigClangDeclUsing,
+    ZigClangDeclUnresolvedUsingIfExists,
     ZigClangDeclUsingDirective,
     ZigClangDeclUsingPack,
     ZigClangDeclUsingShadow,
@@ -647,6 +680,8 @@ enum ZigClangDeclKind {
     ZigClangDeclMSGuid,
     ZigClangDeclOMPDeclareMapper,
     ZigClangDeclOMPDeclareReduction,
+    ZigClangDeclTemplateParamObject,
+    ZigClangDeclUnnamedGlobalConstant,
     ZigClangDeclUnresolvedUsingValue,
     ZigClangDeclOMPAllocate,
     ZigClangDeclOMPRequires,
@@ -656,6 +691,7 @@ enum ZigClangDeclKind {
     ZigClangDeclPragmaDetectMismatch,
     ZigClangDeclRequiresExprBody,
     ZigClangDeclStaticAssert,
+    ZigClangDeclTopLevelStmt,
     ZigClangDeclTranslationUnit,
 };
 
@@ -704,10 +740,10 @@ enum ZigClangBuiltinTypeKind {
     ZigClangBuiltinTypeOCLIntelSubgroupAVCImeResult,
     ZigClangBuiltinTypeOCLIntelSubgroupAVCRefResult,
     ZigClangBuiltinTypeOCLIntelSubgroupAVCSicResult,
-    ZigClangBuiltinTypeOCLIntelSubgroupAVCImeResultSingleRefStreamout,
-    ZigClangBuiltinTypeOCLIntelSubgroupAVCImeResultDualRefStreamout,
-    ZigClangBuiltinTypeOCLIntelSubgroupAVCImeSingleRefStreamin,
-    ZigClangBuiltinTypeOCLIntelSubgroupAVCImeDualRefStreamin,
+    ZigClangBuiltinTypeOCLIntelSubgroupAVCImeResultSingleReferenceStreamout,
+    ZigClangBuiltinTypeOCLIntelSubgroupAVCImeResultDualReferenceStreamout,
+    ZigClangBuiltinTypeOCLIntelSubgroupAVCImeSingleReferenceStreamin,
+    ZigClangBuiltinTypeOCLIntelSubgroupAVCImeDualReferenceStreamin,
     ZigClangBuiltinTypeSveInt8,
     ZigClangBuiltinTypeSveInt16,
     ZigClangBuiltinTypeSveInt32,
@@ -757,6 +793,304 @@ enum ZigClangBuiltinTypeKind {
     ZigClangBuiltinTypeSveFloat64x4,
     ZigClangBuiltinTypeSveBFloat16x4,
     ZigClangBuiltinTypeSveBool,
+    ZigClangBuiltinTypeSveBoolx2,
+    ZigClangBuiltinTypeSveBoolx4,
+    ZigClangBuiltinTypeSveCount,
+    ZigClangBuiltinTypeVectorQuad,
+    ZigClangBuiltinTypeVectorPair,
+    ZigClangBuiltinTypeRvvInt8mf8,
+    ZigClangBuiltinTypeRvvInt8mf4,
+    ZigClangBuiltinTypeRvvInt8mf2,
+    ZigClangBuiltinTypeRvvInt8m1,
+    ZigClangBuiltinTypeRvvInt8m2,
+    ZigClangBuiltinTypeRvvInt8m4,
+    ZigClangBuiltinTypeRvvInt8m8,
+    ZigClangBuiltinTypeRvvUint8mf8,
+    ZigClangBuiltinTypeRvvUint8mf4,
+    ZigClangBuiltinTypeRvvUint8mf2,
+    ZigClangBuiltinTypeRvvUint8m1,
+    ZigClangBuiltinTypeRvvUint8m2,
+    ZigClangBuiltinTypeRvvUint8m4,
+    ZigClangBuiltinTypeRvvUint8m8,
+    ZigClangBuiltinTypeRvvInt16mf4,
+    ZigClangBuiltinTypeRvvInt16mf2,
+    ZigClangBuiltinTypeRvvInt16m1,
+    ZigClangBuiltinTypeRvvInt16m2,
+    ZigClangBuiltinTypeRvvInt16m4,
+    ZigClangBuiltinTypeRvvInt16m8,
+    ZigClangBuiltinTypeRvvUint16mf4,
+    ZigClangBuiltinTypeRvvUint16mf2,
+    ZigClangBuiltinTypeRvvUint16m1,
+    ZigClangBuiltinTypeRvvUint16m2,
+    ZigClangBuiltinTypeRvvUint16m4,
+    ZigClangBuiltinTypeRvvUint16m8,
+    ZigClangBuiltinTypeRvvInt32mf2,
+    ZigClangBuiltinTypeRvvInt32m1,
+    ZigClangBuiltinTypeRvvInt32m2,
+    ZigClangBuiltinTypeRvvInt32m4,
+    ZigClangBuiltinTypeRvvInt32m8,
+    ZigClangBuiltinTypeRvvUint32mf2,
+    ZigClangBuiltinTypeRvvUint32m1,
+    ZigClangBuiltinTypeRvvUint32m2,
+    ZigClangBuiltinTypeRvvUint32m4,
+    ZigClangBuiltinTypeRvvUint32m8,
+    ZigClangBuiltinTypeRvvInt64m1,
+    ZigClangBuiltinTypeRvvInt64m2,
+    ZigClangBuiltinTypeRvvInt64m4,
+    ZigClangBuiltinTypeRvvInt64m8,
+    ZigClangBuiltinTypeRvvUint64m1,
+    ZigClangBuiltinTypeRvvUint64m2,
+    ZigClangBuiltinTypeRvvUint64m4,
+    ZigClangBuiltinTypeRvvUint64m8,
+    ZigClangBuiltinTypeRvvFloat16mf4,
+    ZigClangBuiltinTypeRvvFloat16mf2,
+    ZigClangBuiltinTypeRvvFloat16m1,
+    ZigClangBuiltinTypeRvvFloat16m2,
+    ZigClangBuiltinTypeRvvFloat16m4,
+    ZigClangBuiltinTypeRvvFloat16m8,
+    ZigClangBuiltinTypeRvvFloat32mf2,
+    ZigClangBuiltinTypeRvvFloat32m1,
+    ZigClangBuiltinTypeRvvFloat32m2,
+    ZigClangBuiltinTypeRvvFloat32m4,
+    ZigClangBuiltinTypeRvvFloat32m8,
+    ZigClangBuiltinTypeRvvFloat64m1,
+    ZigClangBuiltinTypeRvvFloat64m2,
+    ZigClangBuiltinTypeRvvFloat64m4,
+    ZigClangBuiltinTypeRvvFloat64m8,
+    ZigClangBuiltinTypeRvvBool1,
+    ZigClangBuiltinTypeRvvBool2,
+    ZigClangBuiltinTypeRvvBool4,
+    ZigClangBuiltinTypeRvvBool8,
+    ZigClangBuiltinTypeRvvBool16,
+    ZigClangBuiltinTypeRvvBool32,
+    ZigClangBuiltinTypeRvvBool64,
+    ZigClangBuiltinTypeRvvInt8mf8x2,
+    ZigClangBuiltinTypeRvvInt8mf8x3,
+    ZigClangBuiltinTypeRvvInt8mf8x4,
+    ZigClangBuiltinTypeRvvInt8mf8x5,
+    ZigClangBuiltinTypeRvvInt8mf8x6,
+    ZigClangBuiltinTypeRvvInt8mf8x7,
+    ZigClangBuiltinTypeRvvInt8mf8x8,
+    ZigClangBuiltinTypeRvvInt8mf4x2,
+    ZigClangBuiltinTypeRvvInt8mf4x3,
+    ZigClangBuiltinTypeRvvInt8mf4x4,
+    ZigClangBuiltinTypeRvvInt8mf4x5,
+    ZigClangBuiltinTypeRvvInt8mf4x6,
+    ZigClangBuiltinTypeRvvInt8mf4x7,
+    ZigClangBuiltinTypeRvvInt8mf4x8,
+    ZigClangBuiltinTypeRvvInt8mf2x2,
+    ZigClangBuiltinTypeRvvInt8mf2x3,
+    ZigClangBuiltinTypeRvvInt8mf2x4,
+    ZigClangBuiltinTypeRvvInt8mf2x5,
+    ZigClangBuiltinTypeRvvInt8mf2x6,
+    ZigClangBuiltinTypeRvvInt8mf2x7,
+    ZigClangBuiltinTypeRvvInt8mf2x8,
+    ZigClangBuiltinTypeRvvInt8m1x2,
+    ZigClangBuiltinTypeRvvInt8m1x3,
+    ZigClangBuiltinTypeRvvInt8m1x4,
+    ZigClangBuiltinTypeRvvInt8m1x5,
+    ZigClangBuiltinTypeRvvInt8m1x6,
+    ZigClangBuiltinTypeRvvInt8m1x7,
+    ZigClangBuiltinTypeRvvInt8m1x8,
+    ZigClangBuiltinTypeRvvInt8m2x2,
+    ZigClangBuiltinTypeRvvInt8m2x3,
+    ZigClangBuiltinTypeRvvInt8m2x4,
+    ZigClangBuiltinTypeRvvInt8m4x2,
+    ZigClangBuiltinTypeRvvUint8mf8x2,
+    ZigClangBuiltinTypeRvvUint8mf8x3,
+    ZigClangBuiltinTypeRvvUint8mf8x4,
+    ZigClangBuiltinTypeRvvUint8mf8x5,
+    ZigClangBuiltinTypeRvvUint8mf8x6,
+    ZigClangBuiltinTypeRvvUint8mf8x7,
+    ZigClangBuiltinTypeRvvUint8mf8x8,
+    ZigClangBuiltinTypeRvvUint8mf4x2,
+    ZigClangBuiltinTypeRvvUint8mf4x3,
+    ZigClangBuiltinTypeRvvUint8mf4x4,
+    ZigClangBuiltinTypeRvvUint8mf4x5,
+    ZigClangBuiltinTypeRvvUint8mf4x6,
+    ZigClangBuiltinTypeRvvUint8mf4x7,
+    ZigClangBuiltinTypeRvvUint8mf4x8,
+    ZigClangBuiltinTypeRvvUint8mf2x2,
+    ZigClangBuiltinTypeRvvUint8mf2x3,
+    ZigClangBuiltinTypeRvvUint8mf2x4,
+    ZigClangBuiltinTypeRvvUint8mf2x5,
+    ZigClangBuiltinTypeRvvUint8mf2x6,
+    ZigClangBuiltinTypeRvvUint8mf2x7,
+    ZigClangBuiltinTypeRvvUint8mf2x8,
+    ZigClangBuiltinTypeRvvUint8m1x2,
+    ZigClangBuiltinTypeRvvUint8m1x3,
+    ZigClangBuiltinTypeRvvUint8m1x4,
+    ZigClangBuiltinTypeRvvUint8m1x5,
+    ZigClangBuiltinTypeRvvUint8m1x6,
+    ZigClangBuiltinTypeRvvUint8m1x7,
+    ZigClangBuiltinTypeRvvUint8m1x8,
+    ZigClangBuiltinTypeRvvUint8m2x2,
+    ZigClangBuiltinTypeRvvUint8m2x3,
+    ZigClangBuiltinTypeRvvUint8m2x4,
+    ZigClangBuiltinTypeRvvUint8m4x2,
+    ZigClangBuiltinTypeRvvInt16mf4x2,
+    ZigClangBuiltinTypeRvvInt16mf4x3,
+    ZigClangBuiltinTypeRvvInt16mf4x4,
+    ZigClangBuiltinTypeRvvInt16mf4x5,
+    ZigClangBuiltinTypeRvvInt16mf4x6,
+    ZigClangBuiltinTypeRvvInt16mf4x7,
+    ZigClangBuiltinTypeRvvInt16mf4x8,
+    ZigClangBuiltinTypeRvvInt16mf2x2,
+    ZigClangBuiltinTypeRvvInt16mf2x3,
+    ZigClangBuiltinTypeRvvInt16mf2x4,
+    ZigClangBuiltinTypeRvvInt16mf2x5,
+    ZigClangBuiltinTypeRvvInt16mf2x6,
+    ZigClangBuiltinTypeRvvInt16mf2x7,
+    ZigClangBuiltinTypeRvvInt16mf2x8,
+    ZigClangBuiltinTypeRvvInt16m1x2,
+    ZigClangBuiltinTypeRvvInt16m1x3,
+    ZigClangBuiltinTypeRvvInt16m1x4,
+    ZigClangBuiltinTypeRvvInt16m1x5,
+    ZigClangBuiltinTypeRvvInt16m1x6,
+    ZigClangBuiltinTypeRvvInt16m1x7,
+    ZigClangBuiltinTypeRvvInt16m1x8,
+    ZigClangBuiltinTypeRvvInt16m2x2,
+    ZigClangBuiltinTypeRvvInt16m2x3,
+    ZigClangBuiltinTypeRvvInt16m2x4,
+    ZigClangBuiltinTypeRvvInt16m4x2,
+    ZigClangBuiltinTypeRvvUint16mf4x2,
+    ZigClangBuiltinTypeRvvUint16mf4x3,
+    ZigClangBuiltinTypeRvvUint16mf4x4,
+    ZigClangBuiltinTypeRvvUint16mf4x5,
+    ZigClangBuiltinTypeRvvUint16mf4x6,
+    ZigClangBuiltinTypeRvvUint16mf4x7,
+    ZigClangBuiltinTypeRvvUint16mf4x8,
+    ZigClangBuiltinTypeRvvUint16mf2x2,
+    ZigClangBuiltinTypeRvvUint16mf2x3,
+    ZigClangBuiltinTypeRvvUint16mf2x4,
+    ZigClangBuiltinTypeRvvUint16mf2x5,
+    ZigClangBuiltinTypeRvvUint16mf2x6,
+    ZigClangBuiltinTypeRvvUint16mf2x7,
+    ZigClangBuiltinTypeRvvUint16mf2x8,
+    ZigClangBuiltinTypeRvvUint16m1x2,
+    ZigClangBuiltinTypeRvvUint16m1x3,
+    ZigClangBuiltinTypeRvvUint16m1x4,
+    ZigClangBuiltinTypeRvvUint16m1x5,
+    ZigClangBuiltinTypeRvvUint16m1x6,
+    ZigClangBuiltinTypeRvvUint16m1x7,
+    ZigClangBuiltinTypeRvvUint16m1x8,
+    ZigClangBuiltinTypeRvvUint16m2x2,
+    ZigClangBuiltinTypeRvvUint16m2x3,
+    ZigClangBuiltinTypeRvvUint16m2x4,
+    ZigClangBuiltinTypeRvvUint16m4x2,
+    ZigClangBuiltinTypeRvvInt32mf2x2,
+    ZigClangBuiltinTypeRvvInt32mf2x3,
+    ZigClangBuiltinTypeRvvInt32mf2x4,
+    ZigClangBuiltinTypeRvvInt32mf2x5,
+    ZigClangBuiltinTypeRvvInt32mf2x6,
+    ZigClangBuiltinTypeRvvInt32mf2x7,
+    ZigClangBuiltinTypeRvvInt32mf2x8,
+    ZigClangBuiltinTypeRvvInt32m1x2,
+    ZigClangBuiltinTypeRvvInt32m1x3,
+    ZigClangBuiltinTypeRvvInt32m1x4,
+    ZigClangBuiltinTypeRvvInt32m1x5,
+    ZigClangBuiltinTypeRvvInt32m1x6,
+    ZigClangBuiltinTypeRvvInt32m1x7,
+    ZigClangBuiltinTypeRvvInt32m1x8,
+    ZigClangBuiltinTypeRvvInt32m2x2,
+    ZigClangBuiltinTypeRvvInt32m2x3,
+    ZigClangBuiltinTypeRvvInt32m2x4,
+    ZigClangBuiltinTypeRvvInt32m4x2,
+    ZigClangBuiltinTypeRvvUint32mf2x2,
+    ZigClangBuiltinTypeRvvUint32mf2x3,
+    ZigClangBuiltinTypeRvvUint32mf2x4,
+    ZigClangBuiltinTypeRvvUint32mf2x5,
+    ZigClangBuiltinTypeRvvUint32mf2x6,
+    ZigClangBuiltinTypeRvvUint32mf2x7,
+    ZigClangBuiltinTypeRvvUint32mf2x8,
+    ZigClangBuiltinTypeRvvUint32m1x2,
+    ZigClangBuiltinTypeRvvUint32m1x3,
+    ZigClangBuiltinTypeRvvUint32m1x4,
+    ZigClangBuiltinTypeRvvUint32m1x5,
+    ZigClangBuiltinTypeRvvUint32m1x6,
+    ZigClangBuiltinTypeRvvUint32m1x7,
+    ZigClangBuiltinTypeRvvUint32m1x8,
+    ZigClangBuiltinTypeRvvUint32m2x2,
+    ZigClangBuiltinTypeRvvUint32m2x3,
+    ZigClangBuiltinTypeRvvUint32m2x4,
+    ZigClangBuiltinTypeRvvUint32m4x2,
+    ZigClangBuiltinTypeRvvInt64m1x2,
+    ZigClangBuiltinTypeRvvInt64m1x3,
+    ZigClangBuiltinTypeRvvInt64m1x4,
+    ZigClangBuiltinTypeRvvInt64m1x5,
+    ZigClangBuiltinTypeRvvInt64m1x6,
+    ZigClangBuiltinTypeRvvInt64m1x7,
+    ZigClangBuiltinTypeRvvInt64m1x8,
+    ZigClangBuiltinTypeRvvInt64m2x2,
+    ZigClangBuiltinTypeRvvInt64m2x3,
+    ZigClangBuiltinTypeRvvInt64m2x4,
+    ZigClangBuiltinTypeRvvInt64m4x2,
+    ZigClangBuiltinTypeRvvUint64m1x2,
+    ZigClangBuiltinTypeRvvUint64m1x3,
+    ZigClangBuiltinTypeRvvUint64m1x4,
+    ZigClangBuiltinTypeRvvUint64m1x5,
+    ZigClangBuiltinTypeRvvUint64m1x6,
+    ZigClangBuiltinTypeRvvUint64m1x7,
+    ZigClangBuiltinTypeRvvUint64m1x8,
+    ZigClangBuiltinTypeRvvUint64m2x2,
+    ZigClangBuiltinTypeRvvUint64m2x3,
+    ZigClangBuiltinTypeRvvUint64m2x4,
+    ZigClangBuiltinTypeRvvUint64m4x2,
+    ZigClangBuiltinTypeRvvFloat16mf4x2,
+    ZigClangBuiltinTypeRvvFloat16mf4x3,
+    ZigClangBuiltinTypeRvvFloat16mf4x4,
+    ZigClangBuiltinTypeRvvFloat16mf4x5,
+    ZigClangBuiltinTypeRvvFloat16mf4x6,
+    ZigClangBuiltinTypeRvvFloat16mf4x7,
+    ZigClangBuiltinTypeRvvFloat16mf4x8,
+    ZigClangBuiltinTypeRvvFloat16mf2x2,
+    ZigClangBuiltinTypeRvvFloat16mf2x3,
+    ZigClangBuiltinTypeRvvFloat16mf2x4,
+    ZigClangBuiltinTypeRvvFloat16mf2x5,
+    ZigClangBuiltinTypeRvvFloat16mf2x6,
+    ZigClangBuiltinTypeRvvFloat16mf2x7,
+    ZigClangBuiltinTypeRvvFloat16mf2x8,
+    ZigClangBuiltinTypeRvvFloat16m1x2,
+    ZigClangBuiltinTypeRvvFloat16m1x3,
+    ZigClangBuiltinTypeRvvFloat16m1x4,
+    ZigClangBuiltinTypeRvvFloat16m1x5,
+    ZigClangBuiltinTypeRvvFloat16m1x6,
+    ZigClangBuiltinTypeRvvFloat16m1x7,
+    ZigClangBuiltinTypeRvvFloat16m1x8,
+    ZigClangBuiltinTypeRvvFloat16m2x2,
+    ZigClangBuiltinTypeRvvFloat16m2x3,
+    ZigClangBuiltinTypeRvvFloat16m2x4,
+    ZigClangBuiltinTypeRvvFloat16m4x2,
+    ZigClangBuiltinTypeRvvFloat32mf2x2,
+    ZigClangBuiltinTypeRvvFloat32mf2x3,
+    ZigClangBuiltinTypeRvvFloat32mf2x4,
+    ZigClangBuiltinTypeRvvFloat32mf2x5,
+    ZigClangBuiltinTypeRvvFloat32mf2x6,
+    ZigClangBuiltinTypeRvvFloat32mf2x7,
+    ZigClangBuiltinTypeRvvFloat32mf2x8,
+    ZigClangBuiltinTypeRvvFloat32m1x2,
+    ZigClangBuiltinTypeRvvFloat32m1x3,
+    ZigClangBuiltinTypeRvvFloat32m1x4,
+    ZigClangBuiltinTypeRvvFloat32m1x5,
+    ZigClangBuiltinTypeRvvFloat32m1x6,
+    ZigClangBuiltinTypeRvvFloat32m1x7,
+    ZigClangBuiltinTypeRvvFloat32m1x8,
+    ZigClangBuiltinTypeRvvFloat32m2x2,
+    ZigClangBuiltinTypeRvvFloat32m2x3,
+    ZigClangBuiltinTypeRvvFloat32m2x4,
+    ZigClangBuiltinTypeRvvFloat32m4x2,
+    ZigClangBuiltinTypeRvvFloat64m1x2,
+    ZigClangBuiltinTypeRvvFloat64m1x3,
+    ZigClangBuiltinTypeRvvFloat64m1x4,
+    ZigClangBuiltinTypeRvvFloat64m1x5,
+    ZigClangBuiltinTypeRvvFloat64m1x6,
+    ZigClangBuiltinTypeRvvFloat64m1x7,
+    ZigClangBuiltinTypeRvvFloat64m1x8,
+    ZigClangBuiltinTypeRvvFloat64m2x2,
+    ZigClangBuiltinTypeRvvFloat64m2x3,
+    ZigClangBuiltinTypeRvvFloat64m2x4,
+    ZigClangBuiltinTypeRvvFloat64m4x2,
+    ZigClangBuiltinTypeWasmExternRef,
     ZigClangBuiltinTypeVoid,
     ZigClangBuiltinTypeBool,
     ZigClangBuiltinTypeChar_U,
@@ -809,6 +1143,7 @@ enum ZigClangBuiltinTypeKind {
     ZigClangBuiltinTypeFloat16,
     ZigClangBuiltinTypeBFloat16,
     ZigClangBuiltinTypeFloat128,
+    ZigClangBuiltinTypeIbm128,
     ZigClangBuiltinTypeNullPtr,
     ZigClangBuiltinTypeObjCId,
     ZigClangBuiltinTypeObjCClass,
@@ -832,24 +1167,27 @@ enum ZigClangBuiltinTypeKind {
 };
 
 enum ZigClangCallingConv {
-    ZigClangCallingConv_C,           // __attribute__((cdecl))
-    ZigClangCallingConv_X86StdCall,  // __attribute__((stdcall))
-    ZigClangCallingConv_X86FastCall, // __attribute__((fastcall))
-    ZigClangCallingConv_X86ThisCall, // __attribute__((thiscall))
-    ZigClangCallingConv_X86VectorCall, // __attribute__((vectorcall))
-    ZigClangCallingConv_X86Pascal,   // __attribute__((pascal))
-    ZigClangCallingConv_Win64,       // __attribute__((ms_abi))
-    ZigClangCallingConv_X86_64SysV,  // __attribute__((sysv_abi))
-    ZigClangCallingConv_X86RegCall, // __attribute__((regcall))
-    ZigClangCallingConv_AAPCS,       // __attribute__((pcs("aapcs")))
-    ZigClangCallingConv_AAPCS_VFP,   // __attribute__((pcs("aapcs-vfp")))
-    ZigClangCallingConv_IntelOclBicc, // __attribute__((intel_ocl_bicc))
-    ZigClangCallingConv_SpirFunction, // default for OpenCL functions on SPIR target
-    ZigClangCallingConv_OpenCLKernel, // inferred for OpenCL kernels
-    ZigClangCallingConv_Swift,        // __attribute__((swiftcall))
-    ZigClangCallingConv_PreserveMost, // __attribute__((preserve_most))
-    ZigClangCallingConv_PreserveAll,  // __attribute__((preserve_all))
-    ZigClangCallingConv_AArch64VectorCall, // __attribute__((aarch64_vector_pcs))
+    ZigClangCallingConv_C,
+    ZigClangCallingConv_X86StdCall,
+    ZigClangCallingConv_X86FastCall,
+    ZigClangCallingConv_X86ThisCall,
+    ZigClangCallingConv_X86VectorCall,
+    ZigClangCallingConv_X86Pascal,
+    ZigClangCallingConv_Win64,
+    ZigClangCallingConv_X86_64SysV,
+    ZigClangCallingConv_X86RegCall,
+    ZigClangCallingConv_AAPCS,
+    ZigClangCallingConv_AAPCS_VFP,
+    ZigClangCallingConv_IntelOclBicc,
+    ZigClangCallingConv_SpirFunction,
+    ZigClangCallingConv_OpenCLKernel,
+    ZigClangCallingConv_Swift,
+    ZigClangCallingConv_SwiftAsync,
+    ZigClangCallingConv_PreserveMost,
+    ZigClangCallingConv_PreserveAll,
+    ZigClangCallingConv_AArch64VectorCall,
+    ZigClangCallingConv_AArch64SVEPCS,
+    ZigClangCallingConv_AMDGPUKernelCall,
 };
 
 enum ZigClangStorageClass {
@@ -874,6 +1212,23 @@ enum ZigClangAPFloat_roundingMode {
 
     ZigClangAPFloat_roundingMode_Dynamic = 7,
     ZigClangAPFloat_roundingMode_Invalid = -1,
+};
+
+enum ZigClangAPFloatBase_Semantics {
+    ZigClangAPFloatBase_Semantics_IEEEhalf,
+    ZigClangAPFloatBase_Semantics_BFloat,
+    ZigClangAPFloatBase_Semantics_IEEEsingle,
+    ZigClangAPFloatBase_Semantics_IEEEdouble,
+    ZigClangAPFloatBase_Semantics_IEEEquad,
+    ZigClangAPFloatBase_Semantics_PPCDoubleDouble,
+    ZigClangAPFloatBase_Semantics_Float8E5M2,
+    ZigClangAPFloatBase_Semantics_Float8E5M2FNUZ,
+    ZigClangAPFloatBase_Semantics_Float8E4M3FN,
+    ZigClangAPFloatBase_Semantics_Float8E4M3FNUZ,
+    ZigClangAPFloatBase_Semantics_Float8E4M3B11FNUZ,
+    ZigClangAPFloatBase_Semantics_FloatTF32,
+    ZigClangAPFloatBase_Semantics_x87DoubleExtended,
+    ZigClangAPFloatBase_Semantics_MaxSemantics = ZigClangAPFloatBase_Semantics_x87DoubleExtended,
 };
 
 enum ZigClangStringLiteral_StringKind {
@@ -915,9 +1270,11 @@ enum ZigClangPreprocessedEntity_EntityKind {
     ZigClangPreprocessedEntity_InclusionDirectiveKind,
 };
 
-enum ZigClangExpr_ConstExprUsage {
-    ZigClangExpr_EvaluateForCodeGen,
-    ZigClangExpr_EvaluateForMangling,
+enum ZigClangExpr_ConstantExprKind {
+    ZigClangExpr_ConstantExprKind_Normal,
+    ZigClangExpr_ConstantExprKind_NonClassTemplateArgument,
+    ZigClangExpr_ConstantExprKind_ClassTemplateArgument,
+    ZigClangExpr_ConstantExprKind_ImmediateInvocation,
 };
 
 enum ZigClangUnaryExprOrTypeTrait_Kind {
@@ -948,9 +1305,12 @@ ZIG_EXTERN_C const char* ZigClangSourceManager_getCharacterData(const struct Zig
 
 ZIG_EXTERN_C struct ZigClangQualType ZigClangASTContext_getPointerType(const struct ZigClangASTContext*, struct ZigClangQualType T);
 
+ZIG_EXTERN_C struct ZigClangSourceLocation ZigClangLexer_getLocForEndOfToken(struct ZigClangSourceLocation,
+        const ZigClangSourceManager *, const ZigClangASTUnit *);
 
 // Can return null.
-ZIG_EXTERN_C struct ZigClangASTUnit *ZigClangLoadFromCommandLine(const char **args_begin, const char **args_end,
+ZIG_EXTERN_C struct ZigClangASTUnit *ZigClangLoadFromCommandLine(
+        const char **args_begin, const char **args_end,
         struct Stage2ErrorMsg **errors_ptr, size_t *errors_len, const char *resources_path);
 ZIG_EXTERN_C void ZigClangASTUnit_delete(struct ZigClangASTUnit *);
 ZIG_EXTERN_C void ZigClangErrorMsg_delete(struct Stage2ErrorMsg *ptr, size_t len);
@@ -979,9 +1339,14 @@ ZIG_EXTERN_C const struct ZigClangTypedefNameDecl *ZigClangTypedefNameDecl_getCa
 ZIG_EXTERN_C const struct ZigClangFunctionDecl *ZigClangFunctionDecl_getCanonicalDecl(const ZigClangFunctionDecl *self);
 ZIG_EXTERN_C const struct ZigClangVarDecl *ZigClangVarDecl_getCanonicalDecl(const ZigClangVarDecl *self);
 ZIG_EXTERN_C const char* ZigClangVarDecl_getSectionAttribute(const struct ZigClangVarDecl *self, size_t *len);
+ZIG_EXTERN_C const struct ZigClangFunctionDecl *ZigClangVarDecl_getCleanupAttribute(const struct ZigClangVarDecl *self);
 ZIG_EXTERN_C unsigned ZigClangVarDecl_getAlignedAttribute(const struct ZigClangVarDecl *self, const ZigClangASTContext* ctx);
 ZIG_EXTERN_C unsigned ZigClangFunctionDecl_getAlignedAttribute(const struct ZigClangFunctionDecl *self, const ZigClangASTContext* ctx);
 ZIG_EXTERN_C unsigned ZigClangFieldDecl_getAlignedAttribute(const struct ZigClangFieldDecl *self, const ZigClangASTContext* ctx);
+ZIG_EXTERN_C bool ZigClangVarDecl_getPackedAttribute(const struct ZigClangVarDecl *self);
+ZIG_EXTERN_C bool ZigClangFieldDecl_getPackedAttribute(const struct ZigClangFieldDecl *self);
+
+ZIG_EXTERN_C const struct ZigClangStringLiteral *ZigClangFileScopeAsmDecl_getAsmString(const struct ZigClangFileScopeAsmDecl *self);
 
 ZIG_EXTERN_C struct ZigClangQualType ZigClangParmVarDecl_getOriginalType(const struct ZigClangParmVarDecl *self);
 
@@ -994,6 +1359,11 @@ ZIG_EXTERN_C struct ZigClangSourceLocation ZigClangEnumDecl_getLocation(const st
 ZIG_EXTERN_C struct ZigClangSourceLocation ZigClangTypedefNameDecl_getLocation(const struct ZigClangTypedefNameDecl *);
 ZIG_EXTERN_C struct ZigClangSourceLocation ZigClangDecl_getLocation(const struct ZigClangDecl *);
 
+ZIG_EXTERN_C const struct ZigClangASTRecordLayout *ZigClangRecordDecl_getASTRecordLayout(const struct ZigClangRecordDecl *, const struct ZigClangASTContext *);
+
+ZIG_EXTERN_C uint64_t ZigClangASTRecordLayout_getFieldOffset(const struct ZigClangASTRecordLayout *, unsigned);
+ZIG_EXTERN_C int64_t ZigClangASTRecordLayout_getAlignment(const struct ZigClangASTRecordLayout *);
+
 ZIG_EXTERN_C struct ZigClangQualType ZigClangFunctionDecl_getType(const struct ZigClangFunctionDecl *);
 ZIG_EXTERN_C struct ZigClangSourceLocation ZigClangFunctionDecl_getLocation(const struct ZigClangFunctionDecl *);
 ZIG_EXTERN_C bool ZigClangFunctionDecl_hasBody(const struct ZigClangFunctionDecl *);
@@ -1004,6 +1374,7 @@ ZIG_EXTERN_C bool ZigClangFunctionDecl_doesDeclarationForceExternallyVisibleDefi
 ZIG_EXTERN_C bool ZigClangFunctionDecl_isThisDeclarationADefinition(const struct ZigClangFunctionDecl *);
 ZIG_EXTERN_C bool ZigClangFunctionDecl_doesThisDeclarationHaveABody(const struct ZigClangFunctionDecl *);
 ZIG_EXTERN_C bool ZigClangFunctionDecl_isInlineSpecified(const struct ZigClangFunctionDecl *);
+ZIG_EXTERN_C bool ZigClangFunctionDecl_hasAlwaysInlineAttr(const struct ZigClangFunctionDecl *);
 ZIG_EXTERN_C bool ZigClangFunctionDecl_isDefined(const struct ZigClangFunctionDecl *);
 ZIG_EXTERN_C const struct ZigClangFunctionDecl* ZigClangFunctionDecl_getDefinition(const struct ZigClangFunctionDecl *);
 ZIG_EXTERN_C const char* ZigClangFunctionDecl_getSectionAttribute(const struct ZigClangFunctionDecl *, size_t *);
@@ -1043,6 +1414,7 @@ ZIG_EXTERN_C bool ZigClangVarDecl_hasInit(const struct ZigClangVarDecl *);
 ZIG_EXTERN_C const struct ZigClangAPValue *ZigClangVarDecl_evaluateValue(const struct ZigClangVarDecl *);
 ZIG_EXTERN_C struct ZigClangQualType ZigClangVarDecl_getTypeSourceInfo_getType(const struct ZigClangVarDecl *);
 ZIG_EXTERN_C enum ZigClangStorageClass ZigClangVarDecl_getStorageClass(const struct ZigClangVarDecl *self);
+ZIG_EXTERN_C bool ZigClangVarDecl_isStaticLocal(const struct ZigClangVarDecl *self);
 
 ZIG_EXTERN_C bool ZigClangSourceLocation_eq(struct ZigClangSourceLocation a, struct ZigClangSourceLocation b);
 
@@ -1064,6 +1436,7 @@ ZIG_EXTERN_C bool ZigClangType_isBooleanType(const struct ZigClangType *self);
 ZIG_EXTERN_C bool ZigClangType_isVoidType(const struct ZigClangType *self);
 ZIG_EXTERN_C bool ZigClangType_isArrayType(const struct ZigClangType *self);
 ZIG_EXTERN_C bool ZigClangType_isRecordType(const struct ZigClangType *self);
+ZIG_EXTERN_C bool ZigClangType_isVectorType(const struct ZigClangType *self);
 ZIG_EXTERN_C bool ZigClangType_isIncompleteOrZeroLengthArrayType(const ZigClangQualType *self, const struct ZigClangASTContext *ctx);
 ZIG_EXTERN_C bool ZigClangType_isConstantArrayType(const ZigClangType *self);
 ZIG_EXTERN_C const char *ZigClangType_getTypeClassName(const struct ZigClangType *self);
@@ -1083,10 +1456,13 @@ ZIG_EXTERN_C bool ZigClangExpr_EvaluateAsBooleanCondition(const struct ZigClangE
 ZIG_EXTERN_C bool ZigClangExpr_EvaluateAsFloat(const struct ZigClangExpr *self,
         ZigClangAPFloat **result, const struct ZigClangASTContext *ctx);
 ZIG_EXTERN_C bool ZigClangExpr_EvaluateAsConstantExpr(const struct ZigClangExpr *,
-        struct ZigClangExprEvalResult *, ZigClangExpr_ConstExprUsage, const struct ZigClangASTContext *);
+        struct ZigClangExprEvalResult *, ZigClangExpr_ConstantExprKind, const struct ZigClangASTContext *);
+ZIG_EXTERN_C const struct ZigClangStringLiteral *ZigClangExpr_castToStringLiteral(const struct ZigClangExpr *self);
 
 ZIG_EXTERN_C const ZigClangExpr *ZigClangInitListExpr_getInit(const ZigClangInitListExpr *, unsigned);
 ZIG_EXTERN_C const ZigClangExpr *ZigClangInitListExpr_getArrayFiller(const ZigClangInitListExpr *);
+ZIG_EXTERN_C bool ZigClangInitListExpr_hasArrayFiller(const ZigClangInitListExpr *);
+ZIG_EXTERN_C bool ZigClangInitListExpr_isStringLiteralInit(const ZigClangInitListExpr *);
 ZIG_EXTERN_C unsigned ZigClangInitListExpr_getNumInits(const ZigClangInitListExpr *);
 ZIG_EXTERN_C const ZigClangFieldDecl *ZigClangInitListExpr_getInitializedFieldInUnion(const ZigClangInitListExpr *self);
 
@@ -1134,8 +1510,12 @@ ZIG_EXTERN_C struct ZigClangSourceLocation ZigClangDeclStmt_getBeginLoc(const st
 ZIG_EXTERN_C unsigned ZigClangAPFloat_convertToHexString(const struct ZigClangAPFloat *self, char *DST,
         unsigned HexDigits, bool UpperCase, enum ZigClangAPFloat_roundingMode RM);
 ZIG_EXTERN_C double ZigClangFloatingLiteral_getValueAsApproximateDouble(const ZigClangFloatingLiteral *self);
+ZIG_EXTERN_C struct ZigClangSourceLocation ZigClangFloatingLiteral_getBeginLoc(const struct ZigClangFloatingLiteral *);
+ZIG_EXTERN_C ZigClangAPFloatBase_Semantics ZigClangFloatingLiteral_getRawSemantics(const ZigClangFloatingLiteral *self);
 
-ZIG_EXTERN_C enum ZigClangStringLiteral_StringKind ZigClangStringLiteral_getKind(const struct ZigClangStringLiteral *self);
+
+ZIG_EXTERN_C enum ZigClangCharacterLiteral_CharacterKind ZigClangStringLiteral_getKind(
+        const struct ZigClangStringLiteral *self);
 ZIG_EXTERN_C uint32_t ZigClangStringLiteral_getCodeUnit(const struct ZigClangStringLiteral *self, size_t i);
 ZIG_EXTERN_C unsigned ZigClangStringLiteral_getLength(const struct ZigClangStringLiteral *self);
 ZIG_EXTERN_C unsigned ZigClangStringLiteral_getCharByteWidth(const struct ZigClangStringLiteral *self);
@@ -1166,7 +1546,7 @@ ZIG_EXTERN_C struct ZigClangQualType ZigClangAttributedType_getEquivalentType(co
 
 ZIG_EXTERN_C struct ZigClangQualType ZigClangMacroQualifiedType_getModifiedType(const struct ZigClangMacroQualifiedType *);
 
-ZIG_EXTERN_C struct ZigClangQualType ZigClangTypeOfType_getUnderlyingType(const struct ZigClangTypeOfType *);
+ZIG_EXTERN_C struct ZigClangQualType ZigClangTypeOfType_getUnmodifiedType(const struct ZigClangTypeOfType *);
 
 ZIG_EXTERN_C const struct ZigClangExpr *ZigClangTypeOfExprType_getUnderlyingExpr(const struct ZigClangTypeOfExprType *);
 
@@ -1189,7 +1569,7 @@ ZIG_EXTERN_C struct ZigClangQualType ZigClangCStyleCastExpr_getType(const struct
 
 ZIG_EXTERN_C bool ZigClangIntegerLiteral_EvaluateAsInt(const struct ZigClangIntegerLiteral *, struct ZigClangExprEvalResult *, const struct ZigClangASTContext *);
 ZIG_EXTERN_C struct ZigClangSourceLocation ZigClangIntegerLiteral_getBeginLoc(const struct ZigClangIntegerLiteral *);
-ZIG_EXTERN_C bool ZigClangIntegerLiteral_isZero(const struct ZigClangIntegerLiteral *, bool *, const struct ZigClangASTContext *);
+ZIG_EXTERN_C bool ZigClangIntegerLiteral_getSignum(const struct ZigClangIntegerLiteral *, int *, const struct ZigClangASTContext *);
 
 ZIG_EXTERN_C const struct ZigClangExpr *ZigClangReturnStmt_getRetValue(const struct ZigClangReturnStmt *);
 
@@ -1199,13 +1579,21 @@ ZIG_EXTERN_C const struct ZigClangExpr *ZigClangBinaryOperator_getLHS(const stru
 ZIG_EXTERN_C const struct ZigClangExpr *ZigClangBinaryOperator_getRHS(const struct ZigClangBinaryOperator *);
 ZIG_EXTERN_C struct ZigClangQualType ZigClangBinaryOperator_getType(const struct ZigClangBinaryOperator *);
 
+ZIG_EXTERN_C const struct ZigClangExpr *ZigClangConvertVectorExpr_getSrcExpr(const struct ZigClangConvertVectorExpr *);
+ZIG_EXTERN_C struct ZigClangQualType ZigClangConvertVectorExpr_getTypeSourceInfo_getType(const struct ZigClangConvertVectorExpr *);
+
 ZIG_EXTERN_C struct ZigClangQualType ZigClangDecayedType_getDecayedType(const struct ZigClangDecayedType *);
 
 ZIG_EXTERN_C const struct ZigClangCompoundStmt *ZigClangStmtExpr_getSubStmt(const struct ZigClangStmtExpr *);
 
+ZIG_EXTERN_C enum ZigClangCK ZigClangCastExpr_getCastKind(const struct ZigClangCastExpr *);
+ZIG_EXTERN_C const struct ZigClangFieldDecl *ZigClangCastExpr_getTargetFieldForToUnionCast(const struct ZigClangCastExpr *, struct ZigClangQualType, struct ZigClangQualType);
+
 ZIG_EXTERN_C struct ZigClangSourceLocation ZigClangCharacterLiteral_getBeginLoc(const struct ZigClangCharacterLiteral *);
 ZIG_EXTERN_C enum ZigClangCharacterLiteral_CharacterKind ZigClangCharacterLiteral_getKind(const struct ZigClangCharacterLiteral *);
 ZIG_EXTERN_C unsigned ZigClangCharacterLiteral_getValue(const struct ZigClangCharacterLiteral *);
+
+ZIG_EXTERN_C const struct ZigClangExpr *ZigClangChooseExpr_getChosenSubExpr(const struct ZigClangChooseExpr *);
 
 ZIG_EXTERN_C const struct ZigClangExpr *ZigClangAbstractConditionalOperator_getCond(const struct ZigClangAbstractConditionalOperator *);
 ZIG_EXTERN_C const struct ZigClangExpr *ZigClangAbstractConditionalOperator_getTrueExpr(const struct ZigClangAbstractConditionalOperator *);
@@ -1227,6 +1615,9 @@ ZIG_EXTERN_C const struct ZigClangExpr *ZigClangUnaryOperator_getSubExpr(const s
 ZIG_EXTERN_C struct ZigClangSourceLocation ZigClangUnaryOperator_getBeginLoc(const struct ZigClangUnaryOperator *);
 
 ZIG_EXTERN_C struct ZigClangQualType ZigClangValueDecl_getType(const struct ZigClangValueDecl *);
+
+ZIG_EXTERN_C struct ZigClangQualType ZigClangVectorType_getElementType(const struct ZigClangVectorType *);
+ZIG_EXTERN_C unsigned ZigClangVectorType_getNumElements(const struct ZigClangVectorType *);
 
 ZIG_EXTERN_C const struct ZigClangExpr *ZigClangWhileStmt_getCond(const struct ZigClangWhileStmt *);
 ZIG_EXTERN_C const struct ZigClangStmt *ZigClangWhileStmt_getBody(const struct ZigClangWhileStmt *);
@@ -1251,6 +1642,9 @@ ZIG_EXTERN_C const struct ZigClangExpr *ZigClangArraySubscriptExpr_getIdx(const 
 ZIG_EXTERN_C struct ZigClangQualType ZigClangUnaryExprOrTypeTraitExpr_getTypeOfArgument(const struct ZigClangUnaryExprOrTypeTraitExpr *);
 ZIG_EXTERN_C struct ZigClangSourceLocation ZigClangUnaryExprOrTypeTraitExpr_getBeginLoc(const struct ZigClangUnaryExprOrTypeTraitExpr *);
 ZIG_EXTERN_C enum ZigClangUnaryExprOrTypeTrait_Kind ZigClangUnaryExprOrTypeTraitExpr_getKind(const struct ZigClangUnaryExprOrTypeTraitExpr *);
+
+ZIG_EXTERN_C unsigned ZigClangShuffleVectorExpr_getNumSubExprs(const struct ZigClangShuffleVectorExpr *);
+ZIG_EXTERN_C const struct ZigClangExpr *ZigClangShuffleVectorExpr_getExpr(const struct ZigClangShuffleVectorExpr *, unsigned);
 
 ZIG_EXTERN_C const struct ZigClangStmt *ZigClangDoStmt_getBody(const struct ZigClangDoStmt *);
 ZIG_EXTERN_C const struct ZigClangExpr *ZigClangDoStmt_getCond(const struct ZigClangDoStmt *);
@@ -1283,7 +1677,8 @@ ZIG_EXTERN_C bool ZigClangFieldDecl_isAnonymousStructOrUnion(const ZigClangField
 ZIG_EXTERN_C struct ZigClangQualType ZigClangFieldDecl_getType(const struct ZigClangFieldDecl *);
 ZIG_EXTERN_C struct ZigClangSourceLocation ZigClangFieldDecl_getLocation(const struct ZigClangFieldDecl *);
 ZIG_EXTERN_C const struct ZigClangRecordDecl *ZigClangFieldDecl_getParent(const struct ZigClangFieldDecl *);
+ZIG_EXTERN_C unsigned ZigClangFieldDecl_getFieldIndex(const struct ZigClangFieldDecl *);
 
-ZIG_EXTERN_C const struct ZigClangExpr *ZigClangEnumConstantDecl_getInitExpr(const struct ZigClangEnumConstantDecl *);
 ZIG_EXTERN_C const struct ZigClangAPSInt *ZigClangEnumConstantDecl_getInitVal(const struct ZigClangEnumConstantDecl *);
+ZIG_EXTERN_C bool ZigClangIsLLVMUsingSeparateLibcxx();
 #endif

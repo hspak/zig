@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("../std.zig");
 const builtin = @import("builtin");
 const Lock = std.event.Lock;
@@ -20,7 +15,7 @@ pub fn Group(comptime ReturnType: type) type {
         frame_stack: Stack,
         alloc_stack: AllocStack,
         lock: Lock,
-        allocator: *Allocator,
+        allocator: Allocator,
 
         const Self = @This();
 
@@ -36,11 +31,11 @@ pub fn Group(comptime ReturnType: type) type {
             handle: anyframe->ReturnType,
         };
 
-        pub fn init(allocator: *Allocator) Self {
+        pub fn init(allocator: Allocator) Self {
             return Self{
                 .frame_stack = Stack.init(),
                 .alloc_stack = AllocStack.init(),
-                .lock = Lock.init(),
+                .lock = .{},
                 .allocator = allocator,
             };
         }
@@ -130,9 +125,9 @@ test "std.event.Group" {
     // TODO this file has bit-rotted. repair it
     if (true) return error.SkipZigTest;
 
-    const handle = async testGroup(std.heap.page_allocator);
+    _ = async testGroup(std.heap.page_allocator);
 }
-fn testGroup(allocator: *Allocator) callconv(.Async) void {
+fn testGroup(allocator: Allocator) callconv(.Async) void {
     var count: usize = 0;
     var group = Group(void).init(allocator);
     var sleep_a_little_frame = async sleepALittle(&count);
@@ -140,14 +135,14 @@ fn testGroup(allocator: *Allocator) callconv(.Async) void {
     var increase_by_ten_frame = async increaseByTen(&count);
     group.add(&increase_by_ten_frame) catch @panic("memory");
     group.wait();
-    testing.expect(count == 11);
+    try testing.expect(count == 11);
 
     var another = Group(anyerror!void).init(allocator);
     var something_else_frame = async somethingElse();
     another.add(&something_else_frame) catch @panic("memory");
     var something_that_fails_frame = async doSomethingThatFails();
     another.add(&something_that_fails_frame) catch @panic("memory");
-    testing.expectError(error.ItBroke, another.wait());
+    try testing.expectError(error.ItBroke, another.wait());
 }
 fn sleepALittle(count: *usize) callconv(.Async) void {
     std.time.sleep(1 * std.time.ns_per_ms);

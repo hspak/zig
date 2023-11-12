@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const adler = @import("hash/adler.zig");
 pub const Adler32 = adler.Adler32;
 
@@ -37,12 +32,32 @@ pub const CityHash64 = cityhash.CityHash64;
 const wyhash = @import("hash/wyhash.zig");
 pub const Wyhash = wyhash.Wyhash;
 
-test "hash" {
-    _ = @import("hash/adler.zig");
-    _ = @import("hash/auto_hash.zig");
-    _ = @import("hash/crc.zig");
-    _ = @import("hash/fnv.zig");
-    _ = @import("hash/murmur.zig");
-    _ = @import("hash/cityhash.zig");
-    _ = @import("hash/wyhash.zig");
+const xxhash = @import("hash/xxhash.zig");
+pub const XxHash3 = xxhash.XxHash3;
+pub const XxHash64 = xxhash.XxHash64;
+pub const XxHash32 = xxhash.XxHash32;
+
+/// This is handy if you have a u32 and want a u32 and don't want to take a
+/// detour through many layers of abstraction elsewhere in the std.hash
+/// namespace.
+/// Copied from https://nullprogram.com/blog/2018/07/31/
+pub fn uint32(input: u32) u32 {
+    var x: u32 = input;
+    x ^= x >> 16;
+    x *%= 0x7feb352d;
+    x ^= x >> 15;
+    x *%= 0x846ca68b;
+    x ^= x >> 16;
+    return x;
+}
+
+test {
+    _ = adler;
+    _ = auto_hash;
+    _ = crc;
+    _ = fnv;
+    _ = murmur;
+    _ = cityhash;
+    _ = wyhash;
+    _ = xxhash;
 }

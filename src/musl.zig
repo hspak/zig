@@ -4,7 +4,6 @@ const mem = std.mem;
 const path = std.fs.path;
 const assert = std.debug.assert;
 
-const target_util = @import("target.zig");
 const Compilation = @import("Compilation.zig");
 const build_options = @import("build_options");
 
@@ -18,23 +17,23 @@ pub const CRTFile = enum {
     libc_so,
 };
 
-pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
+pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile, prog_node: *std.Progress.Node) !void {
     if (!build_options.have_llvm) {
         return error.ZigCompilerNotBuiltWithLLVMExtensions;
     }
     const gpa = comp.gpa;
     var arena_allocator = std.heap.ArenaAllocator.init(gpa);
     defer arena_allocator.deinit();
-    const arena = &arena_allocator.allocator;
+    const arena = arena_allocator.allocator();
 
     switch (crt_file) {
         .crti_o => {
             var args = std.ArrayList([]const u8).init(arena);
-            try add_cc_args(comp, arena, &args, false);
+            try addCcArgs(comp, arena, &args, false);
             try args.appendSlice(&[_][]const u8{
                 "-Qunused-arguments",
             });
-            return comp.build_crt_file("crti", .Obj, &[1]Compilation.CSourceFile{
+            return comp.build_crt_file("crti", .Obj, .@"musl crti.o", prog_node, &.{
                 .{
                     .src_path = try start_asm_path(comp, arena, "crti.s"),
                     .extra_flags = args.items,
@@ -43,11 +42,11 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
         },
         .crtn_o => {
             var args = std.ArrayList([]const u8).init(arena);
-            try add_cc_args(comp, arena, &args, false);
+            try addCcArgs(comp, arena, &args, false);
             try args.appendSlice(&[_][]const u8{
                 "-Qunused-arguments",
             });
-            return comp.build_crt_file("crtn", .Obj, &[1]Compilation.CSourceFile{
+            return comp.build_crt_file("crtn", .Obj, .@"musl crtn.o", prog_node, &.{
                 .{
                     .src_path = try start_asm_path(comp, arena, "crtn.s"),
                     .extra_flags = args.items,
@@ -56,12 +55,12 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
         },
         .crt1_o => {
             var args = std.ArrayList([]const u8).init(arena);
-            try add_cc_args(comp, arena, &args, false);
+            try addCcArgs(comp, arena, &args, false);
             try args.appendSlice(&[_][]const u8{
                 "-fno-stack-protector",
                 "-DCRT",
             });
-            return comp.build_crt_file("crt1", .Obj, &[1]Compilation.CSourceFile{
+            return comp.build_crt_file("crt1", .Obj, .@"musl crt1.o", prog_node, &.{
                 .{
                     .src_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{
                         "libc", "musl", "crt", "crt1.c",
@@ -72,13 +71,13 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
         },
         .rcrt1_o => {
             var args = std.ArrayList([]const u8).init(arena);
-            try add_cc_args(comp, arena, &args, false);
+            try addCcArgs(comp, arena, &args, false);
             try args.appendSlice(&[_][]const u8{
                 "-fPIC",
                 "-fno-stack-protector",
                 "-DCRT",
             });
-            return comp.build_crt_file("rcrt1", .Obj, &[1]Compilation.CSourceFile{
+            return comp.build_crt_file("rcrt1", .Obj, .@"musl rcrt1.o", prog_node, &.{
                 .{
                     .src_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{
                         "libc", "musl", "crt", "rcrt1.c",
@@ -89,13 +88,13 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
         },
         .scrt1_o => {
             var args = std.ArrayList([]const u8).init(arena);
-            try add_cc_args(comp, arena, &args, false);
+            try addCcArgs(comp, arena, &args, false);
             try args.appendSlice(&[_][]const u8{
                 "-fPIC",
                 "-fno-stack-protector",
                 "-DCRT",
             });
-            return comp.build_crt_file("Scrt1", .Obj, &[1]Compilation.CSourceFile{
+            return comp.build_crt_file("Scrt1", .Obj, .@"musl Scrt1.o", prog_node, &.{
                 .{
                     .src_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{
                         "libc", "musl", "crt", "Scrt1.c",
@@ -108,17 +107,17 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
             // When there is a src/<arch>/foo.* then it should substitute for src/foo.*
             // Even a .s file can substitute for a .c file.
             const target = comp.getTarget();
-            const arch_name = target_util.archMuslName(target.cpu.arch);
+            const arch_name = archName(target.cpu.arch);
             var source_table = std.StringArrayHashMap(Ext).init(comp.gpa);
             defer source_table.deinit();
 
-            try source_table.ensureCapacity(compat_time32_files.len + src_files.len);
+            try source_table.ensureTotalCapacity(compat_time32_files.len + src_files.len);
 
             for (src_files) |src_file| {
                 try addSrcFile(arena, &source_table, src_file);
             }
 
-            const time32_compat_arch_list = [_][]const u8{ "arm", "i386", "mips", "powerpc" };
+            const time32_compat_arch_list = [_][]const u8{ "arm", "i386", "mips", "powerpc", "m68k" };
             for (time32_compat_arch_list) |time32_compat_arch| {
                 if (mem.eql(u8, arch_name, time32_compat_arch)) {
                     for (compat_time32_files) |compat_time32_file| {
@@ -135,19 +134,19 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
 
             const s = path.sep_str;
 
-            for (source_table.items()) |entry| {
-                const src_file = entry.key;
-                const ext = entry.value;
+            var it = source_table.iterator();
+            while (it.next()) |entry| {
+                const src_file = entry.key_ptr.*;
+                const ext = entry.value_ptr.*;
 
                 const dirname = path.dirname(src_file).?;
                 const basename = path.basename(src_file);
                 const noextbasename = basename[0 .. basename.len - std.fs.path.extension(basename).len];
-                const before_arch_dir = path.dirname(dirname).?;
                 const dirbasename = path.basename(dirname);
 
                 var is_arch_specific = false;
                 // Architecture-specific implementations are under a <arch>/ folder.
-                if (is_musl_arch_name(dirbasename)) {
+                if (isMuslArchName(dirbasename)) {
                     if (!mem.eql(u8, dirbasename, arch_name))
                         continue; // Not the architecture we're compiling for.
                     is_arch_specific = true;
@@ -177,7 +176,7 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
                 }
 
                 var args = std.ArrayList([]const u8).init(arena);
-                try add_cc_args(comp, arena, &args, ext == .o3);
+                try addCcArgs(comp, arena, &args, ext == .o3);
                 try args.appendSlice(&[_][]const u8{
                     "-Qunused-arguments",
                     "-w", // disable all warnings
@@ -188,16 +187,26 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
                     .extra_flags = args.items,
                 };
             }
-            return comp.build_crt_file("c", .Lib, c_source_files.items);
+            return comp.build_crt_file("c", .Lib, .@"musl libc.a", prog_node, c_source_files.items);
         },
         .libc_so => {
+            const target = comp.getTarget();
+            const arch_define = try std.fmt.allocPrint(arena, "-DARCH_{s}", .{
+                @tagName(target.cpu.arch),
+            });
+            const clang_argv: []const []const u8 = if (target.ptrBitWidth() == 64)
+                &[_][]const u8{ "-DPTR64", arch_define }
+            else
+                &[_][]const u8{arch_define};
+
             const sub_compilation = try Compilation.create(comp.gpa, .{
                 .local_cache_directory = comp.global_cache_directory,
                 .global_cache_directory = comp.global_cache_directory,
+                .cache_mode = .whole,
                 .zig_lib_directory = comp.zig_lib_directory,
-                .target = comp.getTarget(),
+                .target = target,
                 .root_name = "c",
-                .root_pkg = null,
+                .main_mod = null,
                 .output_mode = .Lib,
                 .link_mode = .Dynamic,
                 .thread_pool = comp.thread_pool,
@@ -206,7 +215,9 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
                 .optimize_mode = comp.compilerRtOptMode(),
                 .want_sanitize_c = false,
                 .want_stack_check = false,
+                .want_stack_protector = 0,
                 .want_red_zone = comp.bin_file.options.red_zone,
+                .omit_frame_pointer = comp.bin_file.options.omit_frame_pointer,
                 .want_valgrind = false,
                 .want_tsan = false,
                 .emit_h = null,
@@ -216,24 +227,23 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
                 .self_exe_path = comp.self_exe_path,
                 .verbose_cc = comp.verbose_cc,
                 .verbose_link = comp.bin_file.options.verbose_link,
-                .verbose_tokenize = comp.verbose_tokenize,
-                .verbose_ast = comp.verbose_ast,
-                .verbose_ir = comp.verbose_ir,
+                .verbose_air = comp.verbose_air,
                 .verbose_llvm_ir = comp.verbose_llvm_ir,
                 .verbose_cimport = comp.verbose_cimport,
                 .verbose_llvm_cpu_features = comp.verbose_llvm_cpu_features,
                 .clang_passthrough_mode = comp.clang_passthrough_mode,
                 .c_source_files = &[_]Compilation.CSourceFile{
-                    .{ .src_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{ "libc", "musl", "libc.s" }) },
+                    .{ .src_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{ "libc", "musl", "libc.S" }) },
                 },
+                .clang_argv = clang_argv,
                 .skip_linker_dependencies = true,
                 .soname = "libc.so",
             });
             defer sub_compilation.destroy();
 
-            try sub_compilation.updateSubCompilation();
+            try comp.updateSubCompilation(sub_compilation, .@"musl libc.so", prog_node);
 
-            try comp.crt_files.ensureCapacity(comp.gpa, comp.crt_files.count() + 1);
+            try comp.crt_files.ensureUnusedCapacity(comp.gpa, 1);
 
             const basename = try comp.gpa.dupe(u8, "libc.so");
             errdefer comp.gpa.free(basename);
@@ -248,7 +258,43 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
     }
 }
 
-fn is_musl_arch_name(name: []const u8) bool {
+fn archName(arch: std.Target.Cpu.Arch) [:0]const u8 {
+    switch (arch) {
+        .aarch64, .aarch64_be => return "aarch64",
+        .arm, .armeb, .thumb, .thumbeb => return "arm",
+        .x86 => return "i386",
+        .mips, .mipsel => return "mips",
+        .mips64el, .mips64 => return "mips64",
+        .powerpc => return "powerpc",
+        .powerpc64, .powerpc64le => return "powerpc64",
+        .riscv64 => return "riscv64",
+        .s390x => return "s390x",
+        .wasm32, .wasm64 => return "wasm",
+        .x86_64 => return "x86_64",
+        else => unreachable,
+    }
+}
+
+pub fn archNameHeaders(arch: std.Target.Cpu.Arch) [:0]const u8 {
+    return switch (arch) {
+        .x86 => return "x86",
+        else => archName(arch),
+    };
+}
+
+// Return true if musl has arch-specific crti/crtn sources.
+// See lib/libc/musl/crt/ARCH/crt?.s .
+pub fn needsCrtiCrtn(target: std.Target) bool {
+    // zig fmt: off
+    return switch (target.cpu.arch) {
+        .riscv64,
+        .wasm32, .wasm64 => return false,
+        else => true,
+    };
+    // zig fmt: on
+}
+
+fn isMuslArchName(name: []const u8) bool {
     const musl_arch_names = [_][]const u8{
         "aarch64",
         "arm",
@@ -278,11 +324,10 @@ fn is_musl_arch_name(name: []const u8) bool {
 
 const Ext = enum {
     assembly,
-    normal,
     o3,
 };
 
-fn addSrcFile(arena: *Allocator, source_table: *std.StringArrayHashMap(Ext), file_path: []const u8) !void {
+fn addSrcFile(arena: Allocator, source_table: *std.StringArrayHashMap(Ext), file_path: []const u8) !void {
     const ext: Ext = ext: {
         if (mem.endsWith(u8, file_path, ".c")) {
             if (mem.startsWith(u8, file_path, "musl/src/malloc/") or
@@ -314,16 +359,18 @@ fn addSrcFile(arena: *Allocator, source_table: *std.StringArrayHashMap(Ext), fil
     source_table.putAssumeCapacityNoClobber(key, ext);
 }
 
-fn add_cc_args(
+fn addCcArgs(
     comp: *Compilation,
-    arena: *Allocator,
+    arena: Allocator,
     args: *std.ArrayList([]const u8),
     want_O3: bool,
 ) error{OutOfMemory}!void {
     const target = comp.getTarget();
-    const arch_name = target_util.archMuslName(target.cpu.arch);
+    const arch_name = archName(target.cpu.arch);
     const os_name = @tagName(target.os.tag);
-    const triple = try std.fmt.allocPrint(arena, "{s}-{s}-musl", .{ arch_name, os_name });
+    const triple = try std.fmt.allocPrint(arena, "{s}-{s}-musl", .{
+        archNameHeaders(target.cpu.arch), os_name,
+    });
     const o_arg = if (want_O3) "-O3" else "-Os";
 
     try args.appendSlice(&[_][]const u8{
@@ -366,10 +413,10 @@ fn add_cc_args(
     });
 }
 
-fn start_asm_path(comp: *Compilation, arena: *Allocator, basename: []const u8) ![]const u8 {
+fn start_asm_path(comp: *Compilation, arena: Allocator, basename: []const u8) ![]const u8 {
     const target = comp.getTarget();
     return comp.zig_lib_directory.join(arena, &[_][]const u8{
-        "libc", "musl", "crt", target_util.archMuslName(target.cpu.arch), basename,
+        "libc", "musl", "crt", archName(target.cpu.arch), basename,
     });
 }
 
@@ -727,6 +774,7 @@ const src_files = [_][]const u8{
     "musl/src/locale/setlocale.c",
     "musl/src/locale/strcoll.c",
     "musl/src/locale/strfmon.c",
+    "musl/src/locale/strtod_l.c",
     "musl/src/locale/strxfrm.c",
     "musl/src/locale/textdomain.c",
     "musl/src/locale/uselocale.c",
@@ -1418,6 +1466,7 @@ const src_files = [_][]const u8{
     "musl/src/prng/seed48.c",
     "musl/src/prng/srand48.c",
     "musl/src/process/_Fork.c",
+    "musl/src/process/aarch64/vfork.s",
     "musl/src/process/arm/vfork.s",
     "musl/src/process/execl.c",
     "musl/src/process/execle.c",
@@ -1448,6 +1497,7 @@ const src_files = [_][]const u8{
     "musl/src/process/posix_spawnattr_setsigdefault.c",
     "musl/src/process/posix_spawnattr_setsigmask.c",
     "musl/src/process/posix_spawnp.c",
+    "musl/src/process/riscv64/vfork.s",
     "musl/src/process/s390x/vfork.s",
     "musl/src/process/sh/vfork.s",
     "musl/src/process/system.c",
@@ -1531,11 +1581,8 @@ const src_files = [_][]const u8{
     "musl/src/signal/m68k/sigsetjmp.s",
     "musl/src/signal/microblaze/restore.s",
     "musl/src/signal/microblaze/sigsetjmp.s",
-    "musl/src/signal/mips/restore.s",
     "musl/src/signal/mips/sigsetjmp.s",
-    "musl/src/signal/mips64/restore.s",
     "musl/src/signal/mips64/sigsetjmp.s",
-    "musl/src/signal/mipsn32/restore.s",
     "musl/src/signal/mipsn32/sigsetjmp.s",
     "musl/src/signal/or1k/sigsetjmp.s",
     "musl/src/signal/powerpc/restore.s",
@@ -1741,6 +1788,7 @@ const src_files = [_][]const u8{
     "musl/src/stdlib/llabs.c",
     "musl/src/stdlib/lldiv.c",
     "musl/src/stdlib/qsort.c",
+    "musl/src/stdlib/qsort_nr.c",
     "musl/src/stdlib/strtod.c",
     "musl/src/stdlib/strtol.c",
     "musl/src/stdlib/wcstod.c",
@@ -1951,6 +1999,7 @@ const src_files = [_][]const u8{
     "musl/src/thread/pthread_getattr_np.c",
     "musl/src/thread/pthread_getconcurrency.c",
     "musl/src/thread/pthread_getcpuclockid.c",
+    "musl/src/thread/pthread_getname_np.c",
     "musl/src/thread/pthread_getschedparam.c",
     "musl/src/thread/pthread_getspecific.c",
     "musl/src/thread/pthread_join.c",
@@ -2169,6 +2218,7 @@ const src_files = [_][]const u8{
     "musl/src/unistd/writev.c",
     "musl/src/unistd/x32/lseek.c",
 };
+
 const compat_time32_files = [_][]const u8{
     "musl/compat/time32/__xstat.c",
     "musl/compat/time32/adjtime32.c",

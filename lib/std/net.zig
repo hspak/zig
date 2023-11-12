@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("std.zig");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
@@ -11,18 +6,19 @@ const mem = std.mem;
 const os = std.os;
 const fs = std.fs;
 const io = std.io;
+const native_endian = builtin.target.cpu.arch.endian();
 
 // Windows 10 added support for unix sockets in build 17063, redstone 4 is the
 // first release to support them.
-pub const has_unix_sockets = @hasDecl(os, "sockaddr_un") and
-    (builtin.os.tag != .windows or
-    std.Target.current.os.version_range.windows.isAtLeast(.win10_rs4) orelse false);
+pub const has_unix_sockets = @hasDecl(os.sockaddr, "un") and
+    (builtin.target.os.tag != .windows or
+    builtin.os.version_range.windows.isAtLeast(.win10_rs4) orelse false);
 
 pub const Address = extern union {
     any: os.sockaddr,
     in: Ip4Address,
     in6: Ip6Address,
-    un: if (has_unix_sockets) os.sockaddr_un else void,
+    un: if (has_unix_sockets) os.sockaddr.un else void,
 
     /// Parse the given IP address string into an Address value.
     /// It is recommended to use `resolveIp` instead, to handle
@@ -33,6 +29,7 @@ pub const Address = extern union {
             error.InvalidEnd,
             error.InvalidCharacter,
             error.Incomplete,
+            error.NonCanonical,
             => {},
         }
 
@@ -54,6 +51,7 @@ pub const Address = extern union {
             error.InvalidEnd,
             error.InvalidCharacter,
             error.Incomplete,
+            error.NonCanonical,
             => {},
         }
 
@@ -72,9 +70,9 @@ pub const Address = extern union {
 
     pub fn parseExpectingFamily(name: []const u8, family: os.sa_family_t, port: u16) !Address {
         switch (family) {
-            os.AF_INET => return parseIp4(name, port),
-            os.AF_INET6 => return parseIp6(name, port),
-            os.AF_UNSPEC => return parseIp(name, port),
+            os.AF.INET => return parseIp4(name, port),
+            os.AF.INET6 => return parseIp6(name, port),
+            os.AF.UNSPEC => return parseIp(name, port),
             else => unreachable,
         }
     }
@@ -100,16 +98,16 @@ pub const Address = extern union {
     }
 
     pub fn initUnix(path: []const u8) !Address {
-        var sock_addr = os.sockaddr_un{
-            .family = os.AF_UNIX,
+        var sock_addr = os.sockaddr.un{
+            .family = os.AF.UNIX,
             .path = undefined,
         };
 
-        // this enables us to have the proper length of the socket in getOsSockLen
-        mem.set(u8, &sock_addr.path, 0);
+        // Add 1 to ensure a terminating 0 is present in the path array for maximum portability.
+        if (path.len + 1 > sock_addr.path.len) return error.NameTooLong;
 
-        if (path.len > sock_addr.path.len) return error.NameTooLong;
-        mem.copy(u8, &sock_addr.path, path);
+        @memset(&sock_addr.path, 0);
+        @memcpy(sock_addr.path[0..path.len], path);
 
         return Address{ .un = sock_addr };
     }
@@ -118,8 +116,8 @@ pub const Address = extern union {
     /// Asserts that the address is ip4 or ip6.
     pub fn getPort(self: Address) u16 {
         return switch (self.any.family) {
-            os.AF_INET => self.in.getPort(),
-            os.AF_INET6 => self.in6.getPort(),
+            os.AF.INET => self.in.getPort(),
+            os.AF.INET6 => self.in6.getPort(),
             else => unreachable,
         };
     }
@@ -128,8 +126,8 @@ pub const Address = extern union {
     /// Asserts that the address is ip4 or ip6.
     pub fn setPort(self: *Address, port: u16) void {
         switch (self.any.family) {
-            os.AF_INET => self.in.setPort(port),
-            os.AF_INET6 => self.in6.setPort(port),
+            os.AF.INET => self.in.setPort(port),
+            os.AF.INET6 => self.in6.setPort(port),
             else => unreachable,
         }
     }
@@ -139,8 +137,8 @@ pub const Address = extern union {
     /// on the address family.
     pub fn initPosix(addr: *align(4) const os.sockaddr) Address {
         switch (addr.family) {
-            os.AF_INET => return Address{ .in = Ip4Address{ .sa = @ptrCast(*const os.sockaddr_in, addr).* } },
-            os.AF_INET6 => return Address{ .in6 = Ip6Address{ .sa = @ptrCast(*const os.sockaddr_in6, addr).* } },
+            os.AF.INET => return Address{ .in = Ip4Address{ .sa = @as(*const os.sockaddr.in, @ptrCast(addr)).* } },
+            os.AF.INET6 => return Address{ .in6 = Ip6Address{ .sa = @as(*const os.sockaddr.in6, @ptrCast(addr)).* } },
             else => unreachable,
         }
     }
@@ -151,45 +149,54 @@ pub const Address = extern union {
         options: std.fmt.FormatOptions,
         out_stream: anytype,
     ) !void {
+        if (fmt.len != 0) std.fmt.invalidFmtError(fmt, self);
         switch (self.any.family) {
-            os.AF_INET => try self.in.format(fmt, options, out_stream),
-            os.AF_INET6 => try self.in6.format(fmt, options, out_stream),
-            os.AF_UNIX => {
+            os.AF.INET => try self.in.format(fmt, options, out_stream),
+            os.AF.INET6 => try self.in6.format(fmt, options, out_stream),
+            os.AF.UNIX => {
                 if (!has_unix_sockets) {
                     unreachable;
                 }
 
-                try std.fmt.format(out_stream, "{s}", .{&self.un.path});
+                try std.fmt.format(out_stream, "{s}", .{std.mem.sliceTo(&self.un.path, 0)});
             },
             else => unreachable,
         }
     }
 
     pub fn eql(a: Address, b: Address) bool {
-        const a_bytes = @ptrCast([*]const u8, &a.any)[0..a.getOsSockLen()];
-        const b_bytes = @ptrCast([*]const u8, &b.any)[0..b.getOsSockLen()];
+        const a_bytes = @as([*]const u8, @ptrCast(&a.any))[0..a.getOsSockLen()];
+        const b_bytes = @as([*]const u8, @ptrCast(&b.any))[0..b.getOsSockLen()];
         return mem.eql(u8, a_bytes, b_bytes);
     }
 
     pub fn getOsSockLen(self: Address) os.socklen_t {
         switch (self.any.family) {
-            os.AF_INET => return self.in.getOsSockLen(),
-            os.AF_INET6 => return self.in6.getOsSockLen(),
-            os.AF_UNIX => {
+            os.AF.INET => return self.in.getOsSockLen(),
+            os.AF.INET6 => return self.in6.getOsSockLen(),
+            os.AF.UNIX => {
                 if (!has_unix_sockets) {
                     unreachable;
                 }
 
-                const path_len = std.mem.len(std.meta.assumeSentinel(&self.un.path, 0));
-                return @intCast(os.socklen_t, @sizeOf(os.sockaddr_un) - self.un.path.len + path_len);
+                // Using the full length of the structure here is more portable than returning
+                // the number of bytes actually used by the currently stored path.
+                // This also is correct regardless if we are passing a socket address to the kernel
+                // (e.g. in bind, connect, sendto) since we ensure the path is 0 terminated in
+                // initUnix() or if we are receiving a socket address from the kernel and must
+                // provide the full buffer size (e.g. getsockname, getpeername, recvfrom, accept).
+                //
+                // To access the path, std.mem.sliceTo(&address.un.path, 0) should be used.
+                return @as(os.socklen_t, @intCast(@sizeOf(os.sockaddr.un)));
             },
+
             else => unreachable,
         }
     }
 };
 
 pub const Ip4Address = extern struct {
-    sa: os.sockaddr_in,
+    sa: os.sockaddr.in,
 
     pub fn parse(buf: []const u8, port: u16) !Ip4Address {
         var result = Ip4Address{
@@ -203,6 +210,7 @@ pub const Ip4Address = extern struct {
         var x: u8 = 0;
         var index: u8 = 0;
         var saw_any_digits = false;
+        var has_zero_prefix = false;
         for (buf) |c| {
             if (c == '.') {
                 if (!saw_any_digits) {
@@ -215,7 +223,13 @@ pub const Ip4Address = extern struct {
                 index += 1;
                 x = 0;
                 saw_any_digits = false;
+                has_zero_prefix = false;
             } else if (c >= '0' and c <= '9') {
+                if (c == '0' and !saw_any_digits) {
+                    has_zero_prefix = true;
+                } else if (has_zero_prefix) {
+                    return error.NonCanonical;
+                }
                 saw_any_digits = true;
                 x = try std.math.mul(u8, x, 10);
                 x = try std.math.add(u8, x, c - '0');
@@ -244,9 +258,9 @@ pub const Ip4Address = extern struct {
 
     pub fn init(addr: [4]u8, port: u16) Ip4Address {
         return Ip4Address{
-            .sa = os.sockaddr_in{
+            .sa = os.sockaddr.in{
                 .port = mem.nativeToBig(u16, port),
-                .addr = @ptrCast(*align(1) const u32, &addr).*,
+                .addr = @as(*align(1) const u32, @ptrCast(&addr)).*,
             },
         };
     }
@@ -269,7 +283,9 @@ pub const Ip4Address = extern struct {
         options: std.fmt.FormatOptions,
         out_stream: anytype,
     ) !void {
-        const bytes = @ptrCast(*const [4]u8, &self.sa.addr);
+        if (fmt.len != 0) std.fmt.invalidFmtError(fmt, self);
+        _ = options;
+        const bytes = @as(*const [4]u8, @ptrCast(&self.sa.addr));
         try std.fmt.format(out_stream, "{}.{}.{}.{}:{}", .{
             bytes[0],
             bytes[1],
@@ -280,26 +296,27 @@ pub const Ip4Address = extern struct {
     }
 
     pub fn getOsSockLen(self: Ip4Address) os.socklen_t {
-        return @sizeOf(os.sockaddr_in);
+        _ = self;
+        return @sizeOf(os.sockaddr.in);
     }
 };
 
 pub const Ip6Address = extern struct {
-    sa: os.sockaddr_in6,
+    sa: os.sockaddr.in6,
 
     /// Parse a given IPv6 address string into an Address.
     /// Assumes the Scope ID of the address is fully numeric.
     /// For non-numeric addresses, see `resolveIp6`.
     pub fn parse(buf: []const u8, port: u16) !Ip6Address {
         var result = Ip6Address{
-            .sa = os.sockaddr_in6{
+            .sa = os.sockaddr.in6{
                 .scope_id = 0,
                 .port = mem.nativeToBig(u16, port),
                 .flowinfo = 0,
                 .addr = undefined,
             },
         };
-        var ip_slice = result.sa.addr[0..];
+        var ip_slice: *[16]u8 = result.sa.addr[0..];
 
         var tail: [16]u8 = undefined;
 
@@ -308,15 +325,19 @@ pub const Ip6Address = extern struct {
         var index: u8 = 0;
         var scope_id = false;
         var abbrv = false;
-        for (buf) |c, i| {
+        for (buf, 0..) |c, i| {
             if (scope_id) {
                 if (c >= '0' and c <= '9') {
                     const digit = c - '0';
-                    if (@mulWithOverflow(u32, result.sa.scope_id, 10, &result.sa.scope_id)) {
-                        return error.Overflow;
+                    {
+                        const ov = @mulWithOverflow(result.sa.scope_id, 10);
+                        if (ov[1] != 0) return error.Overflow;
+                        result.sa.scope_id = ov[0];
                     }
-                    if (@addWithOverflow(u32, result.sa.scope_id, digit, &result.sa.scope_id)) {
-                        return error.Overflow;
+                    {
+                        const ov = @addWithOverflow(result.sa.scope_id, digit);
+                        if (ov[1] != 0) return error.Overflow;
+                        result.sa.scope_id = ov[0];
                     }
                 } else {
                     return error.InvalidCharacter;
@@ -325,7 +346,7 @@ pub const Ip6Address = extern struct {
                 if (!saw_any_digits) {
                     if (abbrv) return error.InvalidCharacter; // ':::'
                     if (i != 0) abbrv = true;
-                    mem.set(u8, ip_slice[index..], 0);
+                    @memset(ip_slice[index..], 0);
                     ip_slice = tail[0..];
                     index = 0;
                     continue;
@@ -333,9 +354,9 @@ pub const Ip6Address = extern struct {
                 if (index == 14) {
                     return error.InvalidEnd;
                 }
-                ip_slice[index] = @truncate(u8, x >> 8);
+                ip_slice[index] = @as(u8, @truncate(x >> 8));
                 index += 1;
-                ip_slice[index] = @truncate(u8, x);
+                ip_slice[index] = @as(u8, @truncate(x));
                 index += 1;
 
                 x = 0;
@@ -368,11 +389,15 @@ pub const Ip6Address = extern struct {
                 return result;
             } else {
                 const digit = try std.fmt.charToDigit(c, 16);
-                if (@mulWithOverflow(u16, x, 16, &x)) {
-                    return error.Overflow;
+                {
+                    const ov = @mulWithOverflow(x, 16);
+                    if (ov[1] != 0) return error.Overflow;
+                    x = ov[0];
                 }
-                if (@addWithOverflow(u16, x, digit, &x)) {
-                    return error.Overflow;
+                {
+                    const ov = @addWithOverflow(x, digit);
+                    if (ov[1] != 0) return error.Overflow;
+                    x = ov[0];
                 }
                 saw_any_digits = true;
             }
@@ -381,17 +406,20 @@ pub const Ip6Address = extern struct {
         if (!saw_any_digits and !abbrv) {
             return error.Incomplete;
         }
+        if (!abbrv and index < 14) {
+            return error.Incomplete;
+        }
 
         if (index == 14) {
-            ip_slice[14] = @truncate(u8, x >> 8);
-            ip_slice[15] = @truncate(u8, x);
+            ip_slice[14] = @as(u8, @truncate(x >> 8));
+            ip_slice[15] = @as(u8, @truncate(x));
             return result;
         } else {
-            ip_slice[index] = @truncate(u8, x >> 8);
+            ip_slice[index] = @as(u8, @truncate(x >> 8));
             index += 1;
-            ip_slice[index] = @truncate(u8, x);
+            ip_slice[index] = @as(u8, @truncate(x));
             index += 1;
-            mem.copy(u8, result.sa.addr[16 - index ..], ip_slice[0..index]);
+            @memcpy(result.sa.addr[16 - index ..][0..index], ip_slice[0..index]);
             return result;
         }
     }
@@ -399,14 +427,14 @@ pub const Ip6Address = extern struct {
     pub fn resolve(buf: []const u8, port: u16) !Ip6Address {
         // TODO: Unify the implementations of resolveIp6 and parseIp6.
         var result = Ip6Address{
-            .sa = os.sockaddr_in6{
+            .sa = os.sockaddr.in6{
                 .scope_id = 0,
                 .port = mem.nativeToBig(u16, port),
                 .flowinfo = 0,
                 .addr = undefined,
             },
         };
-        var ip_slice = result.sa.addr[0..];
+        var ip_slice: *[16]u8 = result.sa.addr[0..];
 
         var tail: [16]u8 = undefined;
 
@@ -419,7 +447,7 @@ pub const Ip6Address = extern struct {
         var scope_id_value: [os.IFNAMESIZE - 1]u8 = undefined;
         var scope_id_index: usize = 0;
 
-        for (buf) |c, i| {
+        for (buf, 0..) |c, i| {
             if (scope_id) {
                 // Handling of percent-encoding should be for an URI library.
                 if ((c >= '0' and c <= '9') or
@@ -440,7 +468,7 @@ pub const Ip6Address = extern struct {
                 if (!saw_any_digits) {
                     if (abbrv) return error.InvalidCharacter; // ':::'
                     if (i != 0) abbrv = true;
-                    mem.set(u8, ip_slice[index..], 0);
+                    @memset(ip_slice[index..], 0);
                     ip_slice = tail[0..];
                     index = 0;
                     continue;
@@ -448,9 +476,9 @@ pub const Ip6Address = extern struct {
                 if (index == 14) {
                     return error.InvalidEnd;
                 }
-                ip_slice[index] = @truncate(u8, x >> 8);
+                ip_slice[index] = @as(u8, @truncate(x >> 8));
                 index += 1;
-                ip_slice[index] = @truncate(u8, x);
+                ip_slice[index] = @as(u8, @truncate(x));
                 index += 1;
 
                 x = 0;
@@ -483,11 +511,15 @@ pub const Ip6Address = extern struct {
                 return result;
             } else {
                 const digit = try std.fmt.charToDigit(c, 16);
-                if (@mulWithOverflow(u16, x, 16, &x)) {
-                    return error.Overflow;
+                {
+                    const ov = @mulWithOverflow(x, 16);
+                    if (ov[1] != 0) return error.Overflow;
+                    x = ov[0];
                 }
-                if (@addWithOverflow(u16, x, digit, &x)) {
-                    return error.Overflow;
+                {
+                    const ov = @addWithOverflow(x, digit);
+                    if (ov[1] != 0) return error.Overflow;
+                    x = ov[0];
                 }
                 saw_any_digits = true;
             }
@@ -513,22 +545,22 @@ pub const Ip6Address = extern struct {
         result.sa.scope_id = resolved_scope_id;
 
         if (index == 14) {
-            ip_slice[14] = @truncate(u8, x >> 8);
-            ip_slice[15] = @truncate(u8, x);
+            ip_slice[14] = @as(u8, @truncate(x >> 8));
+            ip_slice[15] = @as(u8, @truncate(x));
             return result;
         } else {
-            ip_slice[index] = @truncate(u8, x >> 8);
+            ip_slice[index] = @as(u8, @truncate(x >> 8));
             index += 1;
-            ip_slice[index] = @truncate(u8, x);
+            ip_slice[index] = @as(u8, @truncate(x));
             index += 1;
-            mem.copy(u8, result.sa.addr[16 - index ..], ip_slice[0..index]);
+            @memcpy(result.sa.addr[16 - index ..][0..index], ip_slice[0..index]);
             return result;
         }
     }
 
     pub fn init(addr: [16]u8, port: u16, flowinfo: u32, scope_id: u32) Ip6Address {
         return Ip6Address{
-            .sa = os.sockaddr_in6{
+            .sa = os.sockaddr.in6{
                 .addr = addr,
                 .port = mem.nativeToBig(u16, port),
                 .flowinfo = flowinfo,
@@ -555,6 +587,8 @@ pub const Ip6Address = extern struct {
         options: std.fmt.FormatOptions,
         out_stream: anytype,
     ) !void {
+        if (fmt.len != 0) std.fmt.invalidFmtError(fmt, self);
+        _ = options;
         const port = mem.bigToNative(u16, self.sa.port);
         if (mem.eql(u8, self.sa.addr[0..12], &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff })) {
             try std.fmt.format(out_stream, "[::ffff:{}.{}.{}.{}]:{}", .{
@@ -566,12 +600,12 @@ pub const Ip6Address = extern struct {
             });
             return;
         }
-        const big_endian_parts = @ptrCast(*align(1) const [8]u16, &self.sa.addr);
-        const native_endian_parts = switch (builtin.endian) {
-            .Big => big_endian_parts.*,
-            .Little => blk: {
+        const big_endian_parts = @as(*align(1) const [8]u16, @ptrCast(&self.sa.addr));
+        const native_endian_parts = switch (native_endian) {
+            .big => big_endian_parts.*,
+            .little => blk: {
                 var buf: [8]u16 = undefined;
-                for (big_endian_parts) |part, i| {
+                for (big_endian_parts, 0..) |part, i| {
                     buf[i] = mem.bigToNative(u16, part);
                 }
                 break :blk buf;
@@ -597,15 +631,16 @@ pub const Ip6Address = extern struct {
     }
 
     pub fn getOsSockLen(self: Ip6Address) os.socklen_t {
-        return @sizeOf(os.sockaddr_in6);
+        _ = self;
+        return @sizeOf(os.sockaddr.in6);
     }
 };
 
 pub fn connectUnixSocket(path: []const u8) !Stream {
-    const opt_non_block = if (std.io.is_async) os.SOCK_NONBLOCK else 0;
+    const opt_non_block = if (std.io.is_async) os.SOCK.NONBLOCK else 0;
     const sockfd = try os.socket(
-        os.AF_UNIX,
-        os.SOCK_STREAM | os.SOCK_CLOEXEC | opt_non_block,
+        os.AF.UNIX,
+        os.SOCK.STREAM | os.SOCK.CLOEXEC | opt_non_block,
         0,
     );
     errdefer os.closeSocket(sockfd);
@@ -625,17 +660,35 @@ pub fn connectUnixSocket(path: []const u8) !Stream {
 }
 
 fn if_nametoindex(name: []const u8) !u32 {
-    var ifr: os.ifreq = undefined;
-    var sockfd = try os.socket(os.AF_UNIX, os.SOCK_DGRAM | os.SOCK_CLOEXEC, 0);
-    defer os.closeSocket(sockfd);
+    if (builtin.target.os.tag == .linux) {
+        var ifr: os.ifreq = undefined;
+        var sockfd = try os.socket(os.AF.UNIX, os.SOCK.DGRAM | os.SOCK.CLOEXEC, 0);
+        defer os.closeSocket(sockfd);
 
-    std.mem.copy(u8, &ifr.ifrn.name, name);
-    ifr.ifrn.name[name.len] = 0;
+        @memcpy(ifr.ifrn.name[0..name.len], name);
+        ifr.ifrn.name[name.len] = 0;
 
-    // TODO investigate if this needs to be integrated with evented I/O.
-    try os.ioctl_SIOCGIFINDEX(sockfd, &ifr);
+        // TODO investigate if this needs to be integrated with evented I/O.
+        try os.ioctl_SIOCGIFINDEX(sockfd, &ifr);
 
-    return @bitCast(u32, ifr.ifru.ivalue);
+        return @as(u32, @bitCast(ifr.ifru.ivalue));
+    }
+
+    if (comptime builtin.target.os.tag.isDarwin()) {
+        if (name.len >= os.IFNAMESIZE)
+            return error.NameTooLong;
+
+        var if_name: [os.IFNAMESIZE:0]u8 = undefined;
+        @memcpy(if_name[0..name.len], name);
+        if_name[name.len] = 0;
+        const if_slice = if_name[0..name.len :0];
+        const index = os.system.if_nametoindex(if_slice);
+        if (index == 0)
+            return error.InterfaceNotFound;
+        return @as(u32, @bitCast(index));
+    }
+
+    @compileError("std.net.if_nametoindex unimplemented for this OS");
 }
 
 pub const AddressList = struct {
@@ -652,8 +705,10 @@ pub const AddressList = struct {
     }
 };
 
+pub const TcpConnectToHostError = GetAddressListError || TcpConnectToAddressError;
+
 /// All memory allocated with `allocator` will be freed before this function returns.
-pub fn tcpConnectToHost(allocator: *mem.Allocator, name: []const u8, port: u16) !Stream {
+pub fn tcpConnectToHost(allocator: mem.Allocator, name: []const u8, port: u16) TcpConnectToHostError!Stream {
     const list = try getAddressList(allocator, name, port);
     defer list.deinit();
 
@@ -670,11 +725,13 @@ pub fn tcpConnectToHost(allocator: *mem.Allocator, name: []const u8, port: u16) 
     return std.os.ConnectError.ConnectionRefused;
 }
 
-pub fn tcpConnectToAddress(address: Address) !Stream {
-    const nonblock = if (std.io.is_async) os.SOCK_NONBLOCK else 0;
-    const sock_flags = os.SOCK_STREAM | nonblock |
-        (if (builtin.os.tag == .windows) 0 else os.SOCK_CLOEXEC);
-    const sockfd = try os.socket(address.any.family, sock_flags, os.IPPROTO_TCP);
+pub const TcpConnectToAddressError = std.os.SocketError || std.os.ConnectError;
+
+pub fn tcpConnectToAddress(address: Address) TcpConnectToAddressError!Stream {
+    const nonblock = if (std.io.is_async) os.SOCK.NONBLOCK else 0;
+    const sock_flags = os.SOCK.STREAM | nonblock |
+        (if (builtin.target.os.tag == .windows) 0 else os.SOCK.CLOEXEC);
+    const sockfd = try os.socket(address.any.family, sock_flags, os.IPPROTO.TCP);
     errdefer os.closeSocket(sockfd);
 
     if (std.io.is_async) {
@@ -687,13 +744,37 @@ pub fn tcpConnectToAddress(address: Address) !Stream {
     return Stream{ .handle = sockfd };
 }
 
+const GetAddressListError = std.mem.Allocator.Error || std.fs.File.OpenError || std.fs.File.ReadError || std.os.SocketError || std.os.BindError || std.os.SetSockOptError || error{
+    // TODO: break this up into error sets from the various underlying functions
+
+    TemporaryNameServerFailure,
+    NameServerFailure,
+    AddressFamilyNotSupported,
+    UnknownHostName,
+    ServiceUnavailable,
+    Unexpected,
+
+    HostLacksNetworkAddresses,
+
+    InvalidCharacter,
+    InvalidEnd,
+    NonCanonical,
+    Overflow,
+    Incomplete,
+    InvalidIpv4Mapping,
+    InvalidIPAddressFormat,
+
+    InterfaceNotFound,
+    FileSystem,
+};
+
 /// Call `AddressList.deinit` on the result.
-pub fn getAddressList(allocator: *mem.Allocator, name: []const u8, port: u16) !*AddressList {
+pub fn getAddressList(allocator: mem.Allocator, name: []const u8, port: u16) GetAddressListError!*AddressList {
     const result = blk: {
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
 
-        const result = try arena.allocator.create(AddressList);
+        const result = try arena.allocator().create(AddressList);
         result.* = AddressList{
             .arena = arena,
             .addrs = undefined,
@@ -701,42 +782,102 @@ pub fn getAddressList(allocator: *mem.Allocator, name: []const u8, port: u16) !*
         };
         break :blk result;
     };
-    const arena = &result.arena.allocator;
-    errdefer result.arena.deinit();
+    const arena = result.arena.allocator();
+    errdefer result.deinit();
 
-    if (builtin.os.tag == .windows or builtin.link_libc) {
-        const name_c = try std.cstr.addNullByte(allocator, name);
+    if (builtin.target.os.tag == .windows) {
+        const name_c = try allocator.dupeZ(u8, name);
         defer allocator.free(name_c);
 
-        const port_c = try std.fmt.allocPrint(allocator, "{}\x00", .{port});
+        const port_c = try std.fmt.allocPrintZ(allocator, "{}", .{port});
         defer allocator.free(port_c);
 
-        const sys = if (builtin.os.tag == .windows) os.windows.ws2_32 else os.system;
+        const ws2_32 = os.windows.ws2_32;
         const hints = os.addrinfo{
-            .flags = sys.AI_NUMERICSERV,
-            .family = os.AF_UNSPEC,
-            .socktype = os.SOCK_STREAM,
-            .protocol = os.IPPROTO_TCP,
+            .flags = ws2_32.AI.NUMERICSERV,
+            .family = os.AF.UNSPEC,
+            .socktype = os.SOCK.STREAM,
+            .protocol = os.IPPROTO.TCP,
             .canonname = null,
             .addr = null,
             .addrlen = 0,
             .next = null,
         };
-        var res: *os.addrinfo = undefined;
-        const rc = sys.getaddrinfo(name_c.ptr, std.meta.assumeSentinel(port_c.ptr, 0), &hints, &res);
-        if (builtin.os.tag == .windows) switch (@intToEnum(os.windows.ws2_32.WinsockError, @intCast(u16, rc))) {
-            @intToEnum(os.windows.ws2_32.WinsockError, 0) => {},
-            .WSATRY_AGAIN => return error.TemporaryNameServerFailure,
-            .WSANO_RECOVERY => return error.NameServerFailure,
-            .WSAEAFNOSUPPORT => return error.AddressFamilyNotSupported,
-            .WSA_NOT_ENOUGH_MEMORY => return error.OutOfMemory,
-            .WSAHOST_NOT_FOUND => return error.UnknownHostName,
-            .WSATYPE_NOT_FOUND => return error.ServiceUnavailable,
-            .WSAEINVAL => unreachable,
-            .WSAESOCKTNOSUPPORT => unreachable,
-            else => |err| return os.windows.unexpectedWSAError(err),
-        } else switch (rc) {
-            @intToEnum(sys.EAI, 0) => {},
+        var res: ?*os.addrinfo = null;
+        var first = true;
+        while (true) {
+            const rc = ws2_32.getaddrinfo(name_c.ptr, port_c.ptr, &hints, &res);
+            switch (@as(os.windows.ws2_32.WinsockError, @enumFromInt(@as(u16, @intCast(rc))))) {
+                @as(os.windows.ws2_32.WinsockError, @enumFromInt(0)) => break,
+                .WSATRY_AGAIN => return error.TemporaryNameServerFailure,
+                .WSANO_RECOVERY => return error.NameServerFailure,
+                .WSAEAFNOSUPPORT => return error.AddressFamilyNotSupported,
+                .WSA_NOT_ENOUGH_MEMORY => return error.OutOfMemory,
+                .WSAHOST_NOT_FOUND => return error.UnknownHostName,
+                .WSATYPE_NOT_FOUND => return error.ServiceUnavailable,
+                .WSAEINVAL => unreachable,
+                .WSAESOCKTNOSUPPORT => unreachable,
+                .WSANOTINITIALISED => {
+                    if (!first) return error.Unexpected;
+                    first = false;
+                    try os.windows.callWSAStartup();
+                    continue;
+                },
+                else => |err| return os.windows.unexpectedWSAError(err),
+            }
+        }
+        defer ws2_32.freeaddrinfo(res);
+
+        const addr_count = blk: {
+            var count: usize = 0;
+            var it = res;
+            while (it) |info| : (it = info.next) {
+                if (info.addr != null) {
+                    count += 1;
+                }
+            }
+            break :blk count;
+        };
+        result.addrs = try arena.alloc(Address, addr_count);
+
+        var it = res;
+        var i: usize = 0;
+        while (it) |info| : (it = info.next) {
+            const addr = info.addr orelse continue;
+            result.addrs[i] = Address.initPosix(@alignCast(addr));
+
+            if (info.canonname) |n| {
+                if (result.canon_name == null) {
+                    result.canon_name = try arena.dupe(u8, mem.sliceTo(n, 0));
+                }
+            }
+            i += 1;
+        }
+
+        return result;
+    }
+
+    if (builtin.link_libc) {
+        const name_c = try allocator.dupeZ(u8, name);
+        defer allocator.free(name_c);
+
+        const port_c = try std.fmt.allocPrintZ(allocator, "{}", .{port});
+        defer allocator.free(port_c);
+
+        const sys = if (builtin.target.os.tag == .windows) os.windows.ws2_32 else os.system;
+        const hints = os.addrinfo{
+            .flags = sys.AI.NUMERICSERV,
+            .family = os.AF.UNSPEC,
+            .socktype = os.SOCK.STREAM,
+            .protocol = os.IPPROTO.TCP,
+            .canonname = null,
+            .addr = null,
+            .addrlen = 0,
+            .next = null,
+        };
+        var res: ?*os.addrinfo = null;
+        switch (sys.getaddrinfo(name_c.ptr, port_c.ptr, &hints, &res)) {
+            @as(sys.EAI, @enumFromInt(0)) => {},
             .ADDRFAMILY => return error.HostLacksNetworkAddresses,
             .AGAIN => return error.TemporaryNameServerFailure,
             .BADFLAGS => unreachable, // Invalid hints
@@ -752,11 +893,11 @@ pub fn getAddressList(allocator: *mem.Allocator, name: []const u8, port: u16) !*
             },
             else => unreachable,
         }
-        defer sys.freeaddrinfo(res);
+        defer if (res) |some| sys.freeaddrinfo(some);
 
         const addr_count = blk: {
             var count: usize = 0;
-            var it: ?*os.addrinfo = res;
+            var it = res;
             while (it) |info| : (it = info.next) {
                 if (info.addr != null) {
                     count += 1;
@@ -766,15 +907,15 @@ pub fn getAddressList(allocator: *mem.Allocator, name: []const u8, port: u16) !*
         };
         result.addrs = try arena.alloc(Address, addr_count);
 
-        var it: ?*os.addrinfo = res;
+        var it = res;
         var i: usize = 0;
         while (it) |info| : (it = info.next) {
             const addr = info.addr orelse continue;
-            result.addrs[i] = Address.initPosix(@alignCast(4, addr));
+            result.addrs[i] = Address.initPosix(@alignCast(addr));
 
             if (info.canonname) |n| {
                 if (result.canon_name == null) {
-                    result.canon_name = try arena.dupe(u8, mem.spanZ(n));
+                    result.canon_name = try arena.dupe(u8, mem.sliceTo(n, 0));
                 }
             }
             i += 1;
@@ -782,9 +923,10 @@ pub fn getAddressList(allocator: *mem.Allocator, name: []const u8, port: u16) !*
 
         return result;
     }
-    if (builtin.os.tag == .linux) {
-        const flags = std.c.AI_NUMERICSERV;
-        const family = os.AF_UNSPEC;
+
+    if (builtin.target.os.tag == .linux) {
+        const flags = std.c.AI.NUMERICSERV;
+        const family = os.AF.UNSPEC;
         var lookup_addrs = std.ArrayList(LookupAddr).init(allocator);
         defer lookup_addrs.deinit();
 
@@ -795,17 +937,17 @@ pub fn getAddressList(allocator: *mem.Allocator, name: []const u8, port: u16) !*
 
         result.addrs = try arena.alloc(Address, lookup_addrs.items.len);
         if (canon.items.len != 0) {
-            result.canon_name = canon.toOwnedSlice();
+            result.canon_name = try canon.toOwnedSlice();
         }
 
-        for (lookup_addrs.items) |lookup_addr, i| {
+        for (lookup_addrs.items, 0..) |lookup_addr, i| {
             result.addrs[i] = lookup_addr.addr;
             assert(result.addrs[i].getPort() == port);
         }
 
         return result;
     }
-    @compileError("std.net.getAddresses unimplemented for this OS");
+    @compileError("std.net.getAddressList unimplemented for this OS");
 }
 
 const LookupAddr = struct {
@@ -835,26 +977,26 @@ fn linuxLookupName(
         try canon.appendSlice(name);
         if (Address.parseExpectingFamily(name, family, port)) |addr| {
             try addrs.append(LookupAddr{ .addr = addr });
-        } else |name_err| if ((flags & std.c.AI_NUMERICHOST) != 0) {
+        } else |name_err| if ((flags & std.c.AI.NUMERICHOST) != 0) {
             return name_err;
         } else {
             try linuxLookupNameFromHosts(addrs, canon, name, family, port);
             if (addrs.items.len == 0) {
-                try linuxLookupNameFromDnsSearch(addrs, canon, name, family, port);
-            }
-            if (addrs.items.len == 0) {
-                // RFC 6761 Section 6.3
+                // RFC 6761 Section 6.3.3
                 // Name resolution APIs and libraries SHOULD recognize localhost
                 // names as special and SHOULD always return the IP loopback address
                 // for address queries and negative responses for all other query
                 // types.
 
-                // Check for equal to "localhost" or ends in ".localhost"
-                if (mem.endsWith(u8, name, "localhost") and (name.len == "localhost".len or name[name.len - "localhost".len] == '.')) {
+                // Check for equal to "localhost(.)" or ends in ".localhost(.)"
+                const localhost = if (name[name.len - 1] == '.') "localhost." else "localhost";
+                if (mem.endsWith(u8, name, localhost) and (name.len == localhost.len or name[name.len - localhost.len] == '.')) {
                     try addrs.append(LookupAddr{ .addr = .{ .in = Ip4Address.parse("127.0.0.1", port) catch unreachable } });
                     try addrs.append(LookupAddr{ .addr = .{ .in6 = Ip6Address.parse("::1", port) catch unreachable } });
                     return;
                 }
+
+                try linuxLookupNameFromDnsSearch(addrs, canon, name, family, port);
             }
         }
     } else {
@@ -865,9 +1007,9 @@ fn linuxLookupName(
 
     // No further processing is needed if there are fewer than 2
     // results or if there are only IPv4 results.
-    if (addrs.items.len == 1 or family == os.AF_INET) return;
+    if (addrs.items.len == 1 or family == os.AF.INET) return;
     const all_ip4 = for (addrs.items) |addr| {
-        if (addr.addr.any.family != os.AF_INET) break false;
+        if (addr.addr.any.family != os.AF.INET) break false;
     } else true;
     if (all_ip4) return;
 
@@ -878,21 +1020,21 @@ fn linuxLookupName(
     // So far the label/precedence table cannot be customized.
     // This implementation is ported from musl libc.
     // A more idiomatic "ziggy" implementation would be welcome.
-    for (addrs.items) |*addr, i| {
+    for (addrs.items, 0..) |*addr, i| {
         var key: i32 = 0;
-        var sa6: os.sockaddr_in6 = undefined;
-        @memset(@ptrCast([*]u8, &sa6), 0, @sizeOf(os.sockaddr_in6));
-        var da6 = os.sockaddr_in6{
-            .family = os.AF_INET6,
+        var sa6: os.sockaddr.in6 = undefined;
+        @memset(@as([*]u8, @ptrCast(&sa6))[0..@sizeOf(os.sockaddr.in6)], 0);
+        var da6 = os.sockaddr.in6{
+            .family = os.AF.INET6,
             .scope_id = addr.addr.in6.sa.scope_id,
             .port = 65535,
             .flowinfo = 0,
             .addr = [1]u8{0} ** 16,
         };
-        var sa4: os.sockaddr_in = undefined;
-        @memset(@ptrCast([*]u8, &sa4), 0, @sizeOf(os.sockaddr_in));
-        var da4 = os.sockaddr_in{
-            .family = os.AF_INET,
+        var sa4: os.sockaddr.in = undefined;
+        @memset(@as([*]u8, @ptrCast(&sa4))[0..@sizeOf(os.sockaddr.in)], 0);
+        var da4 = os.sockaddr.in{
+            .family = os.AF.INET,
             .port = 65535,
             .addr = 0,
             .zero = [1]u8{0} ** 8,
@@ -901,21 +1043,21 @@ fn linuxLookupName(
         var da: *align(4) os.sockaddr = undefined;
         var salen: os.socklen_t = undefined;
         var dalen: os.socklen_t = undefined;
-        if (addr.addr.any.family == os.AF_INET6) {
-            mem.copy(u8, &da6.addr, &addr.addr.in6.sa.addr);
-            da = @ptrCast(*os.sockaddr, &da6);
-            dalen = @sizeOf(os.sockaddr_in6);
-            sa = @ptrCast(*os.sockaddr, &sa6);
-            salen = @sizeOf(os.sockaddr_in6);
+        if (addr.addr.any.family == os.AF.INET6) {
+            da6.addr = addr.addr.in6.sa.addr;
+            da = @ptrCast(&da6);
+            dalen = @sizeOf(os.sockaddr.in6);
+            sa = @ptrCast(&sa6);
+            salen = @sizeOf(os.sockaddr.in6);
         } else {
-            mem.copy(u8, &sa6.addr, "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff");
-            mem.copy(u8, &da6.addr, "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff");
-            mem.writeIntNative(u32, da6.addr[12..], addr.addr.in.sa.addr);
+            sa6.addr[0..12].* = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff".*;
+            da6.addr[0..12].* = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff".*;
+            mem.writeInt(u32, da6.addr[12..], addr.addr.in.sa.addr, native_endian);
             da4.addr = addr.addr.in.sa.addr;
-            da = @ptrCast(*os.sockaddr, &da4);
-            dalen = @sizeOf(os.sockaddr_in);
-            sa = @ptrCast(*os.sockaddr, &sa4);
-            salen = @sizeOf(os.sockaddr_in);
+            da = @ptrCast(&da4);
+            dalen = @sizeOf(os.sockaddr.in);
+            sa = @ptrCast(&sa4);
+            salen = @sizeOf(os.sockaddr.in);
         }
         const dpolicy = policyOf(da6.addr);
         const dscope: i32 = scopeOf(da6.addr);
@@ -923,15 +1065,15 @@ fn linuxLookupName(
         const dprec: i32 = dpolicy.prec;
         const MAXADDRS = 3;
         var prefixlen: i32 = 0;
-        const sock_flags = os.SOCK_DGRAM | os.SOCK_CLOEXEC;
-        if (os.socket(addr.addr.any.family, sock_flags, os.IPPROTO_UDP)) |fd| syscalls: {
+        const sock_flags = os.SOCK.DGRAM | os.SOCK.CLOEXEC;
+        if (os.socket(addr.addr.any.family, sock_flags, os.IPPROTO.UDP)) |fd| syscalls: {
             defer os.closeSocket(fd);
             os.connect(fd, da, dalen) catch break :syscalls;
             key |= DAS_USABLE;
             os.getsockname(fd, sa, &salen) catch break :syscalls;
-            if (addr.addr.any.family == os.AF_INET) {
+            if (addr.addr.any.family == os.AF.INET) {
                 // TODO sa6.addr[12..16] should return *[4]u8, making this cast unnecessary.
-                mem.writeIntNative(u32, @ptrCast(*[4]u8, &sa6.addr[12]), sa4.addr);
+                mem.writeInt(u32, @as(*[4]u8, @ptrCast(&sa6.addr[12])), sa4.addr, native_endian);
             }
             if (dscope == @as(i32, scopeOf(sa6.addr))) key |= DAS_MATCHINGSCOPE;
             if (dlabel == labelOf(sa6.addr)) key |= DAS_MATCHINGLABEL;
@@ -940,10 +1082,10 @@ fn linuxLookupName(
         key |= dprec << DAS_PREC_SHIFT;
         key |= (15 - dscope) << DAS_SCOPE_SHIFT;
         key |= prefixlen << DAS_PREFIX_SHIFT;
-        key |= (MAXADDRS - @intCast(i32, i)) << DAS_ORDER_SHIFT;
+        key |= (MAXADDRS - @as(i32, @intCast(i))) << DAS_ORDER_SHIFT;
         addr.sortkey = key;
     }
-    std.sort.sort(LookupAddr, addrs.items, {}, addrCmpLessThan);
+    mem.sort(LookupAddr, addrs.items, {}, addrCmpLessThan);
 }
 
 const Policy = struct {
@@ -1007,7 +1149,7 @@ const defined_policies = [_]Policy{
 };
 
 fn policyOf(a: [16]u8) *const Policy {
-    for (defined_policies) |*policy| {
+    for (&defined_policies) |*policy| {
         if (!mem.eql(u8, a[0..policy.len], policy.addr[0..policy.len])) continue;
         if ((a[policy.len] & policy.mask) != policy.addr[policy.len]) continue;
         return policy;
@@ -1032,7 +1174,7 @@ fn prefixMatch(s: [16]u8, d: [16]u8) u8 {
     // address. However the definition of the source prefix length is
     // not clear and thus this limiting is not yet implemented.
     var i: u8 = 0;
-    while (i < 128 and ((s[i / 8] ^ d[i / 8]) & (@as(u8, 128) >> @intCast(u3, i % 8))) == 0) : (i += 1) {}
+    while (i < 128 and ((s[i / 8] ^ d[i / 8]) & (@as(u8, 128) >> @as(u3, @intCast(i % 8)))) == 0) : (i += 1) {}
     return i;
 }
 
@@ -1061,6 +1203,7 @@ fn IN6_IS_ADDR_SITELOCAL(a: [16]u8) bool {
 
 // Parameters `b` and `a` swapped to make this descending.
 fn addrCmpLessThan(context: void, b: LookupAddr, a: LookupAddr) bool {
+    _ = context;
     return a.sortkey < b.sortkey;
 }
 
@@ -1070,24 +1213,24 @@ fn linuxLookupNameFromNull(
     flags: u32,
     port: u16,
 ) !void {
-    if ((flags & std.c.AI_PASSIVE) != 0) {
-        if (family != os.AF_INET6) {
+    if ((flags & std.c.AI.PASSIVE) != 0) {
+        if (family != os.AF.INET6) {
             (try addrs.addOne()).* = LookupAddr{
                 .addr = Address.initIp4([1]u8{0} ** 4, port),
             };
         }
-        if (family != os.AF_INET) {
+        if (family != os.AF.INET) {
             (try addrs.addOne()).* = LookupAddr{
                 .addr = Address.initIp6([1]u8{0} ** 16, port, 0, 0),
             };
         }
     } else {
-        if (family != os.AF_INET6) {
+        if (family != os.AF.INET6) {
             (try addrs.addOne()).* = LookupAddr{
                 .addr = Address.initIp4([4]u8{ 127, 0, 0, 1 }, port),
             };
         }
-        if (family != os.AF_INET) {
+        if (family != os.AF.INET) {
             (try addrs.addOne()).* = LookupAddr{
                 .addr = Address.initIp6(([1]u8{0} ** 15) ++ [1]u8{1}, port, 0, 0),
             };
@@ -1111,20 +1254,22 @@ fn linuxLookupNameFromHosts(
     };
     defer file.close();
 
-    const stream = std.io.bufferedReader(file.reader()).reader();
+    var buffered_reader = std.io.bufferedReader(file.reader());
+    const reader = buffered_reader.reader();
     var line_buf: [512]u8 = undefined;
-    while (stream.readUntilDelimiterOrEof(&line_buf, '\n') catch |err| switch (err) {
+    while (reader.readUntilDelimiterOrEof(&line_buf, '\n') catch |err| switch (err) {
         error.StreamTooLong => blk: {
-            // Skip to the delimiter in the stream, to fix parsing
-            try stream.skipUntilDelimiterOrEof('\n');
+            // Skip to the delimiter in the reader, to fix parsing
+            try reader.skipUntilDelimiterOrEof('\n');
             // Use the truncated line. A truncated comment or hostname will be handled correctly.
             break :blk &line_buf;
         },
         else => |e| return e,
     }) |line| {
-        const no_comment_line = mem.split(line, "#").next().?;
+        var split_it = mem.splitScalar(u8, line, '#');
+        const no_comment_line = split_it.first();
 
-        var line_it = mem.tokenize(no_comment_line, " \t");
+        var line_it = mem.tokenizeAny(u8, no_comment_line, " \t");
         const ip_text = line_it.next() orelse continue;
         var first_name_text: ?[]const u8 = null;
         while (line_it.next()) |name_text| {
@@ -1141,6 +1286,7 @@ fn linuxLookupNameFromHosts(
             error.Incomplete,
             error.InvalidIPAddressFormat,
             error.InvalidIpv4Mapping,
+            error.NonCanonical,
             => continue,
         };
         try addrs.append(LookupAddr{ .addr = addr });
@@ -1158,7 +1304,7 @@ pub fn isValidHostName(hostname: []const u8) bool {
     if (hostname.len >= 254) return false;
     if (!std.unicode.utf8ValidateSlice(hostname)) return false;
     for (hostname) |byte| {
-        if (byte >= 0x80 or byte == '.' or byte == '-' or std.ascii.isAlNum(byte)) {
+        if (!std.ascii.isASCII(byte) or byte == '.' or byte == '-' or std.ascii.isAlphanumeric(byte)) {
             continue;
         }
         return false;
@@ -1200,10 +1346,10 @@ fn linuxLookupNameFromDnsSearch(
     // name is not a CNAME record) and serves as a buffer for passing
     // the full requested name to name_from_dns.
     try canon.resize(canon_name.len);
-    mem.copy(u8, canon.items, canon_name);
+    @memcpy(canon.items, canon_name);
     try canon.append('.');
 
-    var tok_it = mem.tokenize(search, " \t");
+    var tok_it = mem.tokenizeAny(u8, search, " \t");
     while (tok_it.next()) |tok| {
         canon.shrinkRetainingCapacity(canon_name.len + 1);
         try canon.appendSlice(tok);
@@ -1239,8 +1385,8 @@ fn linuxLookupNameFromDns(
         rr: u8,
     };
     const afrrs = [_]AfRr{
-        AfRr{ .af = os.AF_INET6, .rr = os.RR_A },
-        AfRr{ .af = os.AF_INET, .rr = os.RR_AAAA },
+        AfRr{ .af = os.AF.INET6, .rr = os.RR.A },
+        AfRr{ .af = os.AF.INET, .rr = os.RR.AAAA },
     };
     var qbuf: [2][280]u8 = undefined;
     var abuf: [2][512]u8 = undefined;
@@ -1290,7 +1436,7 @@ const ResolvConf = struct {
 
 /// Ignores lines longer than 512 bytes.
 /// TODO: https://github.com/ziglang/zig/issues/2765 and https://github.com/ziglang/zig/issues/2761
-fn getResolvConf(allocator: *mem.Allocator, rc: *ResolvConf) !void {
+fn getResolvConf(allocator: mem.Allocator, rc: *ResolvConf) !void {
     rc.* = ResolvConf{
         .ns = std.ArrayList(LookupAddr).init(allocator),
         .search = std.ArrayList(u8).init(allocator),
@@ -1309,7 +1455,8 @@ fn getResolvConf(allocator: *mem.Allocator, rc: *ResolvConf) !void {
     };
     defer file.close();
 
-    const stream = std.io.bufferedReader(file.reader()).reader();
+    var buf_reader = std.io.bufferedReader(file.reader());
+    const stream = buf_reader.reader();
     var line_buf: [512]u8 = undefined;
     while (stream.readUntilDelimiterOrEof(&line_buf, '\n') catch |err| switch (err) {
         error.StreamTooLong => blk: {
@@ -1320,25 +1467,29 @@ fn getResolvConf(allocator: *mem.Allocator, rc: *ResolvConf) !void {
         },
         else => |e| return e,
     }) |line| {
-        const no_comment_line = mem.split(line, "#").next().?;
-        var line_it = mem.tokenize(no_comment_line, " \t");
+        const no_comment_line = no_comment_line: {
+            var split = mem.splitScalar(u8, line, '#');
+            break :no_comment_line split.first();
+        };
+        var line_it = mem.tokenizeAny(u8, no_comment_line, " \t");
 
         const token = line_it.next() orelse continue;
         if (mem.eql(u8, token, "options")) {
             while (line_it.next()) |sub_tok| {
-                var colon_it = mem.split(sub_tok, ":");
-                const name = colon_it.next().?;
+                var colon_it = mem.splitScalar(u8, sub_tok, ':');
+                const name = colon_it.first();
                 const value_txt = colon_it.next() orelse continue;
                 const value = std.fmt.parseInt(u8, value_txt, 10) catch |err| switch (err) {
-                    error.Overflow => 255,
+                    // TODO https://github.com/ziglang/zig/issues/11812
+                    error.Overflow => @as(u8, 255),
                     error.InvalidCharacter => continue,
                 };
                 if (mem.eql(u8, name, "ndots")) {
-                    rc.ndots = std.math.min(value, 15);
+                    rc.ndots = @min(value, 15);
                 } else if (mem.eql(u8, name, "attempts")) {
-                    rc.attempts = std.math.min(value, 10);
+                    rc.attempts = @min(value, 10);
                 } else if (mem.eql(u8, name, "timeout")) {
-                    rc.timeout = std.math.min(value, 60);
+                    rc.timeout = @min(value, 60);
                 }
             }
         } else if (mem.eql(u8, token, "nameserver")) {
@@ -1373,8 +1524,8 @@ fn resMSendRc(
     const timeout = 1000 * rc.timeout;
     const attempts = rc.attempts;
 
-    var sl: os.socklen_t = @sizeOf(os.sockaddr_in);
-    var family: os.sa_family_t = os.AF_INET;
+    var sl: os.socklen_t = @sizeOf(os.sockaddr.in);
+    var family: os.sa_family_t = os.AF.INET;
 
     var ns_list = std.ArrayList(Address).init(rc.ns.allocator);
     defer ns_list.deinit();
@@ -1382,68 +1533,71 @@ fn resMSendRc(
     try ns_list.resize(rc.ns.items.len);
     const ns = ns_list.items;
 
-    for (rc.ns.items) |iplit, i| {
+    for (rc.ns.items, 0..) |iplit, i| {
         ns[i] = iplit.addr;
         assert(ns[i].getPort() == 53);
-        if (iplit.addr.any.family != os.AF_INET) {
-            sl = @sizeOf(os.sockaddr_in6);
-            family = os.AF_INET6;
+        if (iplit.addr.any.family != os.AF.INET) {
+            family = os.AF.INET6;
         }
     }
 
-    // Get local address and open/bind a socket
-    var sa: Address = undefined;
-    @memset(@ptrCast([*]u8, &sa), 0, @sizeOf(Address));
-    sa.any.family = family;
-    const flags = os.SOCK_DGRAM | os.SOCK_CLOEXEC | os.SOCK_NONBLOCK;
+    const flags = os.SOCK.DGRAM | os.SOCK.CLOEXEC | os.SOCK.NONBLOCK;
     const fd = os.socket(family, flags, 0) catch |err| switch (err) {
         error.AddressFamilyNotSupported => blk: {
             // Handle case where system lacks IPv6 support
-            if (family == os.AF_INET6) {
-                family = os.AF_INET;
-                break :blk try os.socket(os.AF_INET, flags, 0);
+            if (family == os.AF.INET6) {
+                family = os.AF.INET;
+                break :blk try os.socket(os.AF.INET, flags, 0);
             }
             return err;
         },
         else => |e| return e,
     };
     defer os.closeSocket(fd);
-    try os.bind(fd, &sa.any, sl);
 
     // Past this point, there are no errors. Each individual query will
     // yield either no reply (indicated by zero length) or an answer
     // packet which is up to the caller to interpret.
 
     // Convert any IPv4 addresses in a mixed environment to v4-mapped
-    // TODO
-    //if (family == AF_INET6) {
-    //    setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &(int){0}, sizeof 0);
-    //    for (i=0; i<nns; i++) {
-    //        if (ns[i].sin.sin_family != AF_INET) continue;
-    //        memcpy(ns[i].sin6.sin6_addr.s6_addr+12,
-    //            &ns[i].sin.sin_addr, 4);
-    //        memcpy(ns[i].sin6.sin6_addr.s6_addr,
-    //            "\0\0\0\0\0\0\0\0\0\0\xff\xff", 12);
-    //        ns[i].sin6.sin6_family = AF_INET6;
-    //        ns[i].sin6.sin6_flowinfo = 0;
-    //        ns[i].sin6.sin6_scope_id = 0;
-    //    }
-    //}
+    if (family == os.AF.INET6) {
+        try os.setsockopt(
+            fd,
+            os.SOL.IPV6,
+            os.linux.IPV6.V6ONLY,
+            &mem.toBytes(@as(c_int, 0)),
+        );
+        for (0..ns.len) |i| {
+            if (ns[i].any.family != os.AF.INET) continue;
+            mem.writeInt(u32, ns[i].in6.sa.addr[12..], ns[i].in.sa.addr, native_endian);
+            ns[i].in6.sa.addr[0..12].* = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff".*;
+            ns[i].any.family = os.AF.INET6;
+            ns[i].in6.sa.flowinfo = 0;
+            ns[i].in6.sa.scope_id = 0;
+        }
+        sl = @sizeOf(os.sockaddr.in6);
+    }
+
+    // Get local address and open/bind a socket
+    var sa: Address = undefined;
+    @memset(@as([*]u8, @ptrCast(&sa))[0..@sizeOf(Address)], 0);
+    sa.any.family = family;
+    try os.bind(fd, &sa.any, sl);
 
     var pfd = [1]os.pollfd{os.pollfd{
         .fd = fd,
-        .events = os.POLLIN,
+        .events = os.POLL.IN,
         .revents = undefined,
     }};
     const retry_interval = timeout / attempts;
     var next: u32 = 0;
-    var t2: u64 = @bitCast(u64, std.time.milliTimestamp());
+    var t2: u64 = @as(u64, @bitCast(std.time.milliTimestamp()));
     var t0 = t2;
     var t1 = t2 - retry_interval;
 
     var servfail_retry: usize = undefined;
 
-    outer: while (t2 - t0 < timeout) : (t2 = @bitCast(u64, std.time.milliTimestamp())) {
+    outer: while (t2 - t0 < timeout) : (t2 = @as(u64, @bitCast(std.time.milliTimestamp()))) {
         if (t2 - t1 >= retry_interval) {
             // Query all configured nameservers in parallel
             var i: usize = 0;
@@ -1452,9 +1606,9 @@ fn resMSendRc(
                     var j: usize = 0;
                     while (j < ns.len) : (j += 1) {
                         if (std.io.is_async) {
-                            _ = std.event.Loop.instance.?.sendto(fd, queries[i], os.MSG_NOSIGNAL, &ns[j].any, sl) catch undefined;
+                            _ = std.event.Loop.instance.?.sendto(fd, queries[i], os.MSG.NOSIGNAL, &ns[j].any, sl) catch undefined;
                         } else {
-                            _ = os.sendto(fd, queries[i], os.MSG_NOSIGNAL, &ns[j].any, sl) catch undefined;
+                            _ = os.sendto(fd, queries[i], os.MSG.NOSIGNAL, &ns[j].any, sl) catch undefined;
                         }
                     }
                 }
@@ -1464,7 +1618,7 @@ fn resMSendRc(
         }
 
         // Wait for a response, or until time to retry
-        const clamped_timeout = std.math.min(@as(u31, std.math.maxInt(u31)), t1 + retry_interval - t2);
+        const clamped_timeout = @min(@as(u31, std.math.maxInt(u31)), t1 + retry_interval - t2);
         const nevents = os.poll(&pfd, clamped_timeout) catch 0;
         if (nevents == 0) continue;
 
@@ -1500,9 +1654,9 @@ fn resMSendRc(
                 2 => if (servfail_retry != 0) {
                     servfail_retry -= 1;
                     if (std.io.is_async) {
-                        _ = std.event.Loop.instance.?.sendto(fd, queries[i], os.MSG_NOSIGNAL, &ns[j].any, sl) catch undefined;
+                        _ = std.event.Loop.instance.?.sendto(fd, queries[i], os.MSG.NOSIGNAL, &ns[j].any, sl) catch undefined;
                     } else {
-                        _ = os.sendto(fd, queries[i], os.MSG_NOSIGNAL, &ns[j].any, sl) catch undefined;
+                        _ = os.sendto(fd, queries[i], os.MSG.NOSIGNAL, &ns[j].any, sl) catch undefined;
                     }
                 },
                 else => continue,
@@ -1514,7 +1668,7 @@ fn resMSendRc(
             if (i == next) {
                 while (next < queries.len and answers[next].len != 0) : (next += 1) {}
             } else {
-                mem.copy(u8, answer_bufs[i], answer_bufs[next][0..rlen]);
+                @memcpy(answer_bufs[i][0..rlen], answer_bufs[next][0..rlen]);
             }
 
             if (next == queries.len) break :outer;
@@ -1537,45 +1691,45 @@ fn dnsParse(
     if (qdcount + ancount > 64) return error.InvalidDnsPacket;
     while (qdcount != 0) {
         qdcount -= 1;
-        while (@ptrToInt(p) - @ptrToInt(r.ptr) < r.len and p[0] -% 1 < 127) p += 1;
-        if (p[0] > 193 or (p[0] == 193 and p[1] > 254) or @ptrToInt(p) > @ptrToInt(r.ptr) + r.len - 6)
+        while (@intFromPtr(p) - @intFromPtr(r.ptr) < r.len and p[0] -% 1 < 127) p += 1;
+        if (p[0] > 193 or (p[0] == 193 and p[1] > 254) or @intFromPtr(p) > @intFromPtr(r.ptr) + r.len - 6)
             return error.InvalidDnsPacket;
-        p += @as(usize, 5) + @boolToInt(p[0] != 0);
+        p += @as(usize, 5) + @intFromBool(p[0] != 0);
     }
     while (ancount != 0) {
         ancount -= 1;
-        while (@ptrToInt(p) - @ptrToInt(r.ptr) < r.len and p[0] -% 1 < 127) p += 1;
-        if (p[0] > 193 or (p[0] == 193 and p[1] > 254) or @ptrToInt(p) > @ptrToInt(r.ptr) + r.len - 6)
+        while (@intFromPtr(p) - @intFromPtr(r.ptr) < r.len and p[0] -% 1 < 127) p += 1;
+        if (p[0] > 193 or (p[0] == 193 and p[1] > 254) or @intFromPtr(p) > @intFromPtr(r.ptr) + r.len - 6)
             return error.InvalidDnsPacket;
-        p += @as(usize, 1) + @boolToInt(p[0] != 0);
+        p += @as(usize, 1) + @intFromBool(p[0] != 0);
         const len = p[8] * @as(usize, 256) + p[9];
-        if (@ptrToInt(p) + len > @ptrToInt(r.ptr) + r.len) return error.InvalidDnsPacket;
-        try callback(ctx, p[1], p[10 .. 10 + len], r);
+        if (@intFromPtr(p) + len > @intFromPtr(r.ptr) + r.len) return error.InvalidDnsPacket;
+        try callback(ctx, p[1], p[10..][0..len], r);
         p += 10 + len;
     }
 }
 
 fn dnsParseCallback(ctx: dpc_ctx, rr: u8, data: []const u8, packet: []const u8) !void {
     switch (rr) {
-        os.RR_A => {
+        os.RR.A => {
             if (data.len != 4) return error.InvalidDnsARecord;
             const new_addr = try ctx.addrs.addOne();
             new_addr.* = LookupAddr{
                 .addr = Address.initIp4(data[0..4].*, ctx.port),
             };
         },
-        os.RR_AAAA => {
+        os.RR.AAAA => {
             if (data.len != 16) return error.InvalidDnsAAAARecord;
             const new_addr = try ctx.addrs.addOne();
             new_addr.* = LookupAddr{
                 .addr = Address.initIp6(data[0..16].*, ctx.port, 0, 0),
             };
         },
-        os.RR_CNAME => {
+        os.RR.CNAME => {
             var tmp: [256]u8 = undefined;
             // Returns len of compressed name. strlen to get canon name.
             _ = try os.dn_expand(packet, data, &tmp);
-            const canon_name = mem.spanZ(std.meta.assumeSentinel(&tmp, 0));
+            const canon_name = mem.sliceTo(&tmp, 0);
             if (isValidHostName(canon_name)) {
                 ctx.canon.items.len = 0;
                 try ctx.canon.appendSlice(canon_name);
@@ -1610,7 +1764,7 @@ pub const Stream = struct {
     }
 
     pub fn read(self: Stream, buffer: []u8) ReadError!usize {
-        if (std.Target.current.os.tag == .windows) {
+        if (builtin.os.tag == .windows) {
             return os.windows.ReadFile(self.handle, buffer, null, io.default_mode);
         }
 
@@ -1621,11 +1775,45 @@ pub const Stream = struct {
         }
     }
 
+    pub fn readv(s: Stream, iovecs: []const os.iovec) ReadError!usize {
+        if (builtin.os.tag == .windows) {
+            // TODO improve this to use ReadFileScatter
+            if (iovecs.len == 0) return @as(usize, 0);
+            const first = iovecs[0];
+            return os.windows.ReadFile(s.handle, first.iov_base[0..first.iov_len], null, io.default_mode);
+        }
+
+        return os.readv(s.handle, iovecs);
+    }
+
+    /// Returns the number of bytes read. If the number read is smaller than
+    /// `buffer.len`, it means the stream reached the end. Reaching the end of
+    /// a stream is not an error condition.
+    pub fn readAll(s: Stream, buffer: []u8) ReadError!usize {
+        return readAtLeast(s, buffer, buffer.len);
+    }
+
+    /// Returns the number of bytes read, calling the underlying read function
+    /// the minimal number of times until the buffer has at least `len` bytes
+    /// filled. If the number read is less than `len` it means the stream
+    /// reached the end. Reaching the end of the stream is not an error
+    /// condition.
+    pub fn readAtLeast(s: Stream, buffer: []u8, len: usize) ReadError!usize {
+        assert(len <= buffer.len);
+        var index: usize = 0;
+        while (index < len) {
+            const amt = try s.read(buffer[index..]);
+            if (amt == 0) break;
+            index += amt;
+        }
+        return index;
+    }
+
     /// TODO in evented I/O mode, this implementation incorrectly uses the event loop's
     /// file system thread instead of non-blocking. It needs to be reworked to properly
     /// use non-blocking I/O.
     pub fn write(self: Stream, buffer: []const u8) WriteError!usize {
-        if (std.Target.current.os.tag == .windows) {
+        if (builtin.os.tag == .windows) {
             return os.windows.WriteFile(self.handle, buffer, null, io.default_mode);
         }
 
@@ -1633,6 +1821,13 @@ pub const Stream = struct {
             return std.event.Loop.instance.?.write(self.handle, buffer, false);
         } else {
             return os.write(self.handle, buffer);
+        }
+    }
+
+    pub fn writeAll(self: Stream, bytes: []const u8) WriteError!void {
+        var index: usize = 0;
+        while (index < bytes.len) {
+            index += try self.write(bytes[index..]);
         }
     }
 
@@ -1675,6 +1870,7 @@ pub const StreamServer = struct {
     /// Copied from `Options` on `init`.
     kernel_backlog: u31,
     reuse_address: bool,
+    reuse_port: bool,
 
     /// `undefined` until `listen` returns successfully.
     listen_address: Address,
@@ -1687,8 +1883,11 @@ pub const StreamServer = struct {
         /// seeing "Connection refused".
         kernel_backlog: u31 = 128,
 
-        /// Enable SO_REUSEADDR on the socket.
+        /// Enable SO.REUSEADDR on the socket.
         reuse_address: bool = false,
+
+        /// Enable SO.REUSEPORT on the socket.
+        reuse_port: bool = false,
     };
 
     /// After this call succeeds, resources have been acquired and must
@@ -1698,6 +1897,7 @@ pub const StreamServer = struct {
             .sockfd = null,
             .kernel_backlog = options.kernel_backlog,
             .reuse_address = options.reuse_address,
+            .reuse_port = options.reuse_port,
             .listen_address = undefined,
         };
     }
@@ -1709,9 +1909,9 @@ pub const StreamServer = struct {
     }
 
     pub fn listen(self: *StreamServer, address: Address) !void {
-        const nonblock = if (std.io.is_async) os.SOCK_NONBLOCK else 0;
-        const sock_flags = os.SOCK_STREAM | os.SOCK_CLOEXEC | nonblock;
-        const proto = if (address.any.family == os.AF_UNIX) @as(u32, 0) else os.IPPROTO_TCP;
+        const nonblock = if (std.io.is_async) os.SOCK.NONBLOCK else 0;
+        const sock_flags = os.SOCK.STREAM | os.SOCK.CLOEXEC | nonblock;
+        const proto = if (address.any.family == os.AF.UNIX) @as(u32, 0) else os.IPPROTO.TCP;
 
         const sockfd = try os.socket(address.any.family, sock_flags, proto);
         self.sockfd = sockfd;
@@ -1723,8 +1923,16 @@ pub const StreamServer = struct {
         if (self.reuse_address) {
             try os.setsockopt(
                 sockfd,
-                os.SOL_SOCKET,
-                os.SO_REUSEADDR,
+                os.SOL.SOCKET,
+                os.SO.REUSEADDR,
+                &mem.toBytes(@as(c_int, 1)),
+            );
+        }
+        if (@hasDecl(os.SO, "REUSEPORT") and self.reuse_port) {
+            try os.setsockopt(
+                sockfd,
+                os.SOL.SOCKET,
+                os.SO.REUSEPORT,
                 &mem.toBytes(@as(c_int, 1)),
             );
         }
@@ -1788,9 +1996,9 @@ pub const StreamServer = struct {
         const accept_result = blk: {
             if (std.io.is_async) {
                 const loop = std.event.Loop.instance orelse return error.UnexpectedError;
-                break :blk loop.accept(self.sockfd.?, &accepted_addr.any, &adr_len, os.SOCK_CLOEXEC);
+                break :blk loop.accept(self.sockfd.?, &accepted_addr.any, &adr_len, os.SOCK.CLOEXEC);
             } else {
-                break :blk os.accept(self.sockfd.?, &accepted_addr.any, &adr_len, os.SOCK_CLOEXEC);
+                break :blk os.accept(self.sockfd.?, &accepted_addr.any, &adr_len, os.SOCK.CLOEXEC);
             }
         };
 

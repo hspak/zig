@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("std");
 const testing = std.testing;
 
@@ -14,16 +9,16 @@ pub fn readULEB128(comptime T: type, reader: anytype) !T {
 
     const max_group = (@typeInfo(U).Int.bits + 6) / 7;
 
-    var value = @as(U, 0);
-    var group = @as(ShiftT, 0);
+    var value: U = 0;
+    var group: ShiftT = 0;
 
     while (group < max_group) : (group += 1) {
         const byte = try reader.readByte();
-        var temp = @as(U, byte & 0x7f);
 
-        if (@shlWithOverflow(U, temp, group * 7, &temp)) return error.Overflow;
+        const ov = @shlWithOverflow(@as(U, byte & 0x7f), group * 7);
+        if (ov[1] != 0) return error.Overflow;
 
-        value |= temp;
+        value |= ov[0];
         if (byte & 0x80 == 0) break;
     } else {
         return error.Overflow;
@@ -34,17 +29,17 @@ pub fn readULEB128(comptime T: type, reader: anytype) !T {
         if (value > std.math.maxInt(T)) return error.Overflow;
     }
 
-    return @truncate(T, value);
+    return @as(T, @truncate(value));
 }
 
 /// Write a single unsigned integer as unsigned LEB128 to the given writer.
 pub fn writeULEB128(writer: anytype, uint_value: anytype) !void {
     const T = @TypeOf(uint_value);
     const U = if (@typeInfo(T).Int.bits < 8) u8 else T;
-    var value = @intCast(U, uint_value);
+    var value: U = @intCast(uint_value);
 
     while (true) {
-        const byte = @truncate(u8, value & 0x7f);
+        const byte: u8 = @truncate(value & 0x7f);
         value >>= 7;
         if (value == 0) {
             try writer.writeByte(byte);
@@ -69,26 +64,34 @@ pub fn readILEB128(comptime T: type, reader: anytype) !T {
 
     while (group < max_group) : (group += 1) {
         const byte = try reader.readByte();
-        var temp = @as(U, byte & 0x7f);
 
         const shift = group * 7;
-        if (@shlWithOverflow(U, temp, shift, &temp)) {
+        const ov = @shlWithOverflow(@as(U, byte & 0x7f), shift);
+        if (ov[1] != 0) {
             // Overflow is ok so long as the sign bit is set and this is the last byte
             if (byte & 0x80 != 0) return error.Overflow;
-            if (@bitCast(S, temp) >= 0) return error.Overflow;
+            if (@as(S, @bitCast(ov[0])) >= 0) return error.Overflow;
 
             // and all the overflowed bits are 1
-            const remaining_shift = @intCast(u3, @typeInfo(U).Int.bits - @as(u16, shift));
-            const remaining_bits = @bitCast(i8, byte | 0x80) >> remaining_shift;
+            const remaining_shift = @as(u3, @intCast(@typeInfo(U).Int.bits - @as(u16, shift)));
+            const remaining_bits = @as(i8, @bitCast(byte | 0x80)) >> remaining_shift;
             if (remaining_bits != -1) return error.Overflow;
+        } else {
+            // If we don't overflow and this is the last byte and the number being decoded
+            // is negative, check that the remaining bits are 1
+            if ((byte & 0x80 == 0) and (@as(S, @bitCast(ov[0])) < 0)) {
+                const remaining_shift = @as(u3, @intCast(@typeInfo(U).Int.bits - @as(u16, shift)));
+                const remaining_bits = @as(i8, @bitCast(byte | 0x80)) >> remaining_shift;
+                if (remaining_bits != -1) return error.Overflow;
+            }
         }
 
-        value |= temp;
+        value |= ov[0];
         if (byte & 0x80 == 0) {
             const needs_sign_ext = group + 1 < max_group;
             if (byte & 0x40 != 0 and needs_sign_ext) {
                 const ones = @as(S, -1);
-                value |= @bitCast(U, ones) << (shift + 7);
+                value |= @as(U, @bitCast(ones)) << (shift + 7);
             }
             break;
         }
@@ -96,13 +99,13 @@ pub fn readILEB128(comptime T: type, reader: anytype) !T {
         return error.Overflow;
     }
 
-    const result = @bitCast(S, value);
+    const result = @as(S, @bitCast(value));
     // Only applies if we extended to i8
     if (S != T) {
         if (result > std.math.maxInt(T) or result < std.math.minInt(T)) return error.Overflow;
     }
 
-    return @truncate(T, result);
+    return @as(T, @truncate(result));
 }
 
 /// Write a single signed integer as signed LEB128 to the given writer.
@@ -111,11 +114,11 @@ pub fn writeILEB128(writer: anytype, int_value: anytype) !void {
     const S = if (@typeInfo(T).Int.bits < 8) i8 else T;
     const U = std.meta.Int(.unsigned, @typeInfo(S).Int.bits);
 
-    var value = @intCast(S, int_value);
+    var value: S = @intCast(int_value);
 
     while (true) {
-        const uvalue = @bitCast(U, value);
-        const byte = @truncate(u8, uvalue);
+        const uvalue: U = @bitCast(value);
+        const byte: u8 = @truncate(uvalue);
         value >>= 6;
         if (value == -1 or value == 0) {
             try writer.writeByte(byte & 0x7F);
@@ -137,37 +140,37 @@ pub fn writeILEB128(writer: anytype, int_value: anytype) !void {
 pub fn writeUnsignedFixed(comptime l: usize, ptr: *[l]u8, int: std.meta.Int(.unsigned, l * 7)) void {
     const T = @TypeOf(int);
     const U = if (@typeInfo(T).Int.bits < 8) u8 else T;
-    var value = @intCast(U, int);
+    var value: U = @intCast(int);
 
     comptime var i = 0;
     inline while (i < (l - 1)) : (i += 1) {
-        const byte = @truncate(u8, value) | 0b1000_0000;
+        const byte = @as(u8, @truncate(value)) | 0b1000_0000;
         value >>= 7;
         ptr[i] = byte;
     }
-    ptr[i] = @truncate(u8, value);
+    ptr[i] = @as(u8, @truncate(value));
 }
 
 test "writeUnsignedFixed" {
     {
         var buf: [4]u8 = undefined;
         writeUnsignedFixed(4, &buf, 0);
-        testing.expect((try test_read_uleb128(u64, &buf)) == 0);
+        try testing.expect((try test_read_uleb128(u64, &buf)) == 0);
     }
     {
         var buf: [4]u8 = undefined;
         writeUnsignedFixed(4, &buf, 1);
-        testing.expect((try test_read_uleb128(u64, &buf)) == 1);
+        try testing.expect((try test_read_uleb128(u64, &buf)) == 1);
     }
     {
         var buf: [4]u8 = undefined;
         writeUnsignedFixed(4, &buf, 1000);
-        testing.expect((try test_read_uleb128(u64, &buf)) == 1000);
+        try testing.expect((try test_read_uleb128(u64, &buf)) == 1000);
     }
     {
         var buf: [4]u8 = undefined;
         writeUnsignedFixed(4, &buf, 10000000);
-        testing.expect((try test_read_uleb128(u64, &buf)) == 10000000);
+        try testing.expect((try test_read_uleb128(u64, &buf)) == 10000000);
     }
 }
 
@@ -198,7 +201,7 @@ fn test_read_ileb128_seq(comptime T: type, comptime N: usize, encoded: []const u
     var reader = std.io.fixedBufferStream(encoded);
     var i: usize = 0;
     while (i < N) : (i += 1) {
-        const v1 = try readILEB128(T, reader.reader());
+        _ = try readILEB128(T, reader.reader());
     }
 }
 
@@ -206,50 +209,52 @@ fn test_read_uleb128_seq(comptime T: type, comptime N: usize, encoded: []const u
     var reader = std.io.fixedBufferStream(encoded);
     var i: usize = 0;
     while (i < N) : (i += 1) {
-        const v1 = try readULEB128(T, reader.reader());
+        _ = try readULEB128(T, reader.reader());
     }
 }
 
 test "deserialize signed LEB128" {
     // Truncated
-    testing.expectError(error.EndOfStream, test_read_stream_ileb128(i64, "\x80"));
+    try testing.expectError(error.EndOfStream, test_read_stream_ileb128(i64, "\x80"));
 
     // Overflow
-    testing.expectError(error.Overflow, test_read_ileb128(i8, "\x80\x80\x40"));
-    testing.expectError(error.Overflow, test_read_ileb128(i16, "\x80\x80\x80\x40"));
-    testing.expectError(error.Overflow, test_read_ileb128(i32, "\x80\x80\x80\x80\x40"));
-    testing.expectError(error.Overflow, test_read_ileb128(i64, "\x80\x80\x80\x80\x80\x80\x80\x80\x80\x40"));
-    testing.expectError(error.Overflow, test_read_ileb128(i8, "\xff\x7e"));
+    try testing.expectError(error.Overflow, test_read_ileb128(i8, "\x80\x80\x40"));
+    try testing.expectError(error.Overflow, test_read_ileb128(i16, "\x80\x80\x80\x40"));
+    try testing.expectError(error.Overflow, test_read_ileb128(i32, "\x80\x80\x80\x80\x40"));
+    try testing.expectError(error.Overflow, test_read_ileb128(i64, "\x80\x80\x80\x80\x80\x80\x80\x80\x80\x40"));
+    try testing.expectError(error.Overflow, test_read_ileb128(i8, "\xff\x7e"));
+    try testing.expectError(error.Overflow, test_read_ileb128(i32, "\x80\x80\x80\x80\x08"));
+    try testing.expectError(error.Overflow, test_read_ileb128(i64, "\x80\x80\x80\x80\x80\x80\x80\x80\x80\x01"));
 
     // Decode SLEB128
-    testing.expect((try test_read_ileb128(i64, "\x00")) == 0);
-    testing.expect((try test_read_ileb128(i64, "\x01")) == 1);
-    testing.expect((try test_read_ileb128(i64, "\x3f")) == 63);
-    testing.expect((try test_read_ileb128(i64, "\x40")) == -64);
-    testing.expect((try test_read_ileb128(i64, "\x41")) == -63);
-    testing.expect((try test_read_ileb128(i64, "\x7f")) == -1);
-    testing.expect((try test_read_ileb128(i64, "\x80\x01")) == 128);
-    testing.expect((try test_read_ileb128(i64, "\x81\x01")) == 129);
-    testing.expect((try test_read_ileb128(i64, "\xff\x7e")) == -129);
-    testing.expect((try test_read_ileb128(i64, "\x80\x7f")) == -128);
-    testing.expect((try test_read_ileb128(i64, "\x81\x7f")) == -127);
-    testing.expect((try test_read_ileb128(i64, "\xc0\x00")) == 64);
-    testing.expect((try test_read_ileb128(i64, "\xc7\x9f\x7f")) == -12345);
-    testing.expect((try test_read_ileb128(i8, "\xff\x7f")) == -1);
-    testing.expect((try test_read_ileb128(i16, "\xff\xff\x7f")) == -1);
-    testing.expect((try test_read_ileb128(i32, "\xff\xff\xff\xff\x7f")) == -1);
-    testing.expect((try test_read_ileb128(i32, "\x80\x80\x80\x80\x08")) == -0x80000000);
-    testing.expect((try test_read_ileb128(i64, "\x80\x80\x80\x80\x80\x80\x80\x80\x80\x01")) == @bitCast(i64, @intCast(u64, 0x8000000000000000)));
-    testing.expect((try test_read_ileb128(i64, "\x80\x80\x80\x80\x80\x80\x80\x80\x40")) == -0x4000000000000000);
-    testing.expect((try test_read_ileb128(i64, "\x80\x80\x80\x80\x80\x80\x80\x80\x80\x7f")) == -0x8000000000000000);
+    try testing.expect((try test_read_ileb128(i64, "\x00")) == 0);
+    try testing.expect((try test_read_ileb128(i64, "\x01")) == 1);
+    try testing.expect((try test_read_ileb128(i64, "\x3f")) == 63);
+    try testing.expect((try test_read_ileb128(i64, "\x40")) == -64);
+    try testing.expect((try test_read_ileb128(i64, "\x41")) == -63);
+    try testing.expect((try test_read_ileb128(i64, "\x7f")) == -1);
+    try testing.expect((try test_read_ileb128(i64, "\x80\x01")) == 128);
+    try testing.expect((try test_read_ileb128(i64, "\x81\x01")) == 129);
+    try testing.expect((try test_read_ileb128(i64, "\xff\x7e")) == -129);
+    try testing.expect((try test_read_ileb128(i64, "\x80\x7f")) == -128);
+    try testing.expect((try test_read_ileb128(i64, "\x81\x7f")) == -127);
+    try testing.expect((try test_read_ileb128(i64, "\xc0\x00")) == 64);
+    try testing.expect((try test_read_ileb128(i64, "\xc7\x9f\x7f")) == -12345);
+    try testing.expect((try test_read_ileb128(i8, "\xff\x7f")) == -1);
+    try testing.expect((try test_read_ileb128(i16, "\xff\xff\x7f")) == -1);
+    try testing.expect((try test_read_ileb128(i32, "\xff\xff\xff\xff\x7f")) == -1);
+    try testing.expect((try test_read_ileb128(i32, "\x80\x80\x80\x80\x78")) == -0x80000000);
+    try testing.expect((try test_read_ileb128(i64, "\x80\x80\x80\x80\x80\x80\x80\x80\x80\x7f")) == @as(i64, @bitCast(@as(u64, @intCast(0x8000000000000000)))));
+    try testing.expect((try test_read_ileb128(i64, "\x80\x80\x80\x80\x80\x80\x80\x80\x40")) == -0x4000000000000000);
+    try testing.expect((try test_read_ileb128(i64, "\x80\x80\x80\x80\x80\x80\x80\x80\x80\x7f")) == -0x8000000000000000);
 
     // Decode unnormalized SLEB128 with extra padding bytes.
-    testing.expect((try test_read_ileb128(i64, "\x80\x00")) == 0);
-    testing.expect((try test_read_ileb128(i64, "\x80\x80\x00")) == 0);
-    testing.expect((try test_read_ileb128(i64, "\xff\x00")) == 0x7f);
-    testing.expect((try test_read_ileb128(i64, "\xff\x80\x00")) == 0x7f);
-    testing.expect((try test_read_ileb128(i64, "\x80\x81\x00")) == 0x80);
-    testing.expect((try test_read_ileb128(i64, "\x80\x81\x80\x00")) == 0x80);
+    try testing.expect((try test_read_ileb128(i64, "\x80\x00")) == 0);
+    try testing.expect((try test_read_ileb128(i64, "\x80\x80\x00")) == 0);
+    try testing.expect((try test_read_ileb128(i64, "\xff\x00")) == 0x7f);
+    try testing.expect((try test_read_ileb128(i64, "\xff\x80\x00")) == 0x7f);
+    try testing.expect((try test_read_ileb128(i64, "\x80\x81\x00")) == 0x80);
+    try testing.expect((try test_read_ileb128(i64, "\x80\x81\x80\x00")) == 0x80);
 
     // Decode sequence of SLEB128 values
     try test_read_ileb128_seq(i64, 4, "\x81\x01\x3f\x80\x7f\x80\x80\x80\x00");
@@ -257,39 +262,39 @@ test "deserialize signed LEB128" {
 
 test "deserialize unsigned LEB128" {
     // Truncated
-    testing.expectError(error.EndOfStream, test_read_stream_uleb128(u64, "\x80"));
+    try testing.expectError(error.EndOfStream, test_read_stream_uleb128(u64, "\x80"));
 
     // Overflow
-    testing.expectError(error.Overflow, test_read_uleb128(u8, "\x80\x02"));
-    testing.expectError(error.Overflow, test_read_uleb128(u8, "\x80\x80\x40"));
-    testing.expectError(error.Overflow, test_read_uleb128(u16, "\x80\x80\x84"));
-    testing.expectError(error.Overflow, test_read_uleb128(u16, "\x80\x80\x80\x40"));
-    testing.expectError(error.Overflow, test_read_uleb128(u32, "\x80\x80\x80\x80\x90"));
-    testing.expectError(error.Overflow, test_read_uleb128(u32, "\x80\x80\x80\x80\x40"));
-    testing.expectError(error.Overflow, test_read_uleb128(u64, "\x80\x80\x80\x80\x80\x80\x80\x80\x80\x40"));
+    try testing.expectError(error.Overflow, test_read_uleb128(u8, "\x80\x02"));
+    try testing.expectError(error.Overflow, test_read_uleb128(u8, "\x80\x80\x40"));
+    try testing.expectError(error.Overflow, test_read_uleb128(u16, "\x80\x80\x84"));
+    try testing.expectError(error.Overflow, test_read_uleb128(u16, "\x80\x80\x80\x40"));
+    try testing.expectError(error.Overflow, test_read_uleb128(u32, "\x80\x80\x80\x80\x90"));
+    try testing.expectError(error.Overflow, test_read_uleb128(u32, "\x80\x80\x80\x80\x40"));
+    try testing.expectError(error.Overflow, test_read_uleb128(u64, "\x80\x80\x80\x80\x80\x80\x80\x80\x80\x40"));
 
     // Decode ULEB128
-    testing.expect((try test_read_uleb128(u64, "\x00")) == 0);
-    testing.expect((try test_read_uleb128(u64, "\x01")) == 1);
-    testing.expect((try test_read_uleb128(u64, "\x3f")) == 63);
-    testing.expect((try test_read_uleb128(u64, "\x40")) == 64);
-    testing.expect((try test_read_uleb128(u64, "\x7f")) == 0x7f);
-    testing.expect((try test_read_uleb128(u64, "\x80\x01")) == 0x80);
-    testing.expect((try test_read_uleb128(u64, "\x81\x01")) == 0x81);
-    testing.expect((try test_read_uleb128(u64, "\x90\x01")) == 0x90);
-    testing.expect((try test_read_uleb128(u64, "\xff\x01")) == 0xff);
-    testing.expect((try test_read_uleb128(u64, "\x80\x02")) == 0x100);
-    testing.expect((try test_read_uleb128(u64, "\x81\x02")) == 0x101);
-    testing.expect((try test_read_uleb128(u64, "\x80\xc1\x80\x80\x10")) == 4294975616);
-    testing.expect((try test_read_uleb128(u64, "\x80\x80\x80\x80\x80\x80\x80\x80\x80\x01")) == 0x8000000000000000);
+    try testing.expect((try test_read_uleb128(u64, "\x00")) == 0);
+    try testing.expect((try test_read_uleb128(u64, "\x01")) == 1);
+    try testing.expect((try test_read_uleb128(u64, "\x3f")) == 63);
+    try testing.expect((try test_read_uleb128(u64, "\x40")) == 64);
+    try testing.expect((try test_read_uleb128(u64, "\x7f")) == 0x7f);
+    try testing.expect((try test_read_uleb128(u64, "\x80\x01")) == 0x80);
+    try testing.expect((try test_read_uleb128(u64, "\x81\x01")) == 0x81);
+    try testing.expect((try test_read_uleb128(u64, "\x90\x01")) == 0x90);
+    try testing.expect((try test_read_uleb128(u64, "\xff\x01")) == 0xff);
+    try testing.expect((try test_read_uleb128(u64, "\x80\x02")) == 0x100);
+    try testing.expect((try test_read_uleb128(u64, "\x81\x02")) == 0x101);
+    try testing.expect((try test_read_uleb128(u64, "\x80\xc1\x80\x80\x10")) == 4294975616);
+    try testing.expect((try test_read_uleb128(u64, "\x80\x80\x80\x80\x80\x80\x80\x80\x80\x01")) == 0x8000000000000000);
 
     // Decode ULEB128 with extra padding bytes
-    testing.expect((try test_read_uleb128(u64, "\x80\x00")) == 0);
-    testing.expect((try test_read_uleb128(u64, "\x80\x80\x00")) == 0);
-    testing.expect((try test_read_uleb128(u64, "\xff\x00")) == 0x7f);
-    testing.expect((try test_read_uleb128(u64, "\xff\x80\x00")) == 0x7f);
-    testing.expect((try test_read_uleb128(u64, "\x80\x81\x00")) == 0x80);
-    testing.expect((try test_read_uleb128(u64, "\x80\x81\x80\x00")) == 0x80);
+    try testing.expect((try test_read_uleb128(u64, "\x80\x00")) == 0);
+    try testing.expect((try test_read_uleb128(u64, "\x80\x80\x00")) == 0);
+    try testing.expect((try test_read_uleb128(u64, "\xff\x00")) == 0x7f);
+    try testing.expect((try test_read_uleb128(u64, "\xff\x80\x00")) == 0x7f);
+    try testing.expect((try test_read_uleb128(u64, "\x80\x81\x00")) == 0x80);
+    try testing.expect((try test_read_uleb128(u64, "\x80\x81\x80\x00")) == 0x80);
 
     // Decode sequence of ULEB128 values
     try test_read_uleb128_seq(u64, 4, "\x81\x01\x3f\x80\x7f\x80\x80\x80\x00");
@@ -309,11 +314,10 @@ fn test_write_leb128(value: anytype) !void {
     const B = std.meta.Int(signedness, larger_type_bits);
 
     const bytes_needed = bn: {
-        const S = std.meta.Int(signedness, @sizeOf(T) * 8);
         if (@typeInfo(T).Int.bits <= 7) break :bn @as(u16, 1);
 
-        const unused_bits = if (value < 0) @clz(T, ~value) else @clz(T, value);
-        const used_bits: u16 = (@typeInfo(T).Int.bits - unused_bits) + @boolToInt(t_signed);
+        const unused_bits = if (value < 0) @clz(~value) else @clz(value);
+        const used_bits: u16 = (@typeInfo(T).Int.bits - unused_bits) + @intFromBool(t_signed);
         if (used_bits <= 7) break :bn @as(u16, 1);
         break :bn ((used_bits + 6) / 7);
     };
@@ -326,19 +330,19 @@ fn test_write_leb128(value: anytype) !void {
     // stream write
     try writeStream(fbs.writer(), value);
     const w1_pos = fbs.pos;
-    testing.expect(w1_pos == bytes_needed);
+    try testing.expect(w1_pos == bytes_needed);
 
     // stream read
     fbs.pos = 0;
     const sr = try readStream(T, fbs.reader());
-    testing.expect(fbs.pos == w1_pos);
-    testing.expect(sr == value);
+    try testing.expect(fbs.pos == w1_pos);
+    try testing.expect(sr == value);
 
     // bigger type stream read
     fbs.pos = 0;
     const bsr = try readStream(B, fbs.reader());
-    testing.expect(fbs.pos == w1_pos);
-    testing.expect(bsr == value);
+    try testing.expect(fbs.pos == w1_pos);
+    try testing.expect(bsr == value);
 }
 
 test "serialize unsigned LEB128" {
@@ -351,7 +355,7 @@ test "serialize unsigned LEB128" {
         const max = std.math.maxInt(T);
         var i = @as(std.meta.Int(.unsigned, @typeInfo(T).Int.bits + 1), min);
 
-        while (i <= max) : (i += 1) try test_write_leb128(@intCast(T, i));
+        while (i <= max) : (i += 1) try test_write_leb128(@as(T, @intCast(i)));
     }
 }
 
@@ -369,6 +373,6 @@ test "serialize signed LEB128" {
         const max = std.math.maxInt(T);
         var i = @as(std.meta.Int(.signed, @typeInfo(T).Int.bits + 1), min);
 
-        while (i <= max) : (i += 1) try test_write_leb128(@intCast(T, i));
+        while (i <= max) : (i += 1) try test_write_leb128(@as(T, @intCast(i)));
     }
 }

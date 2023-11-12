@@ -1,43 +1,38 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
-// Implements ZIGNOR [1].
-//
-// [1]: Jurgen A. Doornik (2005). [*An Improved Ziggurat Method to Generate Normal Random Samples*]
-// (https://www.doornik.com/research/ziggurat.pdf). Nuffield College, Oxford.
-//
-// rust/rand used as a reference;
-//
-// NOTE: This seems interesting but reference code is a bit hard to grok:
-// https://sbarral.github.io/etf.
+//! Implements [ZIGNOR][1] (Jurgen A. Doornik, 2005, Nuffield College, Oxford).
+//!
+//! [1]: https://www.doornik.com/research/ziggurat.pdf
+//!
+//! rust/rand used as a reference;
+//!
+//! NOTE: This seems interesting but reference code is a bit hard to grok:
+//! https://sbarral.github.io/etf.
 
 const std = @import("../std.zig");
+const builtin = @import("builtin");
 const math = std.math;
 const Random = std.rand.Random;
 
-pub fn next_f64(random: *Random, comptime tables: ZigTable) f64 {
+pub fn next_f64(random: Random, comptime tables: ZigTable) f64 {
     while (true) {
         // We manually construct a float from parts as we can avoid an extra random lookup here by
         // using the unused exponent for the lookup table entry.
         const bits = random.int(u64);
-        const i = @as(usize, @truncate(u8, bits));
+        const i = @as(usize, @as(u8, @truncate(bits)));
 
         const u = blk: {
             if (tables.is_symmetric) {
                 // Generate a value in the range [2, 4) and scale into [-1, 1)
                 const repr = ((0x3ff + 1) << 52) | (bits >> 12);
-                break :blk @bitCast(f64, repr) - 3.0;
+                break :blk @as(f64, @bitCast(repr)) - 3.0;
             } else {
                 // Generate a value in the range [1, 2) and scale into (0, 1)
                 const repr = (0x3ff << 52) | (bits >> 12);
-                break :blk @bitCast(f64, repr) - (1.0 - math.f64_epsilon / 2.0);
+                break :blk @as(f64, @bitCast(repr)) - (1.0 - math.floatEps(f64) / 2.0);
             }
         };
 
         const x = u * tables.x[i];
-        const test_x = if (tables.is_symmetric) math.fabs(x) else x;
+        const test_x = if (tables.is_symmetric) @abs(x) else x;
 
         // equivalent to |u| < tables.x[i+1] / tables.x[i] (or u < tables.x[i+1] / tables.x[i])
         if (test_x < tables.x[i + 1]) {
@@ -65,17 +60,17 @@ pub const ZigTable = struct {
     // whether the distribution is symmetric
     is_symmetric: bool,
     // fallback calculation in the case we are in the 0 block
-    zero_case: fn (*Random, f64) f64,
+    zero_case: fn (Random, f64) f64,
 };
 
 // zigNorInit
-fn ZigTableGen(
+pub fn ZigTableGen(
     comptime is_symmetric: bool,
     comptime r: f64,
     comptime v: f64,
     comptime f: fn (f64) f64,
     comptime f_inv: fn (f64) f64,
-    comptime zero_case: fn (*Random, f64) f64,
+    comptime zero_case: fn (Random, f64) f64,
 ) ZigTable {
     var tables: ZigTable = undefined;
 
@@ -87,13 +82,13 @@ fn ZigTableGen(
     tables.x[0] = v / f(r);
     tables.x[1] = r;
 
-    for (tables.x[2..256]) |*entry, i| {
+    for (tables.x[2..256], 0..) |*entry, i| {
         const last = tables.x[2 + i - 1];
         entry.* = f_inv(v / last + f(last));
     }
     tables.x[256] = 0;
 
-    for (tables.f[0..]) |*entry, i| {
+    for (tables.f[0..], 0..) |*entry, i| {
         entry.* = f(tables.x[i]);
     }
 
@@ -106,22 +101,22 @@ pub const NormDist = blk: {
     break :blk ZigTableGen(true, norm_r, norm_v, norm_f, norm_f_inv, norm_zero_case);
 };
 
-const norm_r = 3.6541528853610088;
-const norm_v = 0.00492867323399;
+pub const norm_r = 3.6541528853610088;
+pub const norm_v = 0.00492867323399;
 
-fn norm_f(x: f64) f64 {
-    return math.exp(-x * x / 2.0);
+pub fn norm_f(x: f64) f64 {
+    return @exp(-x * x / 2.0);
 }
-fn norm_f_inv(y: f64) f64 {
-    return math.sqrt(-2.0 * math.ln(y));
+pub fn norm_f_inv(y: f64) f64 {
+    return @sqrt(-2.0 * @log(y));
 }
-fn norm_zero_case(random: *Random, u: f64) f64 {
+pub fn norm_zero_case(random: Random, u: f64) f64 {
     var x: f64 = 1;
     var y: f64 = 0;
 
     while (-2.0 * y < x * x) {
-        x = math.ln(random.float(f64)) / norm_r;
-        y = math.ln(random.float(f64));
+        x = @log(random.float(f64)) / norm_r;
+        y = @log(random.float(f64));
     }
 
     if (u < 0) {
@@ -131,15 +126,13 @@ fn norm_zero_case(random: *Random, u: f64) f64 {
     }
 }
 
-const please_windows_dont_oom = std.Target.current.os.tag == .windows;
-
 test "normal dist sanity" {
-    if (please_windows_dont_oom) return error.SkipZigTest;
-
     var prng = std.rand.DefaultPrng.init(0);
+    const random = prng.random();
+
     var i: usize = 0;
     while (i < 1000) : (i += 1) {
-        _ = prng.random.floatNorm(f64);
+        _ = random.floatNorm(f64);
     }
 }
 
@@ -149,31 +142,29 @@ pub const ExpDist = blk: {
     break :blk ZigTableGen(false, exp_r, exp_v, exp_f, exp_f_inv, exp_zero_case);
 };
 
-const exp_r = 7.69711747013104972;
-const exp_v = 0.0039496598225815571993;
+pub const exp_r = 7.69711747013104972;
+pub const exp_v = 0.0039496598225815571993;
 
-fn exp_f(x: f64) f64 {
-    return math.exp(-x);
+pub fn exp_f(x: f64) f64 {
+    return @exp(-x);
 }
-fn exp_f_inv(y: f64) f64 {
-    return -math.ln(y);
+pub fn exp_f_inv(y: f64) f64 {
+    return -@log(y);
 }
-fn exp_zero_case(random: *Random, _: f64) f64 {
-    return exp_r - math.ln(random.float(f64));
+pub fn exp_zero_case(random: Random, _: f64) f64 {
+    return exp_r - @log(random.float(f64));
 }
 
-test "exp dist sanity" {
-    if (please_windows_dont_oom) return error.SkipZigTest;
-
+test "exp dist smoke test" {
     var prng = std.rand.DefaultPrng.init(0);
+    const random = prng.random();
+
     var i: usize = 0;
     while (i < 1000) : (i += 1) {
-        _ = prng.random.floatExp(f64);
+        _ = random.floatExp(f64);
     }
 }
 
-test "table gen" {
-    if (please_windows_dont_oom) return error.SkipZigTest;
-
-    const table = NormDist;
+test {
+    _ = NormDist;
 }

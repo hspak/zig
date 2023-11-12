@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("../std.zig");
 const testing = std.testing;
 const math = std.math;
@@ -40,7 +35,7 @@ pub fn Complex(comptime T: type) type {
         im: T,
 
         /// Create a new Complex number from the given real and imaginary parts.
-        pub fn new(re: T, im: T) Self {
+        pub fn init(re: T, im: T) Self {
             return Self{
                 .re = re,
                 .im = im,
@@ -91,6 +86,22 @@ pub fn Complex(comptime T: type) type {
             };
         }
 
+        /// Returns the negation of a complex number.
+        pub fn neg(self: Self) Self {
+            return Self{
+                .re = -self.re,
+                .im = -self.im,
+            };
+        }
+
+        /// Returns the product of complex number and i=sqrt(-1)
+        pub fn mulbyi(self: Self) Self {
+            return Self{
+                .re = -self.im,
+                .im = self.re,
+            };
+        }
+
         /// Returns the reciprocal of a complex number.
         pub fn reciprocal(self: Self) Self {
             const m = self.re * self.re + self.im * self.im;
@@ -102,7 +113,7 @@ pub fn Complex(comptime T: type) type {
 
         /// Returns the magnitude of a complex number.
         pub fn magnitude(self: Self) T {
-            return math.sqrt(self.re * self.re + self.im * self.im);
+            return @sqrt(self.re * self.re + self.im * self.im);
         }
     };
 }
@@ -110,61 +121,75 @@ pub fn Complex(comptime T: type) type {
 const epsilon = 0.0001;
 
 test "complex.add" {
-    const a = Complex(f32).new(5, 3);
-    const b = Complex(f32).new(2, 7);
+    const a = Complex(f32).init(5, 3);
+    const b = Complex(f32).init(2, 7);
     const c = a.add(b);
 
-    testing.expect(c.re == 7 and c.im == 10);
+    try testing.expect(c.re == 7 and c.im == 10);
 }
 
 test "complex.sub" {
-    const a = Complex(f32).new(5, 3);
-    const b = Complex(f32).new(2, 7);
+    const a = Complex(f32).init(5, 3);
+    const b = Complex(f32).init(2, 7);
     const c = a.sub(b);
 
-    testing.expect(c.re == 3 and c.im == -4);
+    try testing.expect(c.re == 3 and c.im == -4);
 }
 
 test "complex.mul" {
-    const a = Complex(f32).new(5, 3);
-    const b = Complex(f32).new(2, 7);
+    const a = Complex(f32).init(5, 3);
+    const b = Complex(f32).init(2, 7);
     const c = a.mul(b);
 
-    testing.expect(c.re == -11 and c.im == 41);
+    try testing.expect(c.re == -11 and c.im == 41);
 }
 
 test "complex.div" {
-    const a = Complex(f32).new(5, 3);
-    const b = Complex(f32).new(2, 7);
+    const a = Complex(f32).init(5, 3);
+    const b = Complex(f32).init(2, 7);
     const c = a.div(b);
 
-    testing.expect(math.approxEqAbs(f32, c.re, @as(f32, 31) / 53, epsilon) and
+    try testing.expect(math.approxEqAbs(f32, c.re, @as(f32, 31) / 53, epsilon) and
         math.approxEqAbs(f32, c.im, @as(f32, -29) / 53, epsilon));
 }
 
 test "complex.conjugate" {
-    const a = Complex(f32).new(5, 3);
+    const a = Complex(f32).init(5, 3);
     const c = a.conjugate();
 
-    testing.expect(c.re == 5 and c.im == -3);
+    try testing.expect(c.re == 5 and c.im == -3);
+}
+
+test "complex.neg" {
+    const a = Complex(f32).init(5, 3);
+    const c = a.neg();
+
+    try testing.expect(c.re == -5 and c.im == -3);
+}
+
+test "complex.mulbyi" {
+    const a = Complex(f32).init(5, 3);
+    const c = a.mulbyi();
+
+    try testing.expect(c.re == -3 and c.im == 5);
 }
 
 test "complex.reciprocal" {
-    const a = Complex(f32).new(5, 3);
+    const a = Complex(f32).init(5, 3);
     const c = a.reciprocal();
 
-    testing.expect(math.approxEqAbs(f32, c.re, @as(f32, 5) / 34, epsilon) and
+    try testing.expect(math.approxEqAbs(f32, c.re, @as(f32, 5) / 34, epsilon) and
         math.approxEqAbs(f32, c.im, @as(f32, -3) / 34, epsilon));
 }
 
 test "complex.magnitude" {
-    const a = Complex(f32).new(5, 3);
+    const a = Complex(f32).init(5, 3);
     const c = a.magnitude();
 
-    testing.expect(math.approxEqAbs(f32, c, 5.83095, epsilon));
+    try testing.expect(math.approxEqAbs(f32, c, 5.83095, epsilon));
 }
 
-test "complex.cmath" {
+test {
     _ = @import("complex/abs.zig");
     _ = @import("complex/acosh.zig");
     _ = @import("complex/acos.zig");

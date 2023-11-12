@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("../std.zig");
 const testing = std.testing;
 
@@ -22,7 +17,7 @@ pub fn Batch(
     comptime async_behavior: enum {
         /// Observe the value of `std.io.is_async` to decide whether `add`
         /// and `wait` will be async functions. Asserts that the jobs do not suspend when
-        /// `std.io.mode == .blocking`. This is a generally safe assumption, and the
+        /// `std.options.io_mode == .blocking`. This is a generally safe assumption, and the
         /// usual recommended option for this parameter.
         auto_async,
 
@@ -114,17 +109,18 @@ pub fn Batch(
 }
 
 test "std.event.Batch" {
+    if (true) return error.SkipZigTest;
     var count: usize = 0;
     var batch = Batch(void, 2, .auto_async).init();
     batch.add(&async sleepALittle(&count));
     batch.add(&async increaseByTen(&count));
     batch.wait();
-    testing.expect(count == 11);
+    try testing.expect(count == 11);
 
     var another = Batch(anyerror!void, 2, .auto_async).init();
     another.add(&async somethingElse());
     another.add(&async doSomethingThatFails());
-    testing.expectError(error.ItBroke, another.wait());
+    try testing.expectError(error.ItBroke, another.wait());
 }
 
 fn sleepALittle(count: *usize) void {

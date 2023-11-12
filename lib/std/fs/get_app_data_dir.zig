@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("../std.zig");
 const builtin = @import("builtin");
 const unicode = std.unicode;
@@ -17,7 +12,7 @@ pub const GetAppDataDirError = error{
 
 /// Caller owns returned memory.
 /// TODO determine if we can remove the allocator requirement
-pub fn getAppDataDir(allocator: *mem.Allocator, appname: []const u8) GetAppDataDirError![]u8 {
+pub fn getAppDataDir(allocator: mem.Allocator, appname: []const u8) GetAppDataDirError![]u8 {
     switch (builtin.os.tag) {
         .windows => {
             var dir_path_ptr: [*:0]u16 = undefined;
@@ -28,8 +23,8 @@ pub fn getAppDataDir(allocator: *mem.Allocator, appname: []const u8) GetAppDataD
                 &dir_path_ptr,
             )) {
                 os.windows.S_OK => {
-                    defer os.windows.ole32.CoTaskMemFree(@ptrCast(*c_void, dir_path_ptr));
-                    const global_dir = unicode.utf16leToUtf8Alloc(allocator, mem.spanZ(dir_path_ptr)) catch |err| switch (err) {
+                    defer os.windows.ole32.CoTaskMemFree(dir_path_ptr);
+                    const global_dir = unicode.utf16leToUtf8Alloc(allocator, mem.sliceTo(dir_path_ptr, 0)) catch |err| switch (err) {
                         error.UnexpectedSecondSurrogateHalf => return error.AppDataDirUnavailable,
                         error.ExpectedSecondSurrogateHalf => return error.AppDataDirUnavailable,
                         error.DanglingSurrogateHalf => return error.AppDataDirUnavailable,
@@ -49,7 +44,11 @@ pub fn getAppDataDir(allocator: *mem.Allocator, appname: []const u8) GetAppDataD
             };
             return fs.path.join(allocator, &[_][]const u8{ home_dir, "Library", "Application Support", appname });
         },
-        .linux, .freebsd, .netbsd, .dragonfly, .openbsd => {
+        .linux, .freebsd, .netbsd, .dragonfly, .openbsd, .solaris, .illumos => {
+            if (os.getenv("XDG_DATA_HOME")) |xdg| {
+                return fs.path.join(allocator, &[_][]const u8{ xdg, appname });
+            }
+
             const home_dir = os.getenv("HOME") orelse {
                 // TODO look in /etc/passwd
                 return error.AppDataDirUnavailable;
@@ -61,7 +60,7 @@ pub fn getAppDataDir(allocator: *mem.Allocator, appname: []const u8) GetAppDataD
             // TODO look into directory_which
             const be_user_settings = 0xbbe;
             const rc = os.system.find_directory(be_user_settings, -1, true, dir_path_ptr, 1);
-            const settings_dir = try allocator.dupeZ(u8, mem.spanZ(dir_path_ptr));
+            const settings_dir = try allocator.dupeZ(u8, mem.sliceTo(dir_path_ptr, 0));
             defer allocator.free(settings_dir);
             switch (rc) {
                 0 => return fs.path.join(allocator, &[_][]const u8{ settings_dir, appname }),

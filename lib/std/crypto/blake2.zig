@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("../std.zig");
 const mem = std.mem;
 const math = std.math;
@@ -81,24 +76,24 @@ pub fn Blake2s(comptime out_bits: usize) type {
             comptime debug.assert(8 <= out_bits and out_bits <= 256);
 
             var d: Self = undefined;
-            mem.copy(u32, d.h[0..], iv[0..]);
+            d.h = iv;
 
             const key_len = if (options.key) |key| key.len else 0;
             // default parameters
-            d.h[0] ^= 0x01010000 ^ @truncate(u32, key_len << 8) ^ @intCast(u32, options.expected_out_bits >> 3);
+            d.h[0] ^= 0x01010000 ^ @as(u32, @truncate(key_len << 8)) ^ @as(u32, @intCast(options.expected_out_bits >> 3));
             d.t = 0;
             d.buf_len = 0;
 
             if (options.salt) |salt| {
-                d.h[4] ^= mem.readIntLittle(u32, salt[0..4]);
-                d.h[5] ^= mem.readIntLittle(u32, salt[4..8]);
+                d.h[4] ^= mem.readInt(u32, salt[0..4], .little);
+                d.h[5] ^= mem.readInt(u32, salt[4..8], .little);
             }
             if (options.context) |context| {
-                d.h[6] ^= mem.readIntLittle(u32, context[0..4]);
-                d.h[7] ^= mem.readIntLittle(u32, context[4..8]);
+                d.h[6] ^= mem.readInt(u32, context[0..4], .little);
+                d.h[7] ^= mem.readInt(u32, context[4..8], .little);
             }
             if (key_len > 0) {
-                mem.set(u8, d.buf[key_len..], 0);
+                @memset(d.buf[key_len..], 0);
                 d.update(options.key.?);
                 d.buf_len = 64;
             }
@@ -117,7 +112,7 @@ pub fn Blake2s(comptime out_bits: usize) type {
             // Partial buffer exists from previous update. Copy into buffer then hash.
             if (d.buf_len != 0 and d.buf_len + b.len > 64) {
                 off += 64 - d.buf_len;
-                mem.copy(u8, d.buf[d.buf_len..], b[0..off]);
+                @memcpy(d.buf[d.buf_len..][0..off], b[0..off]);
                 d.t += 64;
                 d.round(d.buf[0..], false);
                 d.buf_len = 0;
@@ -130,24 +125,25 @@ pub fn Blake2s(comptime out_bits: usize) type {
             }
 
             // Copy any remainder for next pass.
-            mem.copy(u8, d.buf[d.buf_len..], b[off..]);
-            d.buf_len += @intCast(u8, b[off..].len);
+            const b_slice = b[off..];
+            @memcpy(d.buf[d.buf_len..][0..b_slice.len], b_slice);
+            d.buf_len += @as(u8, @intCast(b_slice.len));
         }
 
         pub fn final(d: *Self, out: *[digest_length]u8) void {
-            mem.set(u8, d.buf[d.buf_len..], 0);
+            @memset(d.buf[d.buf_len..], 0);
             d.t += d.buf_len;
             d.round(d.buf[0..], true);
-            for (d.h) |*x| x.* = mem.nativeToLittle(u32, x.*);
-            mem.copy(u8, out[0..], @ptrCast(*[digest_length]u8, &d.h));
+            for (&d.h) |*x| x.* = mem.nativeToLittle(u32, x.*);
+            out.* = @as(*[digest_length]u8, @ptrCast(&d.h)).*;
         }
 
         fn round(d: *Self, b: *const [64]u8, last: bool) void {
             var m: [16]u32 = undefined;
             var v: [16]u32 = undefined;
 
-            for (m) |*r, i| {
-                r.* = mem.readIntLittle(u32, b[4 * i ..][0..4]);
+            for (&m, 0..) |*r, i| {
+                r.* = mem.readInt(u32, b[4 * i ..][0..4], .little);
             }
 
             var k: usize = 0;
@@ -156,8 +152,8 @@ pub fn Blake2s(comptime out_bits: usize) type {
                 v[k + 8] = iv[k];
             }
 
-            v[12] ^= @truncate(u32, d.t);
-            v[13] ^= @intCast(u32, d.t >> 32);
+            v[12] ^= @as(u32, @truncate(d.t));
+            v[13] ^= @as(u32, @intCast(d.t >> 32));
             if (last) v[14] = ~v[14];
 
             const rounds = comptime [_]RoundParam{
@@ -185,25 +181,37 @@ pub fn Blake2s(comptime out_bits: usize) type {
                 }
             }
 
-            for (d.h) |*r, i| {
+            for (&d.h, 0..) |*r, i| {
                 r.* ^= v[i] ^ v[i + 8];
             }
+        }
+
+        pub const Error = error{};
+        pub const Writer = std.io.Writer(*Self, Error, write);
+
+        fn write(self: *Self, bytes: []const u8) Error!usize {
+            self.update(bytes);
+            return bytes.len;
+        }
+
+        pub fn writer(self: *Self) Writer {
+            return .{ .context = self };
         }
     };
 }
 
 test "blake2s160 single" {
     const h1 = "354c9c33f735962418bdacb9479873429c34916f";
-    htest.assertEqualHash(Blake2s160, h1, "");
+    try htest.assertEqualHash(Blake2s160, h1, "");
 
     const h2 = "5ae3b99be29b01834c3b508521ede60438f8de17";
-    htest.assertEqualHash(Blake2s160, h2, "abc");
+    try htest.assertEqualHash(Blake2s160, h2, "abc");
 
     const h3 = "5a604fec9713c369e84b0ed68daed7d7504ef240";
-    htest.assertEqualHash(Blake2s160, h3, "The quick brown fox jumps over the lazy dog");
+    try htest.assertEqualHash(Blake2s160, h3, "The quick brown fox jumps over the lazy dog");
 
     const h4 = "b60c4dc60e2681e58fbc24e77f07e02c69e72ed0";
-    htest.assertEqualHash(Blake2s160, h4, "a" ** 32 ++ "b" ** 32);
+    try htest.assertEqualHash(Blake2s160, h4, "a" ** 32 ++ "b" ** 32);
 }
 
 test "blake2s160 streaming" {
@@ -213,21 +221,21 @@ test "blake2s160 streaming" {
     const h1 = "354c9c33f735962418bdacb9479873429c34916f";
 
     h.final(out[0..]);
-    htest.assertEqual(h1, out[0..]);
+    try htest.assertEqual(h1, out[0..]);
 
     const h2 = "5ae3b99be29b01834c3b508521ede60438f8de17";
 
     h = Blake2s160.init(.{});
     h.update("abc");
     h.final(out[0..]);
-    htest.assertEqual(h2, out[0..]);
+    try htest.assertEqual(h2, out[0..]);
 
     h = Blake2s160.init(.{});
     h.update("a");
     h.update("b");
     h.update("c");
     h.final(out[0..]);
-    htest.assertEqual(h2, out[0..]);
+    try htest.assertEqual(h2, out[0..]);
 
     const h3 = "b60c4dc60e2681e58fbc24e77f07e02c69e72ed0";
 
@@ -235,12 +243,12 @@ test "blake2s160 streaming" {
     h.update("a" ** 32);
     h.update("b" ** 32);
     h.final(out[0..]);
-    htest.assertEqual(h3, out[0..]);
+    try htest.assertEqual(h3, out[0..]);
 
     h = Blake2s160.init(.{});
     h.update("a" ** 32 ++ "b" ** 32);
     h.final(out[0..]);
-    htest.assertEqual(h3, out[0..]);
+    try htest.assertEqual(h3, out[0..]);
 
     const h4 = "4667fd60791a7fe41f939bca646b4529e296bd68";
 
@@ -248,12 +256,12 @@ test "blake2s160 streaming" {
     h.update("a" ** 32);
     h.update("b" ** 32);
     h.final(out[0..]);
-    htest.assertEqual(h4, out[0..]);
+    try htest.assertEqual(h4, out[0..]);
 
     h = Blake2s160.init(.{ .context = [_]u8{0x69} ** 8, .salt = [_]u8{0x42} ** 8 });
     h.update("a" ** 32 ++ "b" ** 32);
     h.final(out[0..]);
-    htest.assertEqual(h4, out[0..]);
+    try htest.assertEqual(h4, out[0..]);
 }
 
 test "comptime blake2s160" {
@@ -265,28 +273,28 @@ test "comptime blake2s160" {
 
         const h1 = "2c56ad9d0b2c8b474aafa93ab307db2f0940105f";
 
-        htest.assertEqualHash(Blake2s160, h1, block[0..]);
+        try htest.assertEqualHash(Blake2s160, h1, block[0..]);
 
         var h = Blake2s160.init(.{});
         h.update(&block);
         h.final(out[0..]);
 
-        htest.assertEqual(h1, out[0..]);
+        try htest.assertEqual(h1, out[0..]);
     }
 }
 
 test "blake2s224 single" {
     const h1 = "1fa1291e65248b37b3433475b2a0dd63d54a11ecc4e3e034e7bc1ef4";
-    htest.assertEqualHash(Blake2s224, h1, "");
+    try htest.assertEqualHash(Blake2s224, h1, "");
 
     const h2 = "0b033fc226df7abde29f67a05d3dc62cf271ef3dfea4d387407fbd55";
-    htest.assertEqualHash(Blake2s224, h2, "abc");
+    try htest.assertEqualHash(Blake2s224, h2, "abc");
 
     const h3 = "e4e5cb6c7cae41982b397bf7b7d2d9d1949823ae78435326e8db4912";
-    htest.assertEqualHash(Blake2s224, h3, "The quick brown fox jumps over the lazy dog");
+    try htest.assertEqualHash(Blake2s224, h3, "The quick brown fox jumps over the lazy dog");
 
     const h4 = "557381a78facd2b298640f4e32113e58967d61420af1aa939d0cfe01";
-    htest.assertEqualHash(Blake2s224, h4, "a" ** 32 ++ "b" ** 32);
+    try htest.assertEqualHash(Blake2s224, h4, "a" ** 32 ++ "b" ** 32);
 }
 
 test "blake2s224 streaming" {
@@ -296,21 +304,21 @@ test "blake2s224 streaming" {
     const h1 = "1fa1291e65248b37b3433475b2a0dd63d54a11ecc4e3e034e7bc1ef4";
 
     h.final(out[0..]);
-    htest.assertEqual(h1, out[0..]);
+    try htest.assertEqual(h1, out[0..]);
 
     const h2 = "0b033fc226df7abde29f67a05d3dc62cf271ef3dfea4d387407fbd55";
 
     h = Blake2s224.init(.{});
     h.update("abc");
     h.final(out[0..]);
-    htest.assertEqual(h2, out[0..]);
+    try htest.assertEqual(h2, out[0..]);
 
     h = Blake2s224.init(.{});
     h.update("a");
     h.update("b");
     h.update("c");
     h.final(out[0..]);
-    htest.assertEqual(h2, out[0..]);
+    try htest.assertEqual(h2, out[0..]);
 
     const h3 = "557381a78facd2b298640f4e32113e58967d61420af1aa939d0cfe01";
 
@@ -318,12 +326,12 @@ test "blake2s224 streaming" {
     h.update("a" ** 32);
     h.update("b" ** 32);
     h.final(out[0..]);
-    htest.assertEqual(h3, out[0..]);
+    try htest.assertEqual(h3, out[0..]);
 
     h = Blake2s224.init(.{});
     h.update("a" ** 32 ++ "b" ** 32);
     h.final(out[0..]);
-    htest.assertEqual(h3, out[0..]);
+    try htest.assertEqual(h3, out[0..]);
 
     const h4 = "a4d6a9d253441b80e5dfd60a04db169ffab77aec56a2855c402828c3";
 
@@ -331,12 +339,12 @@ test "blake2s224 streaming" {
     h.update("a" ** 32);
     h.update("b" ** 32);
     h.final(out[0..]);
-    htest.assertEqual(h4, out[0..]);
+    try htest.assertEqual(h4, out[0..]);
 
     h = Blake2s224.init(.{ .context = [_]u8{0x69} ** 8, .salt = [_]u8{0x42} ** 8 });
     h.update("a" ** 32 ++ "b" ** 32);
     h.final(out[0..]);
-    htest.assertEqual(h4, out[0..]);
+    try htest.assertEqual(h4, out[0..]);
 }
 
 test "comptime blake2s224" {
@@ -347,28 +355,28 @@ test "comptime blake2s224" {
 
         const h1 = "86b7611563293f8c73627df7a6d6ba25ca0548c2a6481f7d116ee576";
 
-        htest.assertEqualHash(Blake2s224, h1, block[0..]);
+        try htest.assertEqualHash(Blake2s224, h1, block[0..]);
 
         var h = Blake2s224.init(.{});
         h.update(&block);
         h.final(out[0..]);
 
-        htest.assertEqual(h1, out[0..]);
+        try htest.assertEqual(h1, out[0..]);
     }
 }
 
 test "blake2s256 single" {
     const h1 = "69217a3079908094e11121d042354a7c1f55b6482ca1a51e1b250dfd1ed0eef9";
-    htest.assertEqualHash(Blake2s256, h1, "");
+    try htest.assertEqualHash(Blake2s256, h1, "");
 
     const h2 = "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982";
-    htest.assertEqualHash(Blake2s256, h2, "abc");
+    try htest.assertEqualHash(Blake2s256, h2, "abc");
 
     const h3 = "606beeec743ccbeff6cbcdf5d5302aa855c256c29b88c8ed331ea1a6bf3c8812";
-    htest.assertEqualHash(Blake2s256, h3, "The quick brown fox jumps over the lazy dog");
+    try htest.assertEqualHash(Blake2s256, h3, "The quick brown fox jumps over the lazy dog");
 
     const h4 = "8d8711dade07a6b92b9a3ea1f40bee9b2c53ff3edd2a273dec170b0163568977";
-    htest.assertEqualHash(Blake2s256, h4, "a" ** 32 ++ "b" ** 32);
+    try htest.assertEqualHash(Blake2s256, h4, "a" ** 32 ++ "b" ** 32);
 }
 
 test "blake2s256 streaming" {
@@ -378,21 +386,21 @@ test "blake2s256 streaming" {
     const h1 = "69217a3079908094e11121d042354a7c1f55b6482ca1a51e1b250dfd1ed0eef9";
 
     h.final(out[0..]);
-    htest.assertEqual(h1, out[0..]);
+    try htest.assertEqual(h1, out[0..]);
 
     const h2 = "508c5e8c327c14e2e1a72ba34eeb452f37458b209ed63a294d999b4c86675982";
 
     h = Blake2s256.init(.{});
     h.update("abc");
     h.final(out[0..]);
-    htest.assertEqual(h2, out[0..]);
+    try htest.assertEqual(h2, out[0..]);
 
     h = Blake2s256.init(.{});
     h.update("a");
     h.update("b");
     h.update("c");
     h.final(out[0..]);
-    htest.assertEqual(h2, out[0..]);
+    try htest.assertEqual(h2, out[0..]);
 
     const h3 = "8d8711dade07a6b92b9a3ea1f40bee9b2c53ff3edd2a273dec170b0163568977";
 
@@ -400,12 +408,12 @@ test "blake2s256 streaming" {
     h.update("a" ** 32);
     h.update("b" ** 32);
     h.final(out[0..]);
-    htest.assertEqual(h3, out[0..]);
+    try htest.assertEqual(h3, out[0..]);
 
     h = Blake2s256.init(.{});
     h.update("a" ** 32 ++ "b" ** 32);
     h.final(out[0..]);
-    htest.assertEqual(h3, out[0..]);
+    try htest.assertEqual(h3, out[0..]);
 }
 
 test "blake2s256 keyed" {
@@ -415,20 +423,20 @@ test "blake2s256 keyed" {
     const key = "secret_key";
 
     Blake2s256.hash("a" ** 64 ++ "b" ** 64, &out, .{ .key = key });
-    htest.assertEqual(h1, out[0..]);
+    try htest.assertEqual(h1, out[0..]);
 
     var h = Blake2s256.init(.{ .key = key });
     h.update("a" ** 64 ++ "b" ** 64);
     h.final(out[0..]);
 
-    htest.assertEqual(h1, out[0..]);
+    try htest.assertEqual(h1, out[0..]);
 
     h = Blake2s256.init(.{ .key = key });
     h.update("a" ** 64);
     h.update("b" ** 64);
     h.final(out[0..]);
 
-    htest.assertEqual(h1, out[0..]);
+    try htest.assertEqual(h1, out[0..]);
 }
 
 test "comptime blake2s256" {
@@ -439,13 +447,13 @@ test "comptime blake2s256" {
 
         const h1 = "ae09db7cd54f42b490ef09b6bc541af688e4959bb8c53f359a6f56e38ab454a3";
 
-        htest.assertEqualHash(Blake2s256, h1, block[0..]);
+        try htest.assertEqualHash(Blake2s256, h1, block[0..]);
 
         var h = Blake2s256.init(.{});
         h.update(&block);
         h.final(out[0..]);
 
-        htest.assertEqual(h1, out[0..]);
+        try htest.assertEqual(h1, out[0..]);
     }
 }
 
@@ -504,7 +512,7 @@ pub fn Blake2b(comptime out_bits: usize) type {
             comptime debug.assert(8 <= out_bits and out_bits <= 512);
 
             var d: Self = undefined;
-            mem.copy(u64, d.h[0..], iv[0..]);
+            d.h = iv;
 
             const key_len = if (options.key) |key| key.len else 0;
             // default parameters
@@ -513,15 +521,15 @@ pub fn Blake2b(comptime out_bits: usize) type {
             d.buf_len = 0;
 
             if (options.salt) |salt| {
-                d.h[4] ^= mem.readIntLittle(u64, salt[0..8]);
-                d.h[5] ^= mem.readIntLittle(u64, salt[8..16]);
+                d.h[4] ^= mem.readInt(u64, salt[0..8], .little);
+                d.h[5] ^= mem.readInt(u64, salt[8..16], .little);
             }
             if (options.context) |context| {
-                d.h[6] ^= mem.readIntLittle(u64, context[0..8]);
-                d.h[7] ^= mem.readIntLittle(u64, context[8..16]);
+                d.h[6] ^= mem.readInt(u64, context[0..8], .little);
+                d.h[7] ^= mem.readInt(u64, context[8..16], .little);
             }
             if (key_len > 0) {
-                mem.set(u8, d.buf[key_len..], 0);
+                @memset(d.buf[key_len..], 0);
                 d.update(options.key.?);
                 d.buf_len = 128;
             }
@@ -540,7 +548,7 @@ pub fn Blake2b(comptime out_bits: usize) type {
             // Partial buffer exists from previous update. Copy into buffer then hash.
             if (d.buf_len != 0 and d.buf_len + b.len > 128) {
                 off += 128 - d.buf_len;
-                mem.copy(u8, d.buf[d.buf_len..], b[0..off]);
+                @memcpy(d.buf[d.buf_len..][0..off], b[0..off]);
                 d.t += 128;
                 d.round(d.buf[0..], false);
                 d.buf_len = 0;
@@ -553,24 +561,25 @@ pub fn Blake2b(comptime out_bits: usize) type {
             }
 
             // Copy any remainder for next pass.
-            mem.copy(u8, d.buf[d.buf_len..], b[off..]);
-            d.buf_len += @intCast(u8, b[off..].len);
+            const b_slice = b[off..];
+            @memcpy(d.buf[d.buf_len..][0..b_slice.len], b_slice);
+            d.buf_len += @as(u8, @intCast(b_slice.len));
         }
 
         pub fn final(d: *Self, out: *[digest_length]u8) void {
-            mem.set(u8, d.buf[d.buf_len..], 0);
+            @memset(d.buf[d.buf_len..], 0);
             d.t += d.buf_len;
             d.round(d.buf[0..], true);
-            for (d.h) |*x| x.* = mem.nativeToLittle(u64, x.*);
-            mem.copy(u8, out[0..], @ptrCast(*[digest_length]u8, &d.h));
+            for (&d.h) |*x| x.* = mem.nativeToLittle(u64, x.*);
+            out.* = @as(*[digest_length]u8, @ptrCast(&d.h)).*;
         }
 
         fn round(d: *Self, b: *const [128]u8, last: bool) void {
             var m: [16]u64 = undefined;
             var v: [16]u64 = undefined;
 
-            for (m) |*r, i| {
-                r.* = mem.readIntLittle(u64, b[8 * i ..][0..8]);
+            for (&m, 0..) |*r, i| {
+                r.* = mem.readInt(u64, b[8 * i ..][0..8], .little);
             }
 
             var k: usize = 0;
@@ -579,8 +588,8 @@ pub fn Blake2b(comptime out_bits: usize) type {
                 v[k + 8] = iv[k];
             }
 
-            v[12] ^= @truncate(u64, d.t);
-            v[13] ^= @intCast(u64, d.t >> 64);
+            v[12] ^= @as(u64, @truncate(d.t));
+            v[13] ^= @as(u64, @intCast(d.t >> 64));
             if (last) v[14] = ~v[14];
 
             const rounds = comptime [_]RoundParam{
@@ -608,7 +617,7 @@ pub fn Blake2b(comptime out_bits: usize) type {
                 }
             }
 
-            for (d.h) |*r, i| {
+            for (&d.h, 0..) |*r, i| {
                 r.* ^= v[i] ^ v[i + 8];
             }
         }
@@ -617,16 +626,16 @@ pub fn Blake2b(comptime out_bits: usize) type {
 
 test "blake2b160 single" {
     const h1 = "3345524abf6bbe1809449224b5972c41790b6cf2";
-    htest.assertEqualHash(Blake2b160, h1, "");
+    try htest.assertEqualHash(Blake2b160, h1, "");
 
     const h2 = "384264f676f39536840523f284921cdc68b6846b";
-    htest.assertEqualHash(Blake2b160, h2, "abc");
+    try htest.assertEqualHash(Blake2b160, h2, "abc");
 
     const h3 = "3c523ed102ab45a37d54f5610d5a983162fde84f";
-    htest.assertEqualHash(Blake2b160, h3, "The quick brown fox jumps over the lazy dog");
+    try htest.assertEqualHash(Blake2b160, h3, "The quick brown fox jumps over the lazy dog");
 
     const h4 = "43758f5de1740f651f1ae39de92260fe8bd5a11f";
-    htest.assertEqualHash(Blake2b160, h4, "a" ** 64 ++ "b" ** 64);
+    try htest.assertEqualHash(Blake2b160, h4, "a" ** 64 ++ "b" ** 64);
 }
 
 test "blake2b160 streaming" {
@@ -636,40 +645,40 @@ test "blake2b160 streaming" {
     const h1 = "3345524abf6bbe1809449224b5972c41790b6cf2";
 
     h.final(out[0..]);
-    htest.assertEqual(h1, out[0..]);
+    try htest.assertEqual(h1, out[0..]);
 
     const h2 = "384264f676f39536840523f284921cdc68b6846b";
 
     h = Blake2b160.init(.{});
     h.update("abc");
     h.final(out[0..]);
-    htest.assertEqual(h2, out[0..]);
+    try htest.assertEqual(h2, out[0..]);
 
     h = Blake2b160.init(.{});
     h.update("a");
     h.update("b");
     h.update("c");
     h.final(out[0..]);
-    htest.assertEqual(h2, out[0..]);
+    try htest.assertEqual(h2, out[0..]);
 
     const h3 = "43758f5de1740f651f1ae39de92260fe8bd5a11f";
 
     h = Blake2b160.init(.{});
     h.update("a" ** 64 ++ "b" ** 64);
     h.final(out[0..]);
-    htest.assertEqual(h3, out[0..]);
+    try htest.assertEqual(h3, out[0..]);
 
     h = Blake2b160.init(.{});
     h.update("a" ** 64);
     h.update("b" ** 64);
     h.final(out[0..]);
-    htest.assertEqual(h3, out[0..]);
+    try htest.assertEqual(h3, out[0..]);
 
     h = Blake2b160.init(.{});
     h.update("a" ** 64);
     h.update("b" ** 64);
     h.final(out[0..]);
-    htest.assertEqual(h3, out[0..]);
+    try htest.assertEqual(h3, out[0..]);
 
     const h4 = "72328f8a8200663752fc302d372b5dd9b49dd8dc";
 
@@ -677,13 +686,13 @@ test "blake2b160 streaming" {
     h.update("a" ** 64);
     h.update("b" ** 64);
     h.final(out[0..]);
-    htest.assertEqual(h4, out[0..]);
+    try htest.assertEqual(h4, out[0..]);
 
     h = Blake2b160.init(.{ .context = [_]u8{0x69} ** 16, .salt = [_]u8{0x42} ** 16 });
     h.update("a" ** 64);
     h.update("b" ** 64);
     h.final(out[0..]);
-    htest.assertEqual(h4, out[0..]);
+    try htest.assertEqual(h4, out[0..]);
 }
 
 test "comptime blake2b160" {
@@ -694,28 +703,28 @@ test "comptime blake2b160" {
 
         const h1 = "8d26f158f564e3293b42f5e3d34263cb173aa9c9";
 
-        htest.assertEqualHash(Blake2b160, h1, block[0..]);
+        try htest.assertEqualHash(Blake2b160, h1, block[0..]);
 
         var h = Blake2b160.init(.{});
         h.update(&block);
         h.final(out[0..]);
 
-        htest.assertEqual(h1, out[0..]);
+        try htest.assertEqual(h1, out[0..]);
     }
 }
 
 test "blake2b384 single" {
     const h1 = "b32811423377f52d7862286ee1a72ee540524380fda1724a6f25d7978c6fd3244a6caf0498812673c5e05ef583825100";
-    htest.assertEqualHash(Blake2b384, h1, "");
+    try htest.assertEqualHash(Blake2b384, h1, "");
 
     const h2 = "6f56a82c8e7ef526dfe182eb5212f7db9df1317e57815dbda46083fc30f54ee6c66ba83be64b302d7cba6ce15bb556f4";
-    htest.assertEqualHash(Blake2b384, h2, "abc");
+    try htest.assertEqualHash(Blake2b384, h2, "abc");
 
     const h3 = "b7c81b228b6bd912930e8f0b5387989691c1cee1e65aade4da3b86a3c9f678fc8018f6ed9e2906720c8d2a3aeda9c03d";
-    htest.assertEqualHash(Blake2b384, h3, "The quick brown fox jumps over the lazy dog");
+    try htest.assertEqualHash(Blake2b384, h3, "The quick brown fox jumps over the lazy dog");
 
     const h4 = "b7283f0172fecbbd7eca32ce10d8a6c06b453cb3cf675b33eb4246f0da2bb94a6c0bdd6eec0b5fd71ec4fd51be80bf4c";
-    htest.assertEqualHash(Blake2b384, h4, "a" ** 64 ++ "b" ** 64);
+    try htest.assertEqualHash(Blake2b384, h4, "a" ** 64 ++ "b" ** 64);
 }
 
 test "blake2b384 streaming" {
@@ -725,40 +734,40 @@ test "blake2b384 streaming" {
     const h1 = "b32811423377f52d7862286ee1a72ee540524380fda1724a6f25d7978c6fd3244a6caf0498812673c5e05ef583825100";
 
     h.final(out[0..]);
-    htest.assertEqual(h1, out[0..]);
+    try htest.assertEqual(h1, out[0..]);
 
     const h2 = "6f56a82c8e7ef526dfe182eb5212f7db9df1317e57815dbda46083fc30f54ee6c66ba83be64b302d7cba6ce15bb556f4";
 
     h = Blake2b384.init(.{});
     h.update("abc");
     h.final(out[0..]);
-    htest.assertEqual(h2, out[0..]);
+    try htest.assertEqual(h2, out[0..]);
 
     h = Blake2b384.init(.{});
     h.update("a");
     h.update("b");
     h.update("c");
     h.final(out[0..]);
-    htest.assertEqual(h2, out[0..]);
+    try htest.assertEqual(h2, out[0..]);
 
     const h3 = "b7283f0172fecbbd7eca32ce10d8a6c06b453cb3cf675b33eb4246f0da2bb94a6c0bdd6eec0b5fd71ec4fd51be80bf4c";
 
     h = Blake2b384.init(.{});
     h.update("a" ** 64 ++ "b" ** 64);
     h.final(out[0..]);
-    htest.assertEqual(h3, out[0..]);
+    try htest.assertEqual(h3, out[0..]);
 
     h = Blake2b384.init(.{});
     h.update("a" ** 64);
     h.update("b" ** 64);
     h.final(out[0..]);
-    htest.assertEqual(h3, out[0..]);
+    try htest.assertEqual(h3, out[0..]);
 
     h = Blake2b384.init(.{});
     h.update("a" ** 64);
     h.update("b" ** 64);
     h.final(out[0..]);
-    htest.assertEqual(h3, out[0..]);
+    try htest.assertEqual(h3, out[0..]);
 
     const h4 = "934c48fcb197031c71f583d92f98703510805e72142e0b46f5752d1e971bc86c355d556035613ff7a4154b4de09dac5c";
 
@@ -766,13 +775,13 @@ test "blake2b384 streaming" {
     h.update("a" ** 64);
     h.update("b" ** 64);
     h.final(out[0..]);
-    htest.assertEqual(h4, out[0..]);
+    try htest.assertEqual(h4, out[0..]);
 
     h = Blake2b384.init(.{ .context = [_]u8{0x69} ** 16, .salt = [_]u8{0x42} ** 16 });
     h.update("a" ** 64);
     h.update("b" ** 64);
     h.final(out[0..]);
-    htest.assertEqual(h4, out[0..]);
+    try htest.assertEqual(h4, out[0..]);
 }
 
 test "comptime blake2b384" {
@@ -783,28 +792,28 @@ test "comptime blake2b384" {
 
         const h1 = "e8aa1931ea0422e4446fecdd25c16cf35c240b10cb4659dd5c776eddcaa4d922397a589404b46eb2e53d78132d05fd7d";
 
-        htest.assertEqualHash(Blake2b384, h1, block[0..]);
+        try htest.assertEqualHash(Blake2b384, h1, block[0..]);
 
         var h = Blake2b384.init(.{});
         h.update(&block);
         h.final(out[0..]);
 
-        htest.assertEqual(h1, out[0..]);
+        try htest.assertEqual(h1, out[0..]);
     }
 }
 
 test "blake2b512 single" {
     const h1 = "786a02f742015903c6c6fd852552d272912f4740e15847618a86e217f71f5419d25e1031afee585313896444934eb04b903a685b1448b755d56f701afe9be2ce";
-    htest.assertEqualHash(Blake2b512, h1, "");
+    try htest.assertEqualHash(Blake2b512, h1, "");
 
     const h2 = "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923";
-    htest.assertEqualHash(Blake2b512, h2, "abc");
+    try htest.assertEqualHash(Blake2b512, h2, "abc");
 
     const h3 = "a8add4bdddfd93e4877d2746e62817b116364a1fa7bc148d95090bc7333b3673f82401cf7aa2e4cb1ecd90296e3f14cb5413f8ed77be73045b13914cdcd6a918";
-    htest.assertEqualHash(Blake2b512, h3, "The quick brown fox jumps over the lazy dog");
+    try htest.assertEqualHash(Blake2b512, h3, "The quick brown fox jumps over the lazy dog");
 
     const h4 = "049980af04d6a2cf16b4b49793c3ed7e40732073788806f2c989ebe9547bda0541d63abe298ec8955d08af48ae731f2e8a0bd6d201655a5473b4aa79d211b920";
-    htest.assertEqualHash(Blake2b512, h4, "a" ** 64 ++ "b" ** 64);
+    try htest.assertEqualHash(Blake2b512, h4, "a" ** 64 ++ "b" ** 64);
 }
 
 test "blake2b512 streaming" {
@@ -814,34 +823,34 @@ test "blake2b512 streaming" {
     const h1 = "786a02f742015903c6c6fd852552d272912f4740e15847618a86e217f71f5419d25e1031afee585313896444934eb04b903a685b1448b755d56f701afe9be2ce";
 
     h.final(out[0..]);
-    htest.assertEqual(h1, out[0..]);
+    try htest.assertEqual(h1, out[0..]);
 
     const h2 = "ba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d17d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923";
 
     h = Blake2b512.init(.{});
     h.update("abc");
     h.final(out[0..]);
-    htest.assertEqual(h2, out[0..]);
+    try htest.assertEqual(h2, out[0..]);
 
     h = Blake2b512.init(.{});
     h.update("a");
     h.update("b");
     h.update("c");
     h.final(out[0..]);
-    htest.assertEqual(h2, out[0..]);
+    try htest.assertEqual(h2, out[0..]);
 
     const h3 = "049980af04d6a2cf16b4b49793c3ed7e40732073788806f2c989ebe9547bda0541d63abe298ec8955d08af48ae731f2e8a0bd6d201655a5473b4aa79d211b920";
 
     h = Blake2b512.init(.{});
     h.update("a" ** 64 ++ "b" ** 64);
     h.final(out[0..]);
-    htest.assertEqual(h3, out[0..]);
+    try htest.assertEqual(h3, out[0..]);
 
     h = Blake2b512.init(.{});
     h.update("a" ** 64);
     h.update("b" ** 64);
     h.final(out[0..]);
-    htest.assertEqual(h3, out[0..]);
+    try htest.assertEqual(h3, out[0..]);
 }
 
 test "blake2b512 keyed" {
@@ -851,20 +860,20 @@ test "blake2b512 keyed" {
     const key = "secret_key";
 
     Blake2b512.hash("a" ** 64 ++ "b" ** 64, &out, .{ .key = key });
-    htest.assertEqual(h1, out[0..]);
+    try htest.assertEqual(h1, out[0..]);
 
     var h = Blake2b512.init(.{ .key = key });
     h.update("a" ** 64 ++ "b" ** 64);
     h.final(out[0..]);
 
-    htest.assertEqual(h1, out[0..]);
+    try htest.assertEqual(h1, out[0..]);
 
     h = Blake2b512.init(.{ .key = key });
     h.update("a" ** 64);
     h.update("b" ** 64);
     h.final(out[0..]);
 
-    htest.assertEqual(h1, out[0..]);
+    try htest.assertEqual(h1, out[0..]);
 }
 
 test "comptime blake2b512" {
@@ -875,12 +884,12 @@ test "comptime blake2b512" {
 
         const h1 = "865939e120e6805438478841afb739ae4250cf372653078a065cdcfffca4caf798e6d462b65d658fc165782640eded70963449ae1500fb0f24981d7727e22c41";
 
-        htest.assertEqualHash(Blake2b512, h1, block[0..]);
+        try htest.assertEqualHash(Blake2b512, h1, block[0..]);
 
         var h = Blake2b512.init(.{});
         h.update(&block);
         h.final(out[0..]);
 
-        htest.assertEqual(h1, out[0..]);
+        try htest.assertEqual(h1, out[0..]);
     }
 }

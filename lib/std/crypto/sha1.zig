@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("../std.zig");
 const mem = std.mem;
 const math = std.math;
@@ -43,6 +38,7 @@ pub const Sha1 = struct {
     total_len: u64 = 0,
 
     pub fn init(options: Options) Self {
+        _ = options;
         return Self{
             .s = [_]u32{
                 0x67452301,
@@ -66,7 +62,7 @@ pub const Sha1 = struct {
         // Partial buffer exists from previous update. Copy into buffer then hash.
         if (d.buf_len != 0 and d.buf_len + b.len >= 64) {
             off += 64 - d.buf_len;
-            mem.copy(u8, d.buf[d.buf_len..], b[0..off]);
+            @memcpy(d.buf[d.buf_len..][0..off], b[0..off]);
 
             d.round(d.buf[0..]);
             d.buf_len = 0;
@@ -78,15 +74,20 @@ pub const Sha1 = struct {
         }
 
         // Copy any remainder for next pass.
-        mem.copy(u8, d.buf[d.buf_len..], b[off..]);
-        d.buf_len += @intCast(u8, b[off..].len);
+        @memcpy(d.buf[d.buf_len..][0 .. b.len - off], b[off..]);
+        d.buf_len += @as(u8, @intCast(b[off..].len));
 
         d.total_len += b.len;
     }
 
+    pub fn peek(d: Self) [digest_length]u8 {
+        var copy = d;
+        return copy.finalResult();
+    }
+
     pub fn final(d: *Self, out: *[digest_length]u8) void {
         // The buffer here will never be completely full.
-        mem.set(u8, d.buf[d.buf_len..], 0);
+        @memset(d.buf[d.buf_len..], 0);
 
         // Append padding bits.
         d.buf[d.buf_len] = 0x80;
@@ -95,23 +96,29 @@ pub const Sha1 = struct {
         // > 448 mod 512 so need to add an extra round to wrap around.
         if (64 - d.buf_len < 8) {
             d.round(d.buf[0..]);
-            mem.set(u8, d.buf[0..], 0);
+            @memset(d.buf[0..], 0);
         }
 
         // Append message length.
         var i: usize = 1;
         var len = d.total_len >> 5;
-        d.buf[63] = @intCast(u8, d.total_len & 0x1f) << 3;
+        d.buf[63] = @as(u8, @intCast(d.total_len & 0x1f)) << 3;
         while (i < 8) : (i += 1) {
-            d.buf[63 - i] = @intCast(u8, len & 0xff);
+            d.buf[63 - i] = @as(u8, @intCast(len & 0xff));
             len >>= 8;
         }
 
         d.round(d.buf[0..]);
 
-        for (d.s) |s, j| {
-            mem.writeIntBig(u32, out[4 * j ..][0..4], s);
+        for (d.s, 0..) |s, j| {
+            mem.writeInt(u32, out[4 * j ..][0..4], s, .big);
         }
+    }
+
+    pub fn finalResult(d: *Self) [digest_length]u8 {
+        var result: [digest_length]u8 = undefined;
+        d.final(&result);
+        return result;
     }
 
     fn round(d: *Self, b: *const [64]u8) void {
@@ -144,7 +151,7 @@ pub const Sha1 = struct {
             roundParam(0, 1, 2, 3, 4, 15),
         };
         inline for (round0a) |r| {
-            s[r.i] = (@as(u32, b[r.i * 4 + 0]) << 24) | (@as(u32, b[r.i * 4 + 1]) << 16) | (@as(u32, b[r.i * 4 + 2]) << 8) | (@as(u32, b[r.i * 4 + 3]) << 0);
+            s[r.i] = mem.readInt(u32, b[r.i * 4 ..][0..4], .big);
 
             v[r.e] = v[r.e] +% math.rotl(u32, v[r.a], @as(u32, 5)) +% 0x5A827999 +% s[r.i & 0xf] +% ((v[r.b] & v[r.c]) | (~v[r.b] & v[r.d]));
             v[r.b] = math.rotl(u32, v[r.b], @as(u32, 30));
@@ -260,14 +267,26 @@ pub const Sha1 = struct {
         d.s[3] +%= v[3];
         d.s[4] +%= v[4];
     }
+
+    pub const Error = error{};
+    pub const Writer = std.io.Writer(*Self, Error, write);
+
+    fn write(self: *Self, bytes: []const u8) Error!usize {
+        self.update(bytes);
+        return bytes.len;
+    }
+
+    pub fn writer(self: *Self) Writer {
+        return .{ .context = self };
+    }
 };
 
 const htest = @import("test.zig");
 
 test "sha1 single" {
-    htest.assertEqualHash(Sha1, "da39a3ee5e6b4b0d3255bfef95601890afd80709", "");
-    htest.assertEqualHash(Sha1, "a9993e364706816aba3e25717850c26c9cd0d89d", "abc");
-    htest.assertEqualHash(Sha1, "a49b2446a02c645bf419f995b67091253a04a259", "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu");
+    try htest.assertEqualHash(Sha1, "da39a3ee5e6b4b0d3255bfef95601890afd80709", "");
+    try htest.assertEqualHash(Sha1, "a9993e364706816aba3e25717850c26c9cd0d89d", "abc");
+    try htest.assertEqualHash(Sha1, "a49b2446a02c645bf419f995b67091253a04a259", "abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu");
 }
 
 test "sha1 streaming" {
@@ -275,19 +294,19 @@ test "sha1 streaming" {
     var out: [20]u8 = undefined;
 
     h.final(&out);
-    htest.assertEqual("da39a3ee5e6b4b0d3255bfef95601890afd80709", out[0..]);
+    try htest.assertEqual("da39a3ee5e6b4b0d3255bfef95601890afd80709", out[0..]);
 
     h = Sha1.init(.{});
     h.update("abc");
     h.final(&out);
-    htest.assertEqual("a9993e364706816aba3e25717850c26c9cd0d89d", out[0..]);
+    try htest.assertEqual("a9993e364706816aba3e25717850c26c9cd0d89d", out[0..]);
 
     h = Sha1.init(.{});
     h.update("a");
     h.update("b");
     h.update("c");
     h.final(&out);
-    htest.assertEqual("a9993e364706816aba3e25717850c26c9cd0d89d", out[0..]);
+    try htest.assertEqual("a9993e364706816aba3e25717850c26c9cd0d89d", out[0..]);
 }
 
 test "sha1 aligned final" {

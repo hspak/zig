@@ -1,17 +1,15 @@
 // This is the implementation of the test harness.
 // For the actual test cases, see test/translate_c.zig.
 const std = @import("std");
-const build = std.build;
 const ArrayList = std.ArrayList;
 const fmt = std.fmt;
 const mem = std.mem;
 const fs = std.fs;
-const warn = std.debug.warn;
 const CrossTarget = std.zig.CrossTarget;
 
 pub const TranslateCContext = struct {
-    b: *build.Builder,
-    step: *build.Step,
+    b: *std.Build,
+    step: *std.Build.Step,
     test_index: usize,
     test_filter: ?[]const u8,
 
@@ -106,17 +104,16 @@ pub const TranslateCContext = struct {
 
         const write_src = b.addWriteFiles();
         for (case.sources.items) |src_file| {
-            write_src.add(src_file.filename, src_file.source);
+            _ = write_src.add(src_file.filename, src_file.source);
         }
 
         const translate_c = b.addTranslateC(.{
-            .write_file = .{
-                .step = write_src,
-                .basename = case.sources.items[0].filename,
-            },
+            .source_file = write_src.files.items[0].getPath(),
+            .target = case.target,
+            .optimize = .Debug,
         });
+
         translate_c.step.name = annotated_case_name;
-        translate_c.setTarget(case.target);
 
         const check_file = translate_c.addCheckFile(case.expected_lines.items);
 

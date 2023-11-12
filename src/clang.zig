@@ -1,3 +1,4 @@
+const std = @import("std");
 pub const builtin = @import("builtin");
 
 pub const SourceLocation = extern struct {
@@ -8,7 +9,7 @@ pub const SourceLocation = extern struct {
 };
 
 pub const QualType = extern struct {
-    ptr: ?*c_void,
+    ptr: ?*anyopaque,
 
     pub const getCanonicalType = ZigClangQualType_getCanonicalType;
     extern fn ZigClangQualType_getCanonicalType(QualType) QualType;
@@ -36,7 +37,7 @@ pub const QualType = extern struct {
 };
 
 pub const APValueLValueBase = extern struct {
-    Ptr: ?*c_void,
+    Ptr: ?*anyopaque,
     CallIndex: c_uint,
     Version: c_uint,
 
@@ -44,7 +45,7 @@ pub const APValueLValueBase = extern struct {
     extern fn ZigClangAPValueLValueBase_dyn_cast_Expr(APValueLValueBase) ?*const Expr;
 };
 
-pub const APValueKind = extern enum {
+pub const APValueKind = enum(c_int) {
     None,
     Indeterminate,
     Int,
@@ -84,7 +85,7 @@ pub const APValue = extern struct {
 pub const ExprEvalResult = extern struct {
     HasSideEffects: bool,
     HasUndefinedBehavior: bool,
-    SmallVectorImpl: ?*c_void,
+    SmallVectorImpl: ?*anyopaque,
     Val: APValue,
 };
 
@@ -104,8 +105,26 @@ pub const APFloat = opaque {
     extern fn ZigClangAPFloat_toString(*const APFloat, precision: c_uint, maxPadding: c_uint, truncateZero: bool) [*:0]const u8;
 };
 
+pub const APFloatBaseSemantics = enum(c_int) {
+    IEEEhalf,
+    BFloat,
+    IEEEsingle,
+    IEEEdouble,
+    IEEEquad,
+    PPCDoubleDouble,
+    Float8E5M2,
+    Float8E5M2FNUZ,
+    Float8E4M3FN,
+    Float8E4M3FNUZ,
+    Float8E4M3B11FNUZ,
+    FloatTF32,
+    x87DoubleExtended,
+};
+
 pub const APInt = opaque {
-    pub const getLimitedValue = ZigClangAPInt_getLimitedValue;
+    pub fn getLimitedValue(self: *const APInt, comptime T: type) T {
+        return @as(T, @truncate(ZigClangAPInt_getLimitedValue(self, std.math.maxInt(T))));
+    }
     extern fn ZigClangAPInt_getLimitedValue(*const APInt, limit: u64) u64;
 };
 
@@ -148,7 +167,11 @@ pub const ASTUnit = opaque {
     extern fn ZigClangASTUnit_getSourceManager(*ASTUnit) *SourceManager;
 
     pub const visitLocalTopLevelDecls = ZigClangASTUnit_visitLocalTopLevelDecls;
-    extern fn ZigClangASTUnit_visitLocalTopLevelDecls(*ASTUnit, context: ?*c_void, Fn: ?fn (?*c_void, *const Decl) callconv(.C) bool) bool;
+    extern fn ZigClangASTUnit_visitLocalTopLevelDecls(
+        *ASTUnit,
+        context: ?*anyopaque,
+        Fn: ?*const fn (?*anyopaque, *const Decl) callconv(.C) bool,
+    ) bool;
 
     pub const getLocalPreprocessingEntities_begin = ZigClangASTUnit_getLocalPreprocessingEntities_begin;
     extern fn ZigClangASTUnit_getLocalPreprocessingEntities_begin(*ASTUnit) PreprocessingRecord.iterator;
@@ -168,6 +191,14 @@ pub const ArraySubscriptExpr = opaque {
 pub const ArrayType = opaque {
     pub const getElementType = ZigClangArrayType_getElementType;
     extern fn ZigClangArrayType_getElementType(*const ArrayType) QualType;
+};
+
+pub const ASTRecordLayout = opaque {
+    pub const getFieldOffset = ZigClangASTRecordLayout_getFieldOffset;
+    extern fn ZigClangASTRecordLayout_getFieldOffset(*const ASTRecordLayout, c_uint) u64;
+
+    pub const getAlignment = ZigClangASTRecordLayout_getAlignment;
+    extern fn ZigClangASTRecordLayout_getAlignment(*const ASTRecordLayout) i64;
 };
 
 pub const AttributedType = opaque {
@@ -237,6 +268,14 @@ pub const CaseStmt = opaque {
     extern fn ZigClangCaseStmt_getSubStmt(*const CaseStmt) *const Stmt;
 };
 
+pub const CastExpr = opaque {
+    pub const getCastKind = ZigClangCastExpr_getCastKind;
+    extern fn ZigClangCastExpr_getCastKind(*const CastExpr) CK;
+
+    pub const getTargetFieldForToUnionCast = ZigClangCastExpr_getTargetFieldForToUnionCast;
+    extern fn ZigClangCastExpr_getTargetFieldForToUnionCast(*const CastExpr, QualType, QualType) ?*const FieldDecl;
+};
+
 pub const CharacterLiteral = opaque {
     pub const getBeginLoc = ZigClangCharacterLiteral_getBeginLoc;
     extern fn ZigClangCharacterLiteral_getBeginLoc(*const CharacterLiteral) SourceLocation;
@@ -246,6 +285,11 @@ pub const CharacterLiteral = opaque {
 
     pub const getValue = ZigClangCharacterLiteral_getValue;
     extern fn ZigClangCharacterLiteral_getValue(*const CharacterLiteral) c_uint;
+};
+
+pub const ChooseExpr = opaque {
+    pub const getChosenSubExpr = ZigClangChooseExpr_getChosenSubExpr;
+    extern fn ZigClangChooseExpr_getChosenSubExpr(*const ChooseExpr) *const Expr;
 };
 
 pub const CompoundAssignOperator = opaque {
@@ -299,6 +343,14 @@ pub const ConstantArrayType = opaque {
 pub const ConstantExpr = opaque {};
 
 pub const ContinueStmt = opaque {};
+
+pub const ConvertVectorExpr = opaque {
+    pub const getSrcExpr = ZigClangConvertVectorExpr_getSrcExpr;
+    extern fn ZigClangConvertVectorExpr_getSrcExpr(*const ConvertVectorExpr) *const Expr;
+
+    pub const getTypeSourceInfo_getType = ZigClangConvertVectorExpr_getTypeSourceInfo_getType;
+    extern fn ZigClangConvertVectorExpr_getTypeSourceInfo_getType(*const ConvertVectorExpr) QualType;
+};
 
 pub const DecayedType = opaque {
     pub const getDecayedType = ZigClangDecayedType_getDecayedType;
@@ -360,9 +412,6 @@ pub const ElaboratedType = opaque {
 };
 
 pub const EnumConstantDecl = opaque {
-    pub const getInitExpr = ZigClangEnumConstantDecl_getInitExpr;
-    extern fn ZigClangEnumConstantDecl_getInitExpr(*const EnumConstantDecl) ?*const Expr;
-
     pub const getInitVal = ZigClangEnumConstantDecl_getInitVal;
     extern fn ZigClangEnumConstantDecl_getInitVal(*const EnumConstantDecl) *const APSInt;
 };
@@ -387,7 +436,7 @@ pub const EnumDecl = opaque {
     extern fn ZigClangEnumDecl_enumerator_end(*const EnumDecl) enumerator_iterator;
 
     pub const enumerator_iterator = extern struct {
-        ptr: *c_void,
+        ptr: *anyopaque,
 
         pub const next = ZigClangEnumDecl_enumerator_iterator_next;
         extern fn ZigClangEnumDecl_enumerator_iterator_next(enumerator_iterator) enumerator_iterator;
@@ -416,7 +465,10 @@ pub const Expr = opaque {
     extern fn ZigClangExpr_getBeginLoc(*const Expr) SourceLocation;
 
     pub const evaluateAsConstantExpr = ZigClangExpr_EvaluateAsConstantExpr;
-    extern fn ZigClangExpr_EvaluateAsConstantExpr(*const Expr, *ExprEvalResult, Expr_ConstExprUsage, *const ASTContext) bool;
+    extern fn ZigClangExpr_EvaluateAsConstantExpr(*const Expr, *ExprEvalResult, Expr_ConstantExprKind, *const ASTContext) bool;
+
+    pub const castToStringLiteral = ZigClangExpr_castToStringLiteral;
+    extern fn ZigClangExpr_castToStringLiteral(*const Expr) ?*const StringLiteral;
 };
 
 pub const FieldDecl = opaque {
@@ -425,6 +477,9 @@ pub const FieldDecl = opaque {
 
     pub const getAlignedAttribute = ZigClangFieldDecl_getAlignedAttribute;
     extern fn ZigClangFieldDecl_getAlignedAttribute(*const FieldDecl, *const ASTContext) c_uint;
+
+    pub const getPackedAttribute = ZigClangFieldDecl_getPackedAttribute;
+    extern fn ZigClangFieldDecl_getPackedAttribute(*const FieldDecl) bool;
 
     pub const isAnonymousStructOrUnion = ZigClangFieldDecl_isAnonymousStructOrUnion;
     extern fn ZigClangFieldDecl_isAnonymousStructOrUnion(*const FieldDecl) bool;
@@ -440,6 +495,9 @@ pub const FieldDecl = opaque {
 
     pub const getParent = ZigClangFieldDecl_getParent;
     extern fn ZigClangFieldDecl_getParent(*const FieldDecl) ?*const RecordDecl;
+
+    pub const getFieldIndex = ZigClangFieldDecl_getFieldIndex;
+    extern fn ZigClangFieldDecl_getFieldIndex(*const FieldDecl) c_uint;
 };
 
 pub const FileID = opaque {};
@@ -447,6 +505,12 @@ pub const FileID = opaque {};
 pub const FloatingLiteral = opaque {
     pub const getValueAsApproximateDouble = ZigClangFloatingLiteral_getValueAsApproximateDouble;
     extern fn ZigClangFloatingLiteral_getValueAsApproximateDouble(*const FloatingLiteral) f64;
+
+    pub const getBeginLoc = ZigClangFloatingLiteral_getBeginLoc;
+    extern fn ZigClangFloatingLiteral_getBeginLoc(*const FloatingLiteral) SourceLocation;
+
+    pub const getRawSemantics = ZigClangFloatingLiteral_getRawSemantics;
+    extern fn ZigClangFloatingLiteral_getRawSemantics(*const FloatingLiteral) APFloatBaseSemantics;
 };
 
 pub const ForStmt = opaque {
@@ -495,6 +559,9 @@ pub const FunctionDecl = opaque {
 
     pub const isInlineSpecified = ZigClangFunctionDecl_isInlineSpecified;
     extern fn ZigClangFunctionDecl_isInlineSpecified(*const FunctionDecl) bool;
+
+    pub const hasAlwaysInlineAttr = ZigClangFunctionDecl_hasAlwaysInlineAttr;
+    extern fn ZigClangFunctionDecl_hasAlwaysInlineAttr(*const FunctionDecl) bool;
 
     pub const isDefined = ZigClangFunctionDecl_isDefined;
     extern fn ZigClangFunctionDecl_isDefined(*const FunctionDecl) bool;
@@ -576,8 +643,15 @@ pub const IntegerLiteral = opaque {
     pub const getBeginLoc = ZigClangIntegerLiteral_getBeginLoc;
     extern fn ZigClangIntegerLiteral_getBeginLoc(*const IntegerLiteral) SourceLocation;
 
-    pub const isZero = ZigClangIntegerLiteral_isZero;
-    extern fn ZigClangIntegerLiteral_isZero(*const IntegerLiteral, *bool, *const ASTContext) bool;
+    pub const getSignum = ZigClangIntegerLiteral_getSignum;
+    extern fn ZigClangIntegerLiteral_getSignum(*const IntegerLiteral, *c_int, *const ASTContext) bool;
+};
+
+/// This is just used as a namespace for a static method on clang's Lexer class; we don't directly
+/// deal with Lexer objects
+pub const Lexer = struct {
+    pub const getLocForEndOfToken = ZigClangLexer_getLocForEndOfToken;
+    extern fn ZigClangLexer_getLocForEndOfToken(SourceLocation, *const SourceManager, *const ASTUnit) SourceLocation;
 };
 
 pub const MacroDefinitionRecord = opaque {
@@ -597,8 +671,8 @@ pub const MacroQualifiedType = opaque {
 };
 
 pub const TypeOfType = opaque {
-    pub const getUnderlyingType = ZigClangTypeOfType_getUnderlyingType;
-    extern fn ZigClangTypeOfType_getUnderlyingType(*const TypeOfType) QualType;
+    pub const getUnmodifiedType = ZigClangTypeOfType_getUnmodifiedType;
+    extern fn ZigClangTypeOfType_getUnmodifiedType(*const TypeOfType) QualType;
 };
 
 pub const TypeOfExprType = opaque {
@@ -718,6 +792,9 @@ pub const RecordDecl = opaque {
     pub const getLocation = ZigClangRecordDecl_getLocation;
     extern fn ZigClangRecordDecl_getLocation(*const RecordDecl) SourceLocation;
 
+    pub const getASTRecordLayout = ZigClangRecordDecl_getASTRecordLayout;
+    extern fn ZigClangRecordDecl_getASTRecordLayout(*const RecordDecl, *const ASTContext) *const ASTRecordLayout;
+
     pub const field_begin = ZigClangRecordDecl_field_begin;
     extern fn ZigClangRecordDecl_field_begin(*const RecordDecl) field_iterator;
 
@@ -725,7 +802,7 @@ pub const RecordDecl = opaque {
     extern fn ZigClangRecordDecl_field_end(*const RecordDecl) field_iterator;
 
     pub const field_iterator = extern struct {
-        ptr: *c_void,
+        ptr: *anyopaque,
 
         pub const next = ZigClangRecordDecl_field_iterator_next;
         extern fn ZigClangRecordDecl_field_iterator_next(field_iterator) field_iterator;
@@ -746,6 +823,14 @@ pub const RecordType = opaque {
 pub const ReturnStmt = opaque {
     pub const getRetValue = ZigClangReturnStmt_getRetValue;
     extern fn ZigClangReturnStmt_getRetValue(*const ReturnStmt) ?*const Expr;
+};
+
+pub const ShuffleVectorExpr = opaque {
+    pub const getNumSubExprs = ZigClangShuffleVectorExpr_getNumSubExprs;
+    extern fn ZigClangShuffleVectorExpr_getNumSubExprs(*const ShuffleVectorExpr) c_uint;
+
+    pub const getExpr = ZigClangShuffleVectorExpr_getExpr;
+    extern fn ZigClangShuffleVectorExpr_getExpr(*const ShuffleVectorExpr, c_uint) *const Expr;
 };
 
 pub const SourceManager = opaque {
@@ -785,7 +870,7 @@ pub const StmtExpr = opaque {
 
 pub const StringLiteral = opaque {
     pub const getKind = ZigClangStringLiteral_getKind;
-    extern fn ZigClangStringLiteral_getKind(*const StringLiteral) StringLiteral_StringKind;
+    extern fn ZigClangStringLiteral_getKind(*const StringLiteral) CharacterLiteral_CharacterKind;
 
     pub const getCodeUnit = ZigClangStringLiteral_getCodeUnit;
     extern fn ZigClangStringLiteral_getCodeUnit(*const StringLiteral, usize) u32;
@@ -837,6 +922,9 @@ pub const Type = opaque {
     pub const isRecordType = ZigClangType_isRecordType;
     extern fn ZigClangType_isRecordType(*const Type) bool;
 
+    pub const isVectorType = ZigClangType_isVectorType;
+    extern fn ZigClangType_isVectorType(*const Type) bool;
+
     pub const isIncompleteOrZeroLengthArrayType = ZigClangType_isIncompleteOrZeroLengthArrayType;
     extern fn ZigClangType_isIncompleteOrZeroLengthArrayType(*const Type, *const ASTContext) bool;
 
@@ -868,6 +956,11 @@ pub const TypedefNameDecl = opaque {
 
     pub const getLocation = ZigClangTypedefNameDecl_getLocation;
     extern fn ZigClangTypedefNameDecl_getLocation(*const TypedefNameDecl) SourceLocation;
+};
+
+pub const FileScopeAsmDecl = opaque {
+    pub const getAsmString = ZigClangFileScopeAsmDecl_getAsmString;
+    extern fn ZigClangFileScopeAsmDecl_getAsmString(*const FileScopeAsmDecl) *const StringLiteral;
 };
 
 pub const TypedefType = opaque {
@@ -933,8 +1026,25 @@ pub const VarDecl = opaque {
     pub const getAlignedAttribute = ZigClangVarDecl_getAlignedAttribute;
     extern fn ZigClangVarDecl_getAlignedAttribute(*const VarDecl, *const ASTContext) c_uint;
 
+    pub const getPackedAttribute = ZigClangVarDecl_getPackedAttribute;
+    extern fn ZigClangVarDecl_getPackedAttribute(*const VarDecl) bool;
+
+    pub const getCleanupAttribute = ZigClangVarDecl_getCleanupAttribute;
+    extern fn ZigClangVarDecl_getCleanupAttribute(*const VarDecl) ?*const FunctionDecl;
+
     pub const getTypeSourceInfo_getType = ZigClangVarDecl_getTypeSourceInfo_getType;
     extern fn ZigClangVarDecl_getTypeSourceInfo_getType(*const VarDecl) QualType;
+
+    pub const isStaticLocal = ZigClangVarDecl_isStaticLocal;
+    extern fn ZigClangVarDecl_isStaticLocal(*const VarDecl) bool;
+};
+
+pub const VectorType = opaque {
+    pub const getElementType = ZigClangVectorType_getElementType;
+    extern fn ZigClangVectorType_getElementType(*const VectorType) QualType;
+
+    pub const getNumElements = ZigClangVectorType_getNumElements;
+    extern fn ZigClangVectorType_getNumElements(*const VectorType) c_uint;
 };
 
 pub const WhileStmt = opaque {
@@ -952,6 +1062,12 @@ pub const InitListExpr = opaque {
     pub const getArrayFiller = ZigClangInitListExpr_getArrayFiller;
     extern fn ZigClangInitListExpr_getArrayFiller(*const InitListExpr) *const Expr;
 
+    pub const hasArrayFiller = ZigClangInitListExpr_hasArrayFiller;
+    extern fn ZigClangInitListExpr_hasArrayFiller(*const InitListExpr) bool;
+
+    pub const isStringLiteralInit = ZigClangInitListExpr_isStringLiteralInit;
+    extern fn ZigClangInitListExpr_isStringLiteralInit(*const InitListExpr) bool;
+
     pub const getNumInits = ZigClangInitListExpr_getNumInits;
     extern fn ZigClangInitListExpr_getNumInits(*const InitListExpr) c_uint;
 
@@ -959,7 +1075,7 @@ pub const InitListExpr = opaque {
     extern fn ZigClangInitListExpr_getInitializedFieldInUnion(*const InitListExpr) ?*FieldDecl;
 };
 
-pub const BO = extern enum {
+pub const BO = enum(c_int) {
     PtrMemD,
     PtrMemI,
     Mul,
@@ -995,7 +1111,7 @@ pub const BO = extern enum {
     Comma,
 };
 
-pub const UO = extern enum {
+pub const UO = enum(c_int) {
     PostInc,
     PostDec,
     PreInc,
@@ -1012,7 +1128,7 @@ pub const UO = extern enum {
     Coawait,
 };
 
-pub const TypeClass = extern enum {
+pub const TypeClass = enum(c_int) {
     Adjusted,
     Decayed,
     ConstantArray,
@@ -1021,6 +1137,8 @@ pub const TypeClass = extern enum {
     VariableArray,
     Atomic,
     Attributed,
+    BTFTagAttributed,
+    BitInt,
     BlockPointer,
     Builtin,
     Complex,
@@ -1028,13 +1146,12 @@ pub const TypeClass = extern enum {
     Auto,
     DeducedTemplateSpecialization,
     DependentAddressSpace,
-    DependentExtInt,
+    DependentBitInt,
     DependentName,
     DependentSizedExtVector,
     DependentTemplateSpecialization,
     DependentVector,
     Elaborated,
-    ExtInt,
     FunctionNoProto,
     FunctionProto,
     InjectedClassName,
@@ -1063,11 +1180,12 @@ pub const TypeClass = extern enum {
     Typedef,
     UnaryTransform,
     UnresolvedUsing,
+    Using,
     Vector,
     ExtVector,
 };
 
-const StmtClass = extern enum {
+const StmtClass = enum(c_int) {
     NoStmtClass,
     GCCAsmStmtClass,
     MSAsmStmtClass,
@@ -1088,41 +1206,59 @@ const StmtClass = extern enum {
     IndirectGotoStmtClass,
     MSDependentExistsStmtClass,
     NullStmtClass,
+    OMPCanonicalLoopClass,
     OMPAtomicDirectiveClass,
     OMPBarrierDirectiveClass,
     OMPCancelDirectiveClass,
     OMPCancellationPointDirectiveClass,
     OMPCriticalDirectiveClass,
     OMPDepobjDirectiveClass,
+    OMPDispatchDirectiveClass,
+    OMPErrorDirectiveClass,
     OMPFlushDirectiveClass,
+    OMPInteropDirectiveClass,
     OMPDistributeDirectiveClass,
     OMPDistributeParallelForDirectiveClass,
     OMPDistributeParallelForSimdDirectiveClass,
     OMPDistributeSimdDirectiveClass,
     OMPForDirectiveClass,
     OMPForSimdDirectiveClass,
+    OMPGenericLoopDirectiveClass,
+    OMPMaskedTaskLoopDirectiveClass,
+    OMPMaskedTaskLoopSimdDirectiveClass,
     OMPMasterTaskLoopDirectiveClass,
     OMPMasterTaskLoopSimdDirectiveClass,
     OMPParallelForDirectiveClass,
     OMPParallelForSimdDirectiveClass,
+    OMPParallelGenericLoopDirectiveClass,
+    OMPParallelMaskedTaskLoopDirectiveClass,
+    OMPParallelMaskedTaskLoopSimdDirectiveClass,
     OMPParallelMasterTaskLoopDirectiveClass,
     OMPParallelMasterTaskLoopSimdDirectiveClass,
     OMPSimdDirectiveClass,
     OMPTargetParallelForSimdDirectiveClass,
+    OMPTargetParallelGenericLoopDirectiveClass,
     OMPTargetSimdDirectiveClass,
     OMPTargetTeamsDistributeDirectiveClass,
     OMPTargetTeamsDistributeParallelForDirectiveClass,
     OMPTargetTeamsDistributeParallelForSimdDirectiveClass,
     OMPTargetTeamsDistributeSimdDirectiveClass,
+    OMPTargetTeamsGenericLoopDirectiveClass,
     OMPTaskLoopDirectiveClass,
     OMPTaskLoopSimdDirectiveClass,
     OMPTeamsDistributeDirectiveClass,
     OMPTeamsDistributeParallelForDirectiveClass,
     OMPTeamsDistributeParallelForSimdDirectiveClass,
     OMPTeamsDistributeSimdDirectiveClass,
+    OMPTeamsGenericLoopDirectiveClass,
+    OMPTileDirectiveClass,
+    OMPUnrollDirectiveClass,
+    OMPMaskedDirectiveClass,
     OMPMasterDirectiveClass,
+    OMPMetaDirectiveClass,
     OMPOrderedDirectiveClass,
     OMPParallelDirectiveClass,
+    OMPParallelMaskedDirectiveClass,
     OMPParallelMasterDirectiveClass,
     OMPParallelSectionsDirectiveClass,
     OMPScanDirectiveClass,
@@ -1183,6 +1319,7 @@ const StmtClass = extern enum {
     CXXNewExprClass,
     CXXNoexceptExprClass,
     CXXNullPtrLiteralExprClass,
+    CXXParenListInitExprClass,
     CXXPseudoDestructorExprClass,
     CXXRewrittenBinaryOperatorClass,
     CXXScalarValueInitExprClass,
@@ -1268,6 +1405,7 @@ const StmtClass = extern enum {
     PseudoObjectExprClass,
     RecoveryExprClass,
     RequiresExprClass,
+    SYCLUniqueStableNameExprClass,
     ShuffleVectorExprClass,
     SizeOfPackExprClass,
     SourceLocExprClass,
@@ -1284,7 +1422,7 @@ const StmtClass = extern enum {
     WhileStmtClass,
 };
 
-pub const CK = extern enum {
+pub const CK = enum(c_int) {
     Dependent,
     BitCast,
     LValueBitCast,
@@ -1310,10 +1448,13 @@ pub const CK = extern enum {
     PointerToIntegral,
     PointerToBoolean,
     ToVoid,
+    MatrixCast,
     VectorSplat,
     IntegralCast,
     IntegralToBoolean,
     IntegralToFloating,
+    FloatingToFixedPoint,
+    FixedPofloatFromInting,
     FixedPointCast,
     FixedPointToIntegral,
     IntegralToFixedPoint,
@@ -1349,7 +1490,7 @@ pub const CK = extern enum {
     IntToOCLSampler,
 };
 
-pub const DeclKind = extern enum {
+pub const DeclKind = enum(c_int) {
     AccessSpec,
     Block,
     Captured,
@@ -1360,9 +1501,13 @@ pub const DeclKind = extern enum {
     FileScopeAsm,
     Friend,
     FriendTemplate,
+    ImplicitConceptSpecialization,
     Import,
     LifetimeExtendedTemporary,
     LinkageSpec,
+    Using,
+    UsingEnum,
+    HLSLBuffer,
     Label,
     Namespace,
     NamespaceAlias,
@@ -1391,7 +1536,7 @@ pub const DeclKind = extern enum {
     TypeAlias,
     Typedef,
     UnresolvedUsingTypename,
-    Using,
+    UnresolvedUsingIfExists,
     UsingDirective,
     UsingPack,
     UsingShadow,
@@ -1420,6 +1565,8 @@ pub const DeclKind = extern enum {
     MSGuid,
     OMPDeclareMapper,
     OMPDeclareReduction,
+    TemplateParamObject,
+    UnnamedGlobalConstant,
     UnresolvedUsingValue,
     OMPAllocate,
     OMPRequires,
@@ -1429,10 +1576,11 @@ pub const DeclKind = extern enum {
     PragmaDetectMismatch,
     RequiresExprBody,
     StaticAssert,
+    TopLevelStmt,
     TranslationUnit,
 };
 
-pub const BuiltinTypeKind = extern enum {
+pub const BuiltinTypeKind = enum(c_int) {
     OCLImage1dRO,
     OCLImage1dArrayRO,
     OCLImage1dBufferRO,
@@ -1477,10 +1625,10 @@ pub const BuiltinTypeKind = extern enum {
     OCLIntelSubgroupAVCImeResult,
     OCLIntelSubgroupAVCRefResult,
     OCLIntelSubgroupAVCSicResult,
-    OCLIntelSubgroupAVCImeResultSingleRefStreamout,
-    OCLIntelSubgroupAVCImeResultDualRefStreamout,
-    OCLIntelSubgroupAVCImeSingleRefStreamin,
-    OCLIntelSubgroupAVCImeDualRefStreamin,
+    OCLIntelSubgroupAVCImeResultSingleReferenceStreamout,
+    OCLIntelSubgroupAVCImeResultDualReferenceStreamout,
+    OCLIntelSubgroupAVCImeSingleReferenceStreamin,
+    OCLIntelSubgroupAVCImeDualReferenceStreamin,
     SveInt8,
     SveInt16,
     SveInt32,
@@ -1530,6 +1678,304 @@ pub const BuiltinTypeKind = extern enum {
     SveFloat64x4,
     SveBFloat16x4,
     SveBool,
+    SveBoolx2,
+    SveBoolx4,
+    SveCount,
+    VectorQuad,
+    VectorPair,
+    RvvInt8mf8,
+    RvvInt8mf4,
+    RvvInt8mf2,
+    RvvInt8m1,
+    RvvInt8m2,
+    RvvInt8m4,
+    RvvInt8m8,
+    RvvUint8mf8,
+    RvvUint8mf4,
+    RvvUint8mf2,
+    RvvUint8m1,
+    RvvUint8m2,
+    RvvUint8m4,
+    RvvUint8m8,
+    RvvInt16mf4,
+    RvvInt16mf2,
+    RvvInt16m1,
+    RvvInt16m2,
+    RvvInt16m4,
+    RvvInt16m8,
+    RvvUint16mf4,
+    RvvUint16mf2,
+    RvvUint16m1,
+    RvvUint16m2,
+    RvvUint16m4,
+    RvvUint16m8,
+    RvvInt32mf2,
+    RvvInt32m1,
+    RvvInt32m2,
+    RvvInt32m4,
+    RvvInt32m8,
+    RvvUint32mf2,
+    RvvUint32m1,
+    RvvUint32m2,
+    RvvUint32m4,
+    RvvUint32m8,
+    RvvInt64m1,
+    RvvInt64m2,
+    RvvInt64m4,
+    RvvInt64m8,
+    RvvUint64m1,
+    RvvUint64m2,
+    RvvUint64m4,
+    RvvUint64m8,
+    RvvFloat16mf4,
+    RvvFloat16mf2,
+    RvvFloat16m1,
+    RvvFloat16m2,
+    RvvFloat16m4,
+    RvvFloat16m8,
+    RvvFloat32mf2,
+    RvvFloat32m1,
+    RvvFloat32m2,
+    RvvFloat32m4,
+    RvvFloat32m8,
+    RvvFloat64m1,
+    RvvFloat64m2,
+    RvvFloat64m4,
+    RvvFloat64m8,
+    RvvBool1,
+    RvvBool2,
+    RvvBool4,
+    RvvBool8,
+    RvvBool16,
+    RvvBool32,
+    RvvBool64,
+    RvvInt8mf8x2,
+    RvvInt8mf8x3,
+    RvvInt8mf8x4,
+    RvvInt8mf8x5,
+    RvvInt8mf8x6,
+    RvvInt8mf8x7,
+    RvvInt8mf8x8,
+    RvvInt8mf4x2,
+    RvvInt8mf4x3,
+    RvvInt8mf4x4,
+    RvvInt8mf4x5,
+    RvvInt8mf4x6,
+    RvvInt8mf4x7,
+    RvvInt8mf4x8,
+    RvvInt8mf2x2,
+    RvvInt8mf2x3,
+    RvvInt8mf2x4,
+    RvvInt8mf2x5,
+    RvvInt8mf2x6,
+    RvvInt8mf2x7,
+    RvvInt8mf2x8,
+    RvvInt8m1x2,
+    RvvInt8m1x3,
+    RvvInt8m1x4,
+    RvvInt8m1x5,
+    RvvInt8m1x6,
+    RvvInt8m1x7,
+    RvvInt8m1x8,
+    RvvInt8m2x2,
+    RvvInt8m2x3,
+    RvvInt8m2x4,
+    RvvInt8m4x2,
+    RvvUint8mf8x2,
+    RvvUint8mf8x3,
+    RvvUint8mf8x4,
+    RvvUint8mf8x5,
+    RvvUint8mf8x6,
+    RvvUint8mf8x7,
+    RvvUint8mf8x8,
+    RvvUint8mf4x2,
+    RvvUint8mf4x3,
+    RvvUint8mf4x4,
+    RvvUint8mf4x5,
+    RvvUint8mf4x6,
+    RvvUint8mf4x7,
+    RvvUint8mf4x8,
+    RvvUint8mf2x2,
+    RvvUint8mf2x3,
+    RvvUint8mf2x4,
+    RvvUint8mf2x5,
+    RvvUint8mf2x6,
+    RvvUint8mf2x7,
+    RvvUint8mf2x8,
+    RvvUint8m1x2,
+    RvvUint8m1x3,
+    RvvUint8m1x4,
+    RvvUint8m1x5,
+    RvvUint8m1x6,
+    RvvUint8m1x7,
+    RvvUint8m1x8,
+    RvvUint8m2x2,
+    RvvUint8m2x3,
+    RvvUint8m2x4,
+    RvvUint8m4x2,
+    RvvInt16mf4x2,
+    RvvInt16mf4x3,
+    RvvInt16mf4x4,
+    RvvInt16mf4x5,
+    RvvInt16mf4x6,
+    RvvInt16mf4x7,
+    RvvInt16mf4x8,
+    RvvInt16mf2x2,
+    RvvInt16mf2x3,
+    RvvInt16mf2x4,
+    RvvInt16mf2x5,
+    RvvInt16mf2x6,
+    RvvInt16mf2x7,
+    RvvInt16mf2x8,
+    RvvInt16m1x2,
+    RvvInt16m1x3,
+    RvvInt16m1x4,
+    RvvInt16m1x5,
+    RvvInt16m1x6,
+    RvvInt16m1x7,
+    RvvInt16m1x8,
+    RvvInt16m2x2,
+    RvvInt16m2x3,
+    RvvInt16m2x4,
+    RvvInt16m4x2,
+    RvvUint16mf4x2,
+    RvvUint16mf4x3,
+    RvvUint16mf4x4,
+    RvvUint16mf4x5,
+    RvvUint16mf4x6,
+    RvvUint16mf4x7,
+    RvvUint16mf4x8,
+    RvvUint16mf2x2,
+    RvvUint16mf2x3,
+    RvvUint16mf2x4,
+    RvvUint16mf2x5,
+    RvvUint16mf2x6,
+    RvvUint16mf2x7,
+    RvvUint16mf2x8,
+    RvvUint16m1x2,
+    RvvUint16m1x3,
+    RvvUint16m1x4,
+    RvvUint16m1x5,
+    RvvUint16m1x6,
+    RvvUint16m1x7,
+    RvvUint16m1x8,
+    RvvUint16m2x2,
+    RvvUint16m2x3,
+    RvvUint16m2x4,
+    RvvUint16m4x2,
+    RvvInt32mf2x2,
+    RvvInt32mf2x3,
+    RvvInt32mf2x4,
+    RvvInt32mf2x5,
+    RvvInt32mf2x6,
+    RvvInt32mf2x7,
+    RvvInt32mf2x8,
+    RvvInt32m1x2,
+    RvvInt32m1x3,
+    RvvInt32m1x4,
+    RvvInt32m1x5,
+    RvvInt32m1x6,
+    RvvInt32m1x7,
+    RvvInt32m1x8,
+    RvvInt32m2x2,
+    RvvInt32m2x3,
+    RvvInt32m2x4,
+    RvvInt32m4x2,
+    RvvUint32mf2x2,
+    RvvUint32mf2x3,
+    RvvUint32mf2x4,
+    RvvUint32mf2x5,
+    RvvUint32mf2x6,
+    RvvUint32mf2x7,
+    RvvUint32mf2x8,
+    RvvUint32m1x2,
+    RvvUint32m1x3,
+    RvvUint32m1x4,
+    RvvUint32m1x5,
+    RvvUint32m1x6,
+    RvvUint32m1x7,
+    RvvUint32m1x8,
+    RvvUint32m2x2,
+    RvvUint32m2x3,
+    RvvUint32m2x4,
+    RvvUint32m4x2,
+    RvvInt64m1x2,
+    RvvInt64m1x3,
+    RvvInt64m1x4,
+    RvvInt64m1x5,
+    RvvInt64m1x6,
+    RvvInt64m1x7,
+    RvvInt64m1x8,
+    RvvInt64m2x2,
+    RvvInt64m2x3,
+    RvvInt64m2x4,
+    RvvInt64m4x2,
+    RvvUint64m1x2,
+    RvvUint64m1x3,
+    RvvUint64m1x4,
+    RvvUint64m1x5,
+    RvvUint64m1x6,
+    RvvUint64m1x7,
+    RvvUint64m1x8,
+    RvvUint64m2x2,
+    RvvUint64m2x3,
+    RvvUint64m2x4,
+    RvvUint64m4x2,
+    RvvFloat16mf4x2,
+    RvvFloat16mf4x3,
+    RvvFloat16mf4x4,
+    RvvFloat16mf4x5,
+    RvvFloat16mf4x6,
+    RvvFloat16mf4x7,
+    RvvFloat16mf4x8,
+    RvvFloat16mf2x2,
+    RvvFloat16mf2x3,
+    RvvFloat16mf2x4,
+    RvvFloat16mf2x5,
+    RvvFloat16mf2x6,
+    RvvFloat16mf2x7,
+    RvvFloat16mf2x8,
+    RvvFloat16m1x2,
+    RvvFloat16m1x3,
+    RvvFloat16m1x4,
+    RvvFloat16m1x5,
+    RvvFloat16m1x6,
+    RvvFloat16m1x7,
+    RvvFloat16m1x8,
+    RvvFloat16m2x2,
+    RvvFloat16m2x3,
+    RvvFloat16m2x4,
+    RvvFloat16m4x2,
+    RvvFloat32mf2x2,
+    RvvFloat32mf2x3,
+    RvvFloat32mf2x4,
+    RvvFloat32mf2x5,
+    RvvFloat32mf2x6,
+    RvvFloat32mf2x7,
+    RvvFloat32mf2x8,
+    RvvFloat32m1x2,
+    RvvFloat32m1x3,
+    RvvFloat32m1x4,
+    RvvFloat32m1x5,
+    RvvFloat32m1x6,
+    RvvFloat32m1x7,
+    RvvFloat32m1x8,
+    RvvFloat32m2x2,
+    RvvFloat32m2x3,
+    RvvFloat32m2x4,
+    RvvFloat32m4x2,
+    RvvFloat64m1x2,
+    RvvFloat64m1x3,
+    RvvFloat64m1x4,
+    RvvFloat64m1x5,
+    RvvFloat64m1x6,
+    RvvFloat64m1x7,
+    RvvFloat64m1x8,
+    RvvFloat64m2x2,
+    RvvFloat64m2x3,
+    RvvFloat64m2x4,
+    RvvFloat64m4x2,
+    WasmExternRef,
     Void,
     Bool,
     Char_U,
@@ -1582,6 +2028,7 @@ pub const BuiltinTypeKind = extern enum {
     Float16,
     BFloat16,
     Float128,
+    Ibm128,
     NullPtr,
     ObjCId,
     ObjCClass,
@@ -1604,7 +2051,7 @@ pub const BuiltinTypeKind = extern enum {
     OMPIterator,
 };
 
-pub const CallingConv = extern enum {
+pub const CallingConv = enum(c_int) {
     C,
     X86StdCall,
     X86FastCall,
@@ -1620,12 +2067,15 @@ pub const CallingConv = extern enum {
     SpirFunction,
     OpenCLKernel,
     Swift,
+    SwiftAsync,
     PreserveMost,
     PreserveAll,
     AArch64VectorCall,
+    AArch64SVEPCS,
+    AMDGPUKernelCall,
 };
 
-pub const StorageClass = extern enum {
+pub const StorageClass = enum(c_int) {
     None,
     Extern,
     Static,
@@ -1634,7 +2084,7 @@ pub const StorageClass = extern enum {
     Register,
 };
 
-pub const APFloat_roundingMode = extern enum(i8) {
+pub const APFloat_roundingMode = enum(i8) {
     TowardZero = 0,
     NearestTiesToEven = 1,
     TowardPositive = 2,
@@ -1644,7 +2094,7 @@ pub const APFloat_roundingMode = extern enum(i8) {
     Invalid = -1,
 };
 
-pub const StringLiteral_StringKind = extern enum {
+pub const CharacterLiteral_CharacterKind = enum(c_int) {
     Ascii,
     Wide,
     UTF8,
@@ -1652,21 +2102,13 @@ pub const StringLiteral_StringKind = extern enum {
     UTF32,
 };
 
-pub const CharacterLiteral_CharacterKind = extern enum {
-    Ascii,
-    Wide,
-    UTF8,
-    UTF16,
-    UTF32,
-};
-
-pub const VarDecl_TLSKind = extern enum {
+pub const VarDecl_TLSKind = enum(c_int) {
     None,
     Static,
     Dynamic,
 };
 
-pub const ElaboratedTypeKeyword = extern enum {
+pub const ElaboratedTypeKeyword = enum(c_int) {
     Struct,
     Interface,
     Union,
@@ -1676,19 +2118,21 @@ pub const ElaboratedTypeKeyword = extern enum {
     None,
 };
 
-pub const PreprocessedEntity_EntityKind = extern enum {
+pub const PreprocessedEntity_EntityKind = enum(c_int) {
     InvalidKind,
     MacroExpansionKind,
     MacroDefinitionKind,
     InclusionDirectiveKind,
 };
 
-pub const Expr_ConstExprUsage = extern enum {
-    EvaluateForCodeGen,
-    EvaluateForMangling,
+pub const Expr_ConstantExprKind = enum(c_int) {
+    Normal,
+    NonClassTemplateArgument,
+    ClassTemplateArgument,
+    ImmediateInvocation,
 };
 
-pub const UnaryExprOrTypeTrait_Kind = extern enum {
+pub const UnaryExprOrTypeTrait_Kind = enum(c_int) {
     SizeOf,
     AlignOf,
     VecStep,
@@ -1696,20 +2140,20 @@ pub const UnaryExprOrTypeTrait_Kind = extern enum {
     PreferredAlignOf,
 };
 
-pub const OffsetOfNode_Kind = extern enum {
+pub const OffsetOfNode_Kind = enum(c_int) {
     Array,
     Field,
     Identifier,
     Base,
 };
 
-pub const Stage2ErrorMsg = extern struct {
+pub const ErrorMsg = extern struct {
     filename_ptr: ?[*]const u8,
     filename_len: usize,
     msg_ptr: [*]const u8,
     msg_len: usize,
     // valid until the ASTUnit is freed
-    source: ?[*]const u8,
+    source: ?[*:0]const u8,
     // 0 based
     line: c_uint,
     // 0 based
@@ -1718,14 +2162,17 @@ pub const Stage2ErrorMsg = extern struct {
     offset: c_uint,
 
     pub const delete = ZigClangErrorMsg_delete;
-    extern fn ZigClangErrorMsg_delete(ptr: [*]Stage2ErrorMsg, len: usize) void;
+    extern fn ZigClangErrorMsg_delete(ptr: [*]ErrorMsg, len: usize) void;
 };
 
 pub const LoadFromCommandLine = ZigClangLoadFromCommandLine;
 extern fn ZigClangLoadFromCommandLine(
     args_begin: [*]?[*]const u8,
     args_end: [*]?[*]const u8,
-    errors_ptr: *[*]Stage2ErrorMsg,
+    errors_ptr: *[*]ErrorMsg,
     errors_len: *usize,
     resources_path: [*:0]const u8,
 ) ?*ASTUnit;
+
+pub const isLLVMUsingSeparateLibcxx = ZigClangIsLLVMUsingSeparateLibcxx;
+extern fn ZigClangIsLLVMUsingSeparateLibcxx() bool;

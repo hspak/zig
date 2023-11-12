@@ -1,9 +1,5 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("std");
+const builtin = @import("builtin");
 const Target = std.Target;
 const CrossTarget = std.zig.CrossTarget;
 
@@ -14,20 +10,21 @@ const XCR0_ZMM0_15 = 0x40;
 const XCR0_ZMM16_31 = 0x80;
 
 fn setFeature(cpu: *Target.Cpu, feature: Target.x86.Feature, enabled: bool) void {
-    const idx = @as(Target.Cpu.Feature.Set.Index, @enumToInt(feature));
+    const idx = @as(Target.Cpu.Feature.Set.Index, @intFromEnum(feature));
 
     if (enabled) cpu.features.addFeature(idx) else cpu.features.removeFeature(idx);
 }
 
-fn bit(input: u32, offset: u5) callconv(.Inline) bool {
+inline fn bit(input: u32, offset: u5) bool {
     return (input >> offset) & 1 != 0;
 }
 
-fn hasMask(input: u32, mask: u32) callconv(.Inline) bool {
+inline fn hasMask(input: u32, mask: u32) bool {
     return (input & mask) == mask;
 }
 
 pub fn detectNativeCpuAndFeatures(arch: Target.Cpu.Arch, os: Target.Os, cross_target: CrossTarget) Target.Cpu {
+    _ = cross_target;
     var cpu = Target.Cpu{
         .arch = arch,
         .model = Target.Cpu.Model.generic(arch),
@@ -84,11 +81,11 @@ fn detectIntelProcessor(cpu: *Target.Cpu, family: u32, model: u32, brand_id: u32
     }
     switch (family) {
         3 => {
-            cpu.model = &Target.x86.cpu._i386;
+            cpu.model = &Target.x86.cpu.i386;
             return;
         },
         4 => {
-            cpu.model = &Target.x86.cpu._i486;
+            cpu.model = &Target.x86.cpu.i486;
             return;
         },
         5 => {
@@ -233,7 +230,7 @@ fn detectAMDProcessor(cpu: *Target.Cpu, family: u32, model: u32) void {
     // This is very unscientific, and not necessarily correct.
     switch (family) {
         4 => {
-            cpu.model = &Target.x86.cpu._i486;
+            cpu.model = &Target.x86.cpu.i486;
             return;
         },
         5 => {
@@ -309,6 +306,10 @@ fn detectAMDProcessor(cpu: *Target.Cpu, family: u32, model: u32) void {
                 cpu.model = &Target.x86.cpu.znver2;
                 return;
             }
+            return;
+        },
+        25 => {
+            cpu.model = &Target.x86.cpu.znver3;
             return;
         },
         else => {
@@ -527,36 +528,48 @@ const CpuidLeaf = packed struct {
     edx: u32,
 };
 
+/// This is a workaround for the C backend until zig has the ability to put
+/// C code in inline assembly.
+extern fn zig_x86_cpuid(leaf_id: u32, subid: u32, eax: *u32, ebx: *u32, ecx: *u32, edx: *u32) callconv(.C) void;
+
 fn cpuid(leaf_id: u32, subid: u32) CpuidLeaf {
-    // Workaround for https://github.com/ziglang/zig/issues/215
-    // Inline assembly in zig only supports one output,
-    // so we pass a pointer to the struct.
-    var cpuid_leaf: CpuidLeaf = undefined;
-
     // valid for both x86 and x86_64
-    asm volatile (
-        \\ cpuid
-        \\ movl %%eax, 0(%[leaf_ptr])
-        \\ movl %%ebx, 4(%[leaf_ptr])
-        \\ movl %%ecx, 8(%[leaf_ptr])
-        \\ movl %%edx, 12(%[leaf_ptr])
-        :
-        : [leaf_id] "{eax}" (leaf_id),
-          [subid] "{ecx}" (subid),
-          [leaf_ptr] "r" (&cpuid_leaf)
-        : "eax", "ebx", "ecx", "edx"
-    );
+    var eax: u32 = undefined;
+    var ebx: u32 = undefined;
+    var ecx: u32 = undefined;
+    var edx: u32 = undefined;
 
-    return cpuid_leaf;
+    if (builtin.zig_backend == .stage2_c) {
+        zig_x86_cpuid(leaf_id, subid, &eax, &ebx, &ecx, &edx);
+    } else {
+        asm volatile ("cpuid"
+            : [_] "={eax}" (eax),
+              [_] "={ebx}" (ebx),
+              [_] "={ecx}" (ecx),
+              [_] "={edx}" (edx),
+            : [_] "{eax}" (leaf_id),
+              [_] "{ecx}" (subid),
+        );
+    }
+
+    return .{ .eax = eax, .ebx = ebx, .ecx = ecx, .edx = edx };
 }
+
+/// This is a workaround for the C backend until zig has the ability to put
+/// C code in inline assembly.
+extern fn zig_x86_get_xcr0() callconv(.C) u32;
 
 // Read control register 0 (XCR0). Used to detect features such as AVX.
 fn getXCR0() u32 {
+    if (builtin.zig_backend == .stage2_c) {
+        return zig_x86_get_xcr0();
+    }
+
     return asm volatile (
         \\ xor %%ecx, %%ecx
         \\ xgetbv
-        : [ret] "={eax}" (-> u32)
+        : [_] "={eax}" (-> u32),
         :
-        : "eax", "edx", "ecx"
+        : "edx", "ecx"
     );
 }

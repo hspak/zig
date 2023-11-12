@@ -1,9 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
-
 //! PCG32 - http://www.pcg-random.org/
 //!
 //! PRNG
@@ -14,14 +8,11 @@ const Pcg = @This();
 
 const default_multiplier = 6364136223846793005;
 
-random: Random,
-
 s: u64,
 i: u64,
 
 pub fn init(init_s: u64) Pcg {
     var pcg = Pcg{
-        .random = Random{ .fillFn = fill },
         .s = undefined,
         .i = undefined,
     };
@@ -30,14 +21,18 @@ pub fn init(init_s: u64) Pcg {
     return pcg;
 }
 
+pub fn random(self: *Pcg) Random {
+    return Random.init(self, fill);
+}
+
 fn next(self: *Pcg) u32 {
     const l = self.s;
     self.s = l *% default_multiplier +% (self.i | 1);
 
-    const xor_s = @truncate(u32, ((l >> 18) ^ l) >> 27);
-    const rot = @intCast(u32, l >> 59);
+    const xor_s: u32 = @truncate(((l >> 18) ^ l) >> 27);
+    const rot: u32 = @intCast(l >> 59);
 
-    return (xor_s >> @intCast(u5, rot)) | (xor_s << @intCast(u5, (0 -% rot) & 31));
+    return (xor_s >> @as(u5, @intCast(rot))) | (xor_s << @as(u5, @intCast((0 -% rot) & 31)));
 }
 
 fn seed(self: *Pcg, init_s: u64) void {
@@ -54,18 +49,16 @@ fn seedTwo(self: *Pcg, init_s: u64, init_i: u64) void {
     self.s = self.s *% default_multiplier +% self.i;
 }
 
-fn fill(r: *Random, buf: []u8) void {
-    const self = @fieldParentPtr(Pcg, "random", r);
-
+pub fn fill(self: *Pcg, buf: []u8) void {
     var i: usize = 0;
-    const aligned_len = buf.len - (buf.len & 7);
+    const aligned_len = buf.len - (buf.len & 3);
 
     // Complete 4 byte segments.
     while (i < aligned_len) : (i += 4) {
         var n = self.next();
         comptime var j: usize = 0;
         inline while (j < 4) : (j += 1) {
-            buf[i + j] = @truncate(u8, n);
+            buf[i + j] = @as(u8, @truncate(n));
             n >>= 8;
         }
     }
@@ -74,7 +67,7 @@ fn fill(r: *Random, buf: []u8) void {
     if (i != buf.len) {
         var n = self.next();
         while (i < buf.len) : (i += 1) {
-            buf[i] = @truncate(u8, n);
+            buf[i] = @as(u8, @truncate(n));
             n >>= 8;
         }
     }
@@ -96,7 +89,7 @@ test "pcg sequence" {
     };
 
     for (seq) |s| {
-        std.testing.expect(s == r.next());
+        try std.testing.expect(s == r.next());
     }
 }
 
@@ -115,11 +108,15 @@ test "pcg fill" {
         3247963454,
     };
 
-    for (seq) |s| {
-        var buf0: [4]u8 = undefined;
-        var buf1: [3]u8 = undefined;
-        std.mem.writeIntLittle(u32, &buf0, s);
-        Pcg.fill(&r.random, &buf1);
-        std.testing.expect(std.mem.eql(u8, buf0[0..3], buf1[0..]));
+    var i: u32 = 0;
+    while (i < seq.len) : (i += 2) {
+        var buf0: [8]u8 = undefined;
+        std.mem.writeInt(u32, buf0[0..4], seq[i], .little);
+        std.mem.writeInt(u32, buf0[4..8], seq[i + 1], .little);
+
+        var buf1: [7]u8 = undefined;
+        r.fill(&buf1);
+
+        try std.testing.expect(std.mem.eql(u8, buf0[0..7], buf1[0..]));
     }
 }

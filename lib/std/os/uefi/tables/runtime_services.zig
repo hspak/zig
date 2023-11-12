@@ -1,14 +1,12 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
-const uefi = @import("std").os.uefi;
+const std = @import("std");
+const uefi = std.os.uefi;
 const Guid = uefi.Guid;
 const TableHeader = uefi.tables.TableHeader;
 const Time = uefi.Time;
 const TimeCapabilities = uefi.TimeCapabilities;
 const Status = uefi.Status;
+const MemoryDescriptor = uefi.tables.MemoryDescriptor;
+const cc = uefi.cc;
 
 /// Runtime services are provided by the firmware before and after exitBootServices has been called.
 ///
@@ -22,36 +20,72 @@ pub const RuntimeServices = extern struct {
     hdr: TableHeader,
 
     /// Returns the current time and date information, and the time-keeping capabilities of the hardware platform.
-    getTime: fn (*uefi.Time, ?*TimeCapabilities) callconv(.C) Status,
+    getTime: *const fn (time: *uefi.Time, capabilities: ?*TimeCapabilities) callconv(cc) Status,
 
-    setTime: Status, // TODO
-    getWakeupTime: Status, // TODO
-    setWakeupTime: Status, // TODO
-    setVirtualAddressMap: Status, // TODO
-    convertPointer: Status, // TODO
+    /// Sets the current local time and date information
+    setTime: *const fn (time: *uefi.Time) callconv(cc) Status,
+
+    /// Returns the current wakeup alarm clock setting
+    getWakeupTime: *const fn (enabled: *bool, pending: *bool, time: *uefi.Time) callconv(cc) Status,
+
+    /// Sets the system wakeup alarm clock time
+    setWakeupTime: *const fn (enable: *bool, time: ?*uefi.Time) callconv(cc) Status,
+
+    /// Changes the runtime addressing mode of EFI firmware from physical to virtual.
+    setVirtualAddressMap: *const fn (mmap_size: usize, descriptor_size: usize, descriptor_version: u32, virtual_map: [*]MemoryDescriptor) callconv(cc) Status,
+
+    /// Determines the new virtual address that is to be used on subsequent memory accesses.
+    convertPointer: *const fn (debug_disposition: usize, address: **anyopaque) callconv(cc) Status,
 
     /// Returns the value of a variable.
-    getVariable: fn ([*:0]const u16, *align(8) const Guid, ?*u32, *usize, ?*c_void) callconv(.C) Status,
+    getVariable: *const fn (var_name: [*:0]const u16, vendor_guid: *align(8) const Guid, attributes: ?*u32, data_size: *usize, data: ?*anyopaque) callconv(cc) Status,
 
     /// Enumerates the current variable names.
-    getNextVariableName: fn (*usize, [*:0]u16, *align(8) Guid) callconv(.C) Status,
+    getNextVariableName: *const fn (var_name_size: *usize, var_name: [*:0]u16, vendor_guid: *align(8) Guid) callconv(cc) Status,
 
     /// Sets the value of a variable.
-    setVariable: fn ([*:0]const u16, *align(8) const Guid, u32, usize, *c_void) callconv(.C) Status,
+    setVariable: *const fn (var_name: [*:0]const u16, vendor_guid: *align(8) const Guid, attributes: u32, data_size: usize, data: *anyopaque) callconv(cc) Status,
 
-    getNextHighMonotonicCount: Status, // TODO
+    /// Return the next high 32 bits of the platform's monotonic counter
+    getNextHighMonotonicCount: *const fn (high_count: *u32) callconv(cc) Status,
 
     /// Resets the entire platform.
-    resetSystem: fn (ResetType, Status, usize, ?*const c_void) callconv(.C) noreturn,
+    resetSystem: *const fn (reset_type: ResetType, reset_status: Status, data_size: usize, reset_data: ?*const anyopaque) callconv(cc) noreturn,
 
-    updateCapsule: Status, // TODO
-    queryCapsuleCapabilities: Status, // TODO
-    queryVariableInfo: Status, // TODO
+    /// Passes capsules to the firmware with both virtual and physical mapping.
+    /// Depending on the intended consumption, the firmware may process the capsule immediately.
+    /// If the payload should persist across a system reset, the reset value returned from
+    /// `queryCapsuleCapabilities` must be passed into resetSystem and will cause the capsule
+    /// to be processed by the firmware as part of the reset process.
+    updateCapsule: *const fn (capsule_header_array: **CapsuleHeader, capsule_count: usize, scatter_gather_list: EfiPhysicalAddress) callconv(cc) Status,
+
+    /// Returns if the capsule can be supported via `updateCapsule`
+    queryCapsuleCapabilities: *const fn (capsule_header_array: **CapsuleHeader, capsule_count: usize, maximum_capsule_size: *usize, resetType: ResetType) callconv(cc) Status,
+
+    /// Returns information about the EFI variables
+    queryVariableInfo: *const fn (attributes: *u32, maximum_variable_storage_size: *u64, remaining_variable_storage_size: *u64, maximum_variable_size: *u64) callconv(cc) Status,
 
     pub const signature: u64 = 0x56524553544e5552;
 };
 
-pub const ResetType = extern enum(u32) {
+const EfiPhysicalAddress = u64;
+
+pub const CapsuleHeader = extern struct {
+    capsuleGuid: Guid align(8),
+    headerSize: u32,
+    flags: u32,
+    capsuleImageSize: u32,
+};
+
+pub const UefiCapsuleBlockDescriptor = extern struct {
+    length: u64,
+    address: extern union {
+        dataBlock: EfiPhysicalAddress,
+        continuationPointer: EfiPhysicalAddress,
+    },
+};
+
+pub const ResetType = enum(u32) {
     ResetCold,
     ResetWarm,
     ResetShutdown,

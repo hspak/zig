@@ -1,10 +1,4 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2020 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
-
-//! A software version formatted according to the Semantic Version 2 specification.
+//! A software version formatted according to the Semantic Versioning 2.0.0 specification.
 //!
 //! See: https://semver.org
 
@@ -48,8 +42,8 @@ pub fn order(lhs: Version, rhs: Version) std.math.Order {
     if (lhs.pre == null and rhs.pre != null) return .gt;
 
     // Iterate over pre-release identifiers until a difference is found.
-    var lhs_pre_it = std.mem.split(lhs.pre.?, ".");
-    var rhs_pre_it = std.mem.split(rhs.pre.?, ".");
+    var lhs_pre_it = std.mem.splitScalar(u8, lhs.pre.?, '.');
+    var rhs_pre_it = std.mem.splitScalar(u8, rhs.pre.?, '.');
     while (true) {
         const next_lid = lhs_pre_it.next();
         const next_rid = rhs_pre_it.next();
@@ -92,9 +86,9 @@ pub fn parse(text: []const u8) !Version {
     // Parse the required major, minor, and patch numbers.
     const extra_index = std.mem.indexOfAny(u8, text, "-+");
     const required = text[0..(extra_index orelse text.len)];
-    var it = std.mem.split(required, ".");
+    var it = std.mem.splitScalar(u8, required, '.');
     var ver = Version{
-        .major = try parseNum(it.next() orelse return error.InvalidVersion),
+        .major = try parseNum(it.first()),
         .minor = try parseNum(it.next() orelse return error.InvalidVersion),
         .patch = try parseNum(it.next() orelse return error.InvalidVersion),
     };
@@ -114,13 +108,13 @@ pub fn parse(text: []const u8) !Version {
     // Check validity of optional pre-release identifiers.
     // See: https://semver.org/#spec-item-9
     if (ver.pre) |pre| {
-        it = std.mem.split(pre, ".");
+        it = std.mem.splitScalar(u8, pre, '.');
         while (it.next()) |id| {
             // Identifiers MUST NOT be empty.
             if (id.len == 0) return error.InvalidVersion;
 
             // Identifiers MUST comprise only ASCII alphanumerics and hyphens [0-9A-Za-z-].
-            for (id) |c| if (!std.ascii.isAlNum(c) and c != '-') return error.InvalidVersion;
+            for (id) |c| if (!std.ascii.isAlphanumeric(c) and c != '-') return error.InvalidVersion;
 
             // Numeric identifiers MUST NOT include leading zeroes.
             const is_num = for (id) |c| {
@@ -133,26 +127,26 @@ pub fn parse(text: []const u8) !Version {
     // Check validity of optional build metadata identifiers.
     // See: https://semver.org/#spec-item-10
     if (ver.build) |build| {
-        it = std.mem.split(build, ".");
+        it = std.mem.splitScalar(u8, build, '.');
         while (it.next()) |id| {
             // Identifiers MUST NOT be empty.
             if (id.len == 0) return error.InvalidVersion;
 
             // Identifiers MUST comprise only ASCII alphanumerics and hyphens [0-9A-Za-z-].
-            for (id) |c| if (!std.ascii.isAlNum(c) and c != '-') return error.InvalidVersion;
+            for (id) |c| if (!std.ascii.isAlphanumeric(c) and c != '-') return error.InvalidVersion;
         }
     }
 
     return ver;
 }
 
-fn parseNum(text: []const u8) !usize {
+fn parseNum(text: []const u8) error{ InvalidVersion, Overflow }!usize {
     // Leading zeroes are not allowed.
     if (text.len > 1 and text[0] == '0') return error.InvalidVersion;
 
     return std.fmt.parseUnsigned(usize, text, 10) catch |err| switch (err) {
         error.InvalidCharacter => return error.InvalidVersion,
-        else => |e| return e,
+        error.Overflow => return error.Overflow,
     };
 }
 
@@ -162,7 +156,8 @@ pub fn format(
     options: std.fmt.FormatOptions,
     out_stream: anytype,
 ) !void {
-    if (fmt.len != 0) @compileError("Unknown format string: '" ++ fmt ++ "'");
+    _ = options;
+    if (fmt.len != 0) std.fmt.invalidFmtError(fmt, self);
     try std.fmt.format(out_stream, "{d}.{d}.{d}", .{ self.major, self.minor, self.patch });
     if (self.pre) |pre| try std.fmt.format(out_stream, "-{s}", .{pre});
     if (self.build) |build| try std.fmt.format(out_stream, "+{s}", .{build});
@@ -172,7 +167,7 @@ const expect = std.testing.expect;
 const expectError = std.testing.expectError;
 
 test "SemanticVersion format" {
-    // Test vectors are from https://github.com/semver/semver.org/issues/59#issuecomment-390854010.
+    // Many of these test strings are from https://github.com/semver/semver.org/issues/59#issuecomment-390854010.
 
     // Valid version strings should be accepted.
     for ([_][]const u8{
@@ -205,6 +200,8 @@ test "SemanticVersion format" {
         "1.2.3----R-S.12.9.1--.12+meta",
         "1.2.3----RC-SNAPSHOT.12.9.1--.12",
         "1.0.0+0.build.1-rc.10000aaa-kk-0.1",
+        "5.4.0-1018-raspi",
+        "5.7.123",
     }) |valid| try std.testing.expectFmt(valid, "{}", .{try parse(valid)});
 
     // Invalid version strings should be rejected.
@@ -249,37 +246,55 @@ test "SemanticVersion format" {
         "+justmeta",
         "9.8.7+meta+meta",
         "9.8.7-whatever+meta+meta",
-    }) |invalid| expectError(error.InvalidVersion, parse(invalid));
+        "2.6.32.11-svn21605",
+        "2.11.2(0.329/5/3)",
+        "2.13-DEVELOPMENT",
+        "2.3-35",
+        "1a.4",
+        "3.b1.0",
+        "1.4beta",
+        "2.7.pre",
+        "0..3",
+        "8.008.",
+        "01...",
+        "55",
+        "foobar",
+        "",
+        "-1",
+        "+4",
+        ".",
+        "....3",
+    }) |invalid| try expectError(error.InvalidVersion, parse(invalid));
 
     // Valid version string that may overflow.
     const big_valid = "99999999999999999999999.999999999999999999.99999999999999999";
     if (parse(big_valid)) |ver| {
         try std.testing.expectFmt(big_valid, "{}", .{ver});
-    } else |err| expect(err == error.Overflow);
+    } else |err| try expect(err == error.Overflow);
 
     // Invalid version string that may overflow.
     const big_invalid = "99999999999999999999999.999999999999999999.99999999999999999----RC-SNAPSHOT.12.09.1--------------------------------..12";
-    if (parse(big_invalid)) |ver| std.debug.panic("expected error, found {}", .{ver}) else |err| {}
+    if (parse(big_invalid)) |ver| std.debug.panic("expected error, found {}", .{ver}) else |_| {}
 }
 
 test "SemanticVersion precedence" {
     // SemVer 2 spec 11.2 example: 1.0.0 < 2.0.0 < 2.1.0 < 2.1.1.
-    expect(order(try parse("1.0.0"), try parse("2.0.0")) == .lt);
-    expect(order(try parse("2.0.0"), try parse("2.1.0")) == .lt);
-    expect(order(try parse("2.1.0"), try parse("2.1.1")) == .lt);
+    try expect(order(try parse("1.0.0"), try parse("2.0.0")) == .lt);
+    try expect(order(try parse("2.0.0"), try parse("2.1.0")) == .lt);
+    try expect(order(try parse("2.1.0"), try parse("2.1.1")) == .lt);
 
     // SemVer 2 spec 11.3 example: 1.0.0-alpha < 1.0.0.
-    expect(order(try parse("1.0.0-alpha"), try parse("1.0.0")) == .lt);
+    try expect(order(try parse("1.0.0-alpha"), try parse("1.0.0")) == .lt);
 
     // SemVer 2 spec 11.4 example: 1.0.0-alpha < 1.0.0-alpha.1 < 1.0.0-alpha.beta < 1.0.0-beta <
     // 1.0.0-beta.2 < 1.0.0-beta.11 < 1.0.0-rc.1 < 1.0.0.
-    expect(order(try parse("1.0.0-alpha"), try parse("1.0.0-alpha.1")) == .lt);
-    expect(order(try parse("1.0.0-alpha.1"), try parse("1.0.0-alpha.beta")) == .lt);
-    expect(order(try parse("1.0.0-alpha.beta"), try parse("1.0.0-beta")) == .lt);
-    expect(order(try parse("1.0.0-beta"), try parse("1.0.0-beta.2")) == .lt);
-    expect(order(try parse("1.0.0-beta.2"), try parse("1.0.0-beta.11")) == .lt);
-    expect(order(try parse("1.0.0-beta.11"), try parse("1.0.0-rc.1")) == .lt);
-    expect(order(try parse("1.0.0-rc.1"), try parse("1.0.0")) == .lt);
+    try expect(order(try parse("1.0.0-alpha"), try parse("1.0.0-alpha.1")) == .lt);
+    try expect(order(try parse("1.0.0-alpha.1"), try parse("1.0.0-alpha.beta")) == .lt);
+    try expect(order(try parse("1.0.0-alpha.beta"), try parse("1.0.0-beta")) == .lt);
+    try expect(order(try parse("1.0.0-beta"), try parse("1.0.0-beta.2")) == .lt);
+    try expect(order(try parse("1.0.0-beta.2"), try parse("1.0.0-beta.11")) == .lt);
+    try expect(order(try parse("1.0.0-beta.11"), try parse("1.0.0-rc.1")) == .lt);
+    try expect(order(try parse("1.0.0-rc.1"), try parse("1.0.0")) == .lt);
 }
 
 test "zig_version" {

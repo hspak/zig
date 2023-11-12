@@ -12,45 +12,53 @@
 //! - OpName and OpMemberName instructions.
 //! - OpModuleProcessed instructions.
 //! All annotation (decoration) instructions.
-//! All type declaration instructions, constant instructions, global variable declarations, (preferrably) OpUndef instructions.
+//! All type declaration instructions, constant instructions, global variable declarations, (preferably) OpUndef instructions.
 //! All function declarations without a body (extern functions presumably).
 //! All regular functions.
+
+// Because SPIR-V requires re-compilation anyway, and so hot swapping will not work
+// anyway, we simply generate all the code in flushModule. This keeps
+// things considerably simpler.
 
 const SpirV = @This();
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const ArenaAllocator = std.heap.ArenaAllocator;
 const assert = std.debug.assert;
+const log = std.log.scoped(.link);
 
 const Module = @import("../Module.zig");
+const InternPool = @import("../InternPool.zig");
 const Compilation = @import("../Compilation.zig");
 const link = @import("../link.zig");
 const codegen = @import("../codegen/spirv.zig");
 const trace = @import("../tracy.zig").trace;
 const build_options = @import("build_options");
-const spec = @import("../codegen/spirv/spec.zig");
+const Air = @import("../Air.zig");
+const Liveness = @import("../Liveness.zig");
+const Value = @import("../value.zig").Value;
 
-pub const FnData = struct {
-    id: ?u32 = null,
-    code: std.ArrayListUnmanaged(u32) = .{},
-};
+const SpvModule = @import("../codegen/spirv/Module.zig");
+const spec = @import("../codegen/spirv/spec.zig");
+const IdResult = spec.IdResult;
 
 base: link.File,
 
-// TODO: Does this file need to support multiple independent modules?
-spirv_module: codegen.SPIRVModule,
+object: codegen.Object,
 
-pub fn createEmpty(gpa: *Allocator, options: link.Options) !*SpirV {
-    const spirv = try gpa.create(SpirV);
-    spirv.* = .{
+pub fn createEmpty(gpa: Allocator, options: link.Options) !*SpirV {
+    const self = try gpa.create(SpirV);
+    self.* = .{
         .base = .{
             .tag = .spirv,
             .options = options,
             .file = null,
             .allocator = gpa,
         },
-        .spirv_module = codegen.SPIRVModule.init(gpa),
+        .object = codegen.Object.init(gpa),
     };
+    errdefer self.deinit();
 
     // TODO: Figure out where to put all of these
     switch (options.target.cpu.arch) {
@@ -67,142 +75,150 @@ pub fn createEmpty(gpa: *Allocator, options: link.Options) !*SpirV {
         return error.TODOAbiNotSupported;
     }
 
-    return spirv;
+    return self;
 }
 
-pub fn openPath(allocator: *Allocator, sub_path: []const u8, options: link.Options) !*SpirV {
-    assert(options.object_format == .spirv);
+pub fn openPath(allocator: Allocator, sub_path: []const u8, options: link.Options) !*SpirV {
+    assert(options.target.ofmt == .spirv);
 
     if (options.use_llvm) return error.LLVM_BackendIsTODO_ForSpirV; // TODO: LLVM Doesn't support SpirV at all.
     if (options.use_lld) return error.LLD_LinkingIsTODO_ForSpirV; // TODO: LLD Doesn't support SpirV at all.
 
-    // TODO: read the file and keep vaild parts instead of truncating
-    const file = try options.emit.?.directory.handle.createFile(sub_path, .{ .truncate = true, .read = true });
-    errdefer file.close();
-
     const spirv = try createEmpty(allocator, options);
     errdefer spirv.base.destroy();
 
+    // TODO: read the file and keep valid parts instead of truncating
+    const file = try options.emit.?.directory.handle.createFile(sub_path, .{ .truncate = true, .read = true });
     spirv.base.file = file;
     return spirv;
 }
 
 pub fn deinit(self: *SpirV) void {
-    self.spirv_module.deinit();
+    self.object.deinit();
 }
 
-pub fn updateDecl(self: *SpirV, module: *Module, decl: *Module.Decl) !void {
-    const tracy = trace(@src());
-    defer tracy.end();
-
-    const fn_data = &decl.fn_link.spirv;
-    if (fn_data.id == null) {
-        fn_data.id = self.spirv_module.allocId();
+pub fn updateFunc(self: *SpirV, module: *Module, func_index: InternPool.Index, air: Air, liveness: Liveness) !void {
+    if (build_options.skip_non_native) {
+        @panic("Attempted to compile for architecture that was disabled by build configuration");
     }
 
-    var managed_code = fn_data.code.toManaged(self.base.allocator);
-    managed_code.items.len = 0;
+    const func = module.funcInfo(func_index);
+    const decl = module.declPtr(func.owner_decl);
+    log.debug("lowering function {s}", .{module.intern_pool.stringToSlice(decl.name)});
 
-    try self.spirv_module.genDecl(fn_data.id.?, &managed_code, decl);
-    fn_data.code = managed_code.toUnmanaged();
-
-    // Free excess allocated memory for this Decl.
-    fn_data.code.shrinkAndFree(self.base.allocator, fn_data.code.items.len);
+    try self.object.updateFunc(module, func_index, air, liveness);
 }
 
-pub fn updateDeclExports(
+pub fn updateDecl(self: *SpirV, module: *Module, decl_index: Module.Decl.Index) !void {
+    if (build_options.skip_non_native) {
+        @panic("Attempted to compile for architecture that was disabled by build configuration");
+    }
+
+    const decl = module.declPtr(decl_index);
+    log.debug("lowering declaration {s}", .{module.intern_pool.stringToSlice(decl.name)});
+
+    try self.object.updateDecl(module, decl_index);
+}
+
+pub fn updateExports(
     self: *SpirV,
-    module: *Module,
-    decl: *const Module.Decl,
+    mod: *Module,
+    exported: Module.Exported,
     exports: []const *Module.Export,
-) !void {}
-
-pub fn freeDecl(self: *SpirV, decl: *Module.Decl) void {
-    var fn_data = decl.fn_link.spirv;
-    fn_data.code.deinit(self.base.allocator);
-    if (fn_data.id) |id| self.spirv_module.freeId(id);
-    decl.fn_link.spirv = undefined;
-}
-
-pub fn flush(self: *SpirV, comp: *Compilation) !void {
-    if (build_options.have_llvm and self.base.options.use_lld) {
-        return error.LLD_LinkingIsTODO_ForSpirV; // TODO: LLD Doesn't support SpirV at all.
-    } else {
-        return self.flushModule(comp);
-    }
-}
-
-pub fn flushModule(self: *SpirV, comp: *Compilation) !void {
-    const tracy = trace(@src());
-    defer tracy.end();
-
-    const module = self.base.options.module.?;
-    const target = comp.getTarget();
-
-    var binary = std.ArrayList(u32).init(self.base.allocator);
-    defer binary.deinit();
-
-    // Note: The order of adding sections to the final binary
-    // follows the SPIR-V logical module format!
-
-    try binary.appendSlice(&[_]u32{
-        spec.magic_number,
-        (spec.version.major << 16) | (spec.version.minor << 8),
-        0, // TODO: Register Zig compiler magic number.
-        self.spirv_module.idBound(),
-        0, // Schema (currently reserved for future use in the SPIR-V spec).
-    });
-
-    try writeCapabilities(&binary, target);
-    try writeMemoryModel(&binary, target);
-
-    // Collect list of buffers to write.
-    // SPIR-V files support both little and big endian words. The actual format is
-    // disambiguated by the magic number, and so theoretically we don't need to worry
-    // about endian-ness when writing the final binary.
-    var all_buffers = std.ArrayList(std.os.iovec_const).init(self.base.allocator);
-    defer all_buffers.deinit();
-
-    // Pre-allocate enough for the binary info + all functions
-    try all_buffers.ensureCapacity(module.decl_table.count() + 1);
-
-    all_buffers.appendAssumeCapacity(wordsToIovConst(binary.items));
-
-    for (module.decl_table.items()) |entry| {
-        const decl = entry.value;
-        switch (decl.typed_value) {
-            .most_recent => |tvm| {
-                const fn_data = &decl.fn_link.spirv;
-                all_buffers.appendAssumeCapacity(wordsToIovConst(fn_data.code.items));
-            },
-            .never_succeeded => continue,
+) !void {
+    const decl_index = switch (exported) {
+        .decl_index => |i| i,
+        .value => |val| {
+            _ = val;
+            @panic("TODO: implement SpirV linker code for exporting a constant value");
+        },
+    };
+    const decl = mod.declPtr(decl_index);
+    if (decl.val.isFuncBody(mod) and decl.ty.fnCallingConvention(mod) == .Kernel) {
+        const spv_decl_index = try self.object.resolveDecl(mod, decl_index);
+        for (exports) |exp| {
+            try self.object.spv.declareEntryPoint(spv_decl_index, mod.intern_pool.stringToSlice(exp.opts.name));
         }
     }
 
-    var file_size: u64 = 0;
-    for (all_buffers.items) |iov| {
-        file_size += iov.iov_len;
-    }
-
-    const file = self.base.file.?;
-    try file.seekTo(0);
-    try file.setEndPos(file_size);
-    try file.pwritevAll(all_buffers.items, 0);
+    // TODO: Export regular functions, variables, etc using Linkage attributes.
 }
 
-fn writeCapabilities(binary: *std.ArrayList(u32), target: std.Target) !void {
+pub fn freeDecl(self: *SpirV, decl_index: Module.Decl.Index) void {
+    _ = self;
+    _ = decl_index;
+}
+
+pub fn flush(self: *SpirV, comp: *Compilation, prog_node: *std.Progress.Node) link.File.FlushError!void {
+    if (build_options.have_llvm and self.base.options.use_lld) {
+        return error.LLD_LinkingIsTODO_ForSpirV; // TODO: LLD Doesn't support SpirV at all.
+    } else {
+        return self.flushModule(comp, prog_node);
+    }
+}
+
+pub fn flushModule(self: *SpirV, comp: *Compilation, prog_node: *std.Progress.Node) link.File.FlushError!void {
+    if (build_options.skip_non_native) {
+        @panic("Attempted to compile for architecture that was disabled by build configuration");
+    }
+
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    var sub_prog_node = prog_node.start("Flush Module", 0);
+    sub_prog_node.activate();
+    defer sub_prog_node.end();
+
+    const spv = &self.object.spv;
+
+    const target = comp.getTarget();
+    try writeCapabilities(spv, target);
+    try writeMemoryModel(spv, target);
+
+    // We need to export the list of error names somewhere so that we can pretty-print them in the
+    // executor. This is not really an important thing though, so we can just dump it in any old
+    // nonsemantic instruction. For now, just put it in OpSourceExtension with a special name.
+
+    var error_info = std.ArrayList(u8).init(self.object.gpa);
+    defer error_info.deinit();
+
+    try error_info.appendSlice("zig_errors");
+    const module = self.base.options.module.?;
+    for (module.global_error_set.keys()) |name_nts| {
+        const name = module.intern_pool.stringToSlice(name_nts);
+        // Errors can contain pretty much any character - to encode them in a string we must escape
+        // them somehow. Easiest here is to use some established scheme, one which also preseves the
+        // name if it contains no strange characters is nice for debugging. URI encoding fits the bill.
+        // We're using : as separator, which is a reserved character.
+
+        const escaped_name = try std.Uri.escapeString(self.base.allocator, name);
+        defer self.base.allocator.free(escaped_name);
+        try error_info.writer().print(":{s}", .{escaped_name});
+    }
+    try spv.sections.debug_strings.emit(spv.gpa, .OpSourceExtension, .{
+        .extension = error_info.items,
+    });
+
+    try spv.flush(self.base.file.?);
+}
+
+fn writeCapabilities(spv: *SpvModule, target: std.Target) !void {
     // TODO: Integrate with a hypothetical feature system
-    const cap: spec.Capability = switch (target.os.tag) {
-        .opencl => .Kernel,
-        .glsl450 => .Shader,
-        .vulkan => .VulkanMemoryModel,
+    const caps: []const spec.Capability = switch (target.os.tag) {
+        .opencl => &.{ .Kernel, .Addresses, .Int8, .Int16, .Int64, .Float64, .Float16, .GenericPointer },
+        .glsl450 => &.{.Shader},
+        .vulkan => &.{.Shader},
         else => unreachable, // TODO
     };
 
-    try codegen.writeInstruction(binary, .OpCapability, &[_]u32{@enumToInt(cap)});
+    for (caps) |cap| {
+        try spv.sections.capabilities.emit(spv.gpa, .OpCapability, .{
+            .capability = cap,
+        });
+    }
 }
 
-fn writeMemoryModel(binary: *std.ArrayList(u32), target: std.Target) !void {
+fn writeMemoryModel(spv: *SpvModule, target: std.Target) !void {
     const addressing_model = switch (target.os.tag) {
         .opencl => switch (target.cpu.arch) {
             .spirv32 => spec.AddressingModel.Physical32,
@@ -216,19 +232,13 @@ fn writeMemoryModel(binary: *std.ArrayList(u32), target: std.Target) !void {
     const memory_model: spec.MemoryModel = switch (target.os.tag) {
         .opencl => .OpenCL,
         .glsl450 => .GLSL450,
-        .vulkan => .Vulkan,
+        .vulkan => .GLSL450,
         else => unreachable,
     };
 
-    try codegen.writeInstruction(binary, .OpMemoryModel, &[_]u32{
-        @enumToInt(addressing_model), @enumToInt(memory_model),
+    // TODO: Put this in a proper section.
+    try spv.sections.extensions.emit(spv.gpa, .OpMemoryModel, .{
+        .addressing_model = addressing_model,
+        .memory_model = memory_model,
     });
-}
-
-fn wordsToIovConst(words: []const u32) std.os.iovec_const {
-    const bytes = std.mem.sliceAsBytes(words);
-    return .{
-        .iov_base = bytes.ptr,
-        .iov_len = bytes.len,
-    };
 }

@@ -5,7 +5,7 @@ const Compilation = @import("Compilation.zig");
 const build_options = @import("build_options");
 const trace = @import("tracy.zig").trace;
 
-pub fn buildTsan(comp: *Compilation) !void {
+pub fn buildTsan(comp: *Compilation, prog_node: *std.Progress.Node) !void {
     if (!build_options.have_llvm) {
         return error.ZigCompilerNotBuiltWithLLVMExtensions;
     }
@@ -15,7 +15,7 @@ pub fn buildTsan(comp: *Compilation) !void {
 
     var arena_allocator = std.heap.ArenaAllocator.init(comp.gpa);
     defer arena_allocator.deinit();
-    const arena = &arena_allocator.allocator;
+    const arena = arena_allocator.allocator();
 
     const root_name = "tsan";
     const output_mode = .Lib;
@@ -34,7 +34,7 @@ pub fn buildTsan(comp: *Compilation) !void {
     };
 
     var c_source_files = std.ArrayList(Compilation.CSourceFile).init(arena);
-    try c_source_files.ensureCapacity(c_source_files.items.len + tsan_sources.len);
+    try c_source_files.ensureUnusedCapacity(tsan_sources.len);
 
     const tsan_include_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{"tsan"});
     for (tsan_sources) |tsan_src| {
@@ -58,7 +58,7 @@ pub fn buildTsan(comp: *Compilation) !void {
         &darwin_tsan_sources
     else
         &unix_tsan_sources;
-    try c_source_files.ensureCapacity(c_source_files.items.len + platform_tsan_sources.len);
+    try c_source_files.ensureUnusedCapacity(platform_tsan_sources.len);
     for (platform_tsan_sources) |tsan_src| {
         var cflags = std.ArrayList([]const u8).init(arena);
 
@@ -96,7 +96,7 @@ pub fn buildTsan(comp: *Compilation) !void {
         });
     }
 
-    try c_source_files.ensureCapacity(c_source_files.items.len + sanitizer_common_sources.len);
+    try c_source_files.ensureUnusedCapacity(sanitizer_common_sources.len);
     const sanitizer_common_include_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{
         "tsan", "sanitizer_common",
     });
@@ -123,7 +123,7 @@ pub fn buildTsan(comp: *Compilation) !void {
         &sanitizer_libcdep_sources
     else
         &sanitizer_nolibc_sources;
-    try c_source_files.ensureCapacity(c_source_files.items.len + to_c_or_not_to_c_sources.len);
+    try c_source_files.ensureUnusedCapacity(to_c_or_not_to_c_sources.len);
     for (to_c_or_not_to_c_sources) |c_src| {
         var cflags = std.ArrayList([]const u8).init(arena);
 
@@ -143,7 +143,7 @@ pub fn buildTsan(comp: *Compilation) !void {
         });
     }
 
-    try c_source_files.ensureCapacity(c_source_files.items.len + sanitizer_symbolizer_sources.len);
+    try c_source_files.ensureUnusedCapacity(sanitizer_symbolizer_sources.len);
     for (sanitizer_symbolizer_sources) |c_src| {
         var cflags = std.ArrayList([]const u8).init(arena);
 
@@ -168,7 +168,7 @@ pub fn buildTsan(comp: *Compilation) !void {
         &[_][]const u8{"interception"},
     );
 
-    try c_source_files.ensureCapacity(c_source_files.items.len + interception_sources.len);
+    try c_source_files.ensureUnusedCapacity(interception_sources.len);
     for (interception_sources) |c_src| {
         var cflags = std.ArrayList([]const u8).init(arena);
 
@@ -199,9 +199,10 @@ pub fn buildTsan(comp: *Compilation) !void {
         .local_cache_directory = comp.global_cache_directory,
         .global_cache_directory = comp.global_cache_directory,
         .zig_lib_directory = comp.zig_lib_directory,
+        .cache_mode = .whole,
         .target = target,
         .root_name = root_name,
-        .root_pkg = null,
+        .main_mod = null,
         .output_mode = output_mode,
         .thread_pool = comp.thread_pool,
         .libc_installation = comp.bin_file.options.libc_installation,
@@ -210,10 +211,11 @@ pub fn buildTsan(comp: *Compilation) !void {
         .link_mode = link_mode,
         .want_sanitize_c = false,
         .want_stack_check = false,
+        .want_stack_protector = 0,
         .want_valgrind = false,
         .want_tsan = false,
         .want_pic = true,
-        .want_pie = true,
+        .want_pie = null,
         .emit_h = null,
         .strip = comp.compilerRtStrip(),
         .is_native_os = comp.bin_file.options.is_native_os,
@@ -222,10 +224,9 @@ pub fn buildTsan(comp: *Compilation) !void {
         .c_source_files = c_source_files.items,
         .verbose_cc = comp.verbose_cc,
         .verbose_link = comp.bin_file.options.verbose_link,
-        .verbose_tokenize = comp.verbose_tokenize,
-        .verbose_ast = comp.verbose_ast,
-        .verbose_ir = comp.verbose_ir,
+        .verbose_air = comp.verbose_air,
         .verbose_llvm_ir = comp.verbose_llvm_ir,
+        .verbose_llvm_bc = comp.verbose_llvm_bc,
         .verbose_cimport = comp.verbose_cimport,
         .verbose_llvm_cpu_features = comp.verbose_llvm_cpu_features,
         .clang_passthrough_mode = comp.clang_passthrough_mode,
@@ -235,14 +236,13 @@ pub fn buildTsan(comp: *Compilation) !void {
     });
     defer sub_compilation.destroy();
 
-    try sub_compilation.updateSubCompilation();
+    try comp.updateSubCompilation(sub_compilation, .libtsan, prog_node);
 
     assert(comp.tsan_static_lib == null);
     comp.tsan_static_lib = Compilation.CRTFile{
-        .full_object_path = try sub_compilation.bin_file.options.emit.?.directory.join(
-            comp.gpa,
-            &[_][]const u8{basename},
-        ),
+        .full_object_path = try sub_compilation.bin_file.options.emit.?.directory.join(comp.gpa, &[_][]const u8{
+            sub_compilation.bin_file.options.emit.?.sub_path,
+        }),
         .lock = sub_compilation.bin_file.toOwnedLock(),
     };
 }
@@ -262,7 +262,6 @@ const tsan_sources = [_][]const u8{
     "tsan_malloc_mac.cpp",
     "tsan_md5.cpp",
     "tsan_mman.cpp",
-    "tsan_mutex.cpp",
     "tsan_mutexset.cpp",
     "tsan_preinit.cpp",
     "tsan_report.cpp",
@@ -272,7 +271,6 @@ const tsan_sources = [_][]const u8{
     "tsan_rtl_report.cpp",
     "tsan_rtl_thread.cpp",
     "tsan_stack_trace.cpp",
-    "tsan_stat.cpp",
     "tsan_suppressions.cpp",
     "tsan_symbolize.cpp",
     "tsan_sync.cpp",
@@ -297,14 +295,15 @@ const sanitizer_common_sources = [_][]const u8{
     "sanitizer_deadlock_detector2.cpp",
     "sanitizer_errno.cpp",
     "sanitizer_file.cpp",
-    "sanitizer_flags.cpp",
     "sanitizer_flag_parser.cpp",
+    "sanitizer_flags.cpp",
     "sanitizer_fuchsia.cpp",
     "sanitizer_libc.cpp",
     "sanitizer_libignore.cpp",
     "sanitizer_linux.cpp",
     "sanitizer_linux_s390.cpp",
     "sanitizer_mac.cpp",
+    "sanitizer_mutex.cpp",
     "sanitizer_netbsd.cpp",
     "sanitizer_openbsd.cpp",
     "sanitizer_persistent_allocator.cpp",
@@ -316,20 +315,19 @@ const sanitizer_common_sources = [_][]const u8{
     "sanitizer_platform_limits_solaris.cpp",
     "sanitizer_posix.cpp",
     "sanitizer_printf.cpp",
-    "sanitizer_procmaps_common.cpp",
     "sanitizer_procmaps_bsd.cpp",
+    "sanitizer_procmaps_common.cpp",
     "sanitizer_procmaps_fuchsia.cpp",
     "sanitizer_procmaps_linux.cpp",
     "sanitizer_procmaps_mac.cpp",
     "sanitizer_procmaps_solaris.cpp",
-    "sanitizer_rtems.cpp",
     "sanitizer_solaris.cpp",
     "sanitizer_stoptheworld_fuchsia.cpp",
     "sanitizer_stoptheworld_mac.cpp",
     "sanitizer_suppressions.cpp",
     "sanitizer_termination.cpp",
-    "sanitizer_tls_get_addr.cpp",
     "sanitizer_thread_registry.cpp",
+    "sanitizer_tls_get_addr.cpp",
     "sanitizer_type_traits.cpp",
     "sanitizer_win.cpp",
 };

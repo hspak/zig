@@ -1,5 +1,7 @@
-const StackTrace = @import("builtin").StackTrace;
-pub fn panic(msg: []const u8, stack_trace: ?*StackTrace) noreturn {
+const StackTrace = @import("std").builtin.StackTrace;
+pub fn panic(msg: []const u8, stack_trace: ?*StackTrace, _: ?usize) noreturn {
+    _ = msg;
+    _ = stack_trace;
     @breakpoint();
     while (true) {}
 }

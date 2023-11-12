@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("../../std.zig");
 const testing = std.testing;
 const math = std.math;
@@ -18,7 +13,7 @@ pub fn abs(z: anytype) @TypeOf(z.re) {
 const epsilon = 0.0001;
 
 test "complex.cabs" {
-    const a = Complex(f32).new(5, 3);
+    const a = Complex(f32).init(5, 3);
     const c = abs(a);
-    testing.expect(math.approxEqAbs(f32, c, 5.83095, epsilon));
+    try testing.expect(math.approxEqAbs(f32, c, 5.83095, epsilon));
 }

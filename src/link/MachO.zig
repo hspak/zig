@@ -1,380 +1,219 @@
-const MachO = @This();
-
-const std = @import("std");
-const Allocator = std.mem.Allocator;
-const assert = std.debug.assert;
-const fmt = std.fmt;
-const fs = std.fs;
-const log = std.log.scoped(.link);
-const macho = std.macho;
-const codegen = @import("../codegen.zig");
-const aarch64 = @import("../codegen/aarch64.zig");
-const math = std.math;
-const mem = std.mem;
-const meta = std.meta;
-
-const bind = @import("MachO/bind.zig");
-const trace = @import("../tracy.zig").trace;
-const build_options = @import("build_options");
-const Module = @import("../Module.zig");
-const Compilation = @import("../Compilation.zig");
-const link = @import("../link.zig");
-const File = link.File;
-const Cache = @import("../Cache.zig");
-const target_util = @import("../target.zig");
-
-const DebugSymbols = @import("MachO/DebugSymbols.zig");
-const Trie = @import("MachO/Trie.zig");
-const CodeSignature = @import("MachO/CodeSignature.zig");
-const Zld = @import("MachO/Zld.zig");
-
-usingnamespace @import("MachO/commands.zig");
-
-pub const base_tag: File.Tag = File.Tag.macho;
-
 base: File,
+
+/// If this is not null, an object file is created by LLVM and linked with LLD afterwards.
+llvm_object: ?*LlvmObject = null,
 
 /// Debug symbols bundle (or dSym).
 d_sym: ?DebugSymbols = null,
 
-/// Page size is dependent on the target cpu architecture.
-/// For x86_64 that's 4KB, whereas for aarch64, that's 16KB.
-page_size: u16,
+mode: Mode,
 
-/// Mach-O header
-header: ?macho.mach_header_64 = null,
-/// We commit 0x1000 = 4096 bytes of space to the header and
-/// the table of load commands. This should be plenty for any
-/// potential future extensions.
-header_pad: u16 = 0x1000,
+dyld_info_cmd: macho.dyld_info_command = .{},
+symtab_cmd: macho.symtab_command = .{},
+dysymtab_cmd: macho.dysymtab_command = .{},
+function_starts_cmd: macho.linkedit_data_command = .{ .cmd = .FUNCTION_STARTS },
+data_in_code_cmd: macho.linkedit_data_command = .{ .cmd = .DATA_IN_CODE },
+uuid_cmd: macho.uuid_command = .{ .uuid = [_]u8{0} ** 16 },
+codesig_cmd: macho.linkedit_data_command = .{ .cmd = .CODE_SIGNATURE },
 
-/// Table of all load commands
-load_commands: std.ArrayListUnmanaged(LoadCommand) = .{},
-/// __PAGEZERO segment
-pagezero_segment_cmd_index: ?u16 = null,
-/// __TEXT segment
-text_segment_cmd_index: ?u16 = null,
-/// __DATA_CONST segment
-data_const_segment_cmd_index: ?u16 = null,
-/// __DATA segment
-data_segment_cmd_index: ?u16 = null,
-/// __LINKEDIT segment
-linkedit_segment_cmd_index: ?u16 = null,
-/// Dyld info
-dyld_info_cmd_index: ?u16 = null,
-/// Symbol table
-symtab_cmd_index: ?u16 = null,
-/// Dynamic symbol table
-dysymtab_cmd_index: ?u16 = null,
-/// Path to dyld linker
-dylinker_cmd_index: ?u16 = null,
-/// Path to libSystem
-libsystem_cmd_index: ?u16 = null,
-/// Data-in-code section of __LINKEDIT segment
-data_in_code_cmd_index: ?u16 = null,
-/// Address to entry point function
-function_starts_cmd_index: ?u16 = null,
-/// Main/entry point
-/// Specifies offset wrt __TEXT segment start address to the main entry point
-/// of the binary.
-main_cmd_index: ?u16 = null,
-/// Minimum OS version
-version_min_cmd_index: ?u16 = null,
-/// Source version
-source_version_cmd_index: ?u16 = null,
-/// UUID load command
-uuid_cmd_index: ?u16 = null,
-/// Code signature
-code_signature_cmd_index: ?u16 = null,
+objects: std.ArrayListUnmanaged(Object) = .{},
+archives: std.ArrayListUnmanaged(Archive) = .{},
+dylibs: std.ArrayListUnmanaged(Dylib) = .{},
+dylibs_map: std.StringHashMapUnmanaged(u16) = .{},
+referenced_dylibs: std.AutoArrayHashMapUnmanaged(u16, void) = .{},
 
-/// Index into __TEXT,__text section.
-text_section_index: ?u16 = null,
-/// Index into __TEXT,__stubs section.
-stubs_section_index: ?u16 = null,
-/// Index into __TEXT,__stub_helper section.
-stub_helper_section_index: ?u16 = null,
-/// Index into __DATA_CONST,__got section.
-got_section_index: ?u16 = null,
-/// Index into __DATA,__la_symbol_ptr section.
-la_symbol_ptr_section_index: ?u16 = null,
-/// Index into __DATA,__data section.
-data_section_index: ?u16 = null,
-/// The absolute address of the entry point.
-entry_addr: ?u64 = null,
+segments: std.ArrayListUnmanaged(macho.segment_command_64) = .{},
+sections: std.MultiArrayList(Section) = .{},
 
-/// Table of all local symbols
-/// Internally references string table for names (which are optional).
+pagezero_segment_cmd_index: ?u8 = null,
+header_segment_cmd_index: ?u8 = null,
+text_segment_cmd_index: ?u8 = null,
+data_const_segment_cmd_index: ?u8 = null,
+data_segment_cmd_index: ?u8 = null,
+linkedit_segment_cmd_index: ?u8 = null,
+
+text_section_index: ?u8 = null,
+data_const_section_index: ?u8 = null,
+data_section_index: ?u8 = null,
+bss_section_index: ?u8 = null,
+thread_vars_section_index: ?u8 = null,
+thread_data_section_index: ?u8 = null,
+thread_bss_section_index: ?u8 = null,
+eh_frame_section_index: ?u8 = null,
+unwind_info_section_index: ?u8 = null,
+stubs_section_index: ?u8 = null,
+stub_helper_section_index: ?u8 = null,
+got_section_index: ?u8 = null,
+la_symbol_ptr_section_index: ?u8 = null,
+tlv_ptr_section_index: ?u8 = null,
+
 locals: std.ArrayListUnmanaged(macho.nlist_64) = .{},
-/// Table of all global symbols
-globals: std.ArrayListUnmanaged(macho.nlist_64) = .{},
-/// Table of all extern nonlazy symbols, indexed by name.
-nonlazy_imports: std.StringArrayHashMapUnmanaged(Import) = .{},
-/// Table of all extern lazy symbols, indexed by name.
-lazy_imports: std.StringArrayHashMapUnmanaged(Import) = .{},
+globals: std.ArrayListUnmanaged(SymbolWithLoc) = .{},
+resolver: std.StringHashMapUnmanaged(u32) = .{},
+unresolved: std.AutoArrayHashMapUnmanaged(u32, void) = .{},
 
 locals_free_list: std.ArrayListUnmanaged(u32) = .{},
 globals_free_list: std.ArrayListUnmanaged(u32) = .{},
-offset_table_free_list: std.ArrayListUnmanaged(u32) = .{},
 
-stub_helper_stubs_start_off: ?u64 = null,
+dyld_stub_binder_index: ?u32 = null,
+dyld_private_atom_index: ?Atom.Index = null,
 
-/// Table of symbol names aka the string table.
-string_table: std.ArrayListUnmanaged(u8) = .{},
-string_table_directory: std.StringHashMapUnmanaged(u32) = .{},
+strtab: StringTable = .{},
 
-/// Table of GOT entries.
-offset_table: std.ArrayListUnmanaged(GOTEntry) = .{},
+got_table: TableSection(SymbolWithLoc) = .{},
+stub_table: TableSection(SymbolWithLoc) = .{},
+tlv_ptr_table: TableSection(SymbolWithLoc) = .{},
+
+thunk_table: std.AutoHashMapUnmanaged(Atom.Index, thunks.Thunk.Index) = .{},
+thunks: std.ArrayListUnmanaged(thunks.Thunk) = .{},
 
 error_flags: File.ErrorFlags = File.ErrorFlags{},
+misc_errors: std.ArrayListUnmanaged(File.ErrorMsg) = .{},
 
-offset_table_count_dirty: bool = false,
-header_dirty: bool = false,
-load_commands_dirty: bool = false,
-rebase_info_dirty: bool = false,
-binding_info_dirty: bool = false,
-lazy_binding_info_dirty: bool = false,
-export_info_dirty: bool = false,
-string_table_dirty: bool = false,
+segment_table_dirty: bool = false,
+got_table_count_dirty: bool = false,
+got_table_contents_dirty: bool = false,
+stub_table_count_dirty: bool = false,
+stub_table_contents_dirty: bool = false,
+stub_helper_preamble_allocated: bool = false,
 
-string_table_needs_relocation: bool = false,
+/// A helper var to indicate if we are at the start of the incremental updates, or
+/// already somewhere further along the update-and-run chain.
+/// TODO once we add opening a prelinked output binary from file, this will become
+/// obsolete as we will carry on where we left off.
+cold_start: bool = true,
 
-/// A list of text blocks that have surplus capacity. This list can have false
-/// positives, as functions grow and shrink over time, only sometimes being added
-/// or removed from the freelist.
+/// List of atoms that are either synthetic or map directly to the Zig source program.
+atoms: std.ArrayListUnmanaged(Atom) = .{},
+
+/// Table of atoms indexed by the symbol index.
+atom_by_index_table: std.AutoHashMapUnmanaged(u32, Atom.Index) = .{},
+
+/// Table of unnamed constants associated with a parent `Decl`.
+/// We store them here so that we can free the constants whenever the `Decl`
+/// needs updating or is freed.
 ///
-/// A text block has surplus capacity when its overcapacity value is greater than
-/// padToIdeal(minimum_text_block_size). That is, when it has so
-/// much extra capacity, that we could fit a small new symbol in it, itself with
-/// ideal_capacity or more.
+/// For example,
 ///
-/// Ideal capacity is defined by size + (size / ideal_factor).
+/// ```zig
+/// const Foo = struct{
+///     a: u8,
+/// };
 ///
-/// Overcapacity is measured by actual_capacity - ideal_capacity. Note that
-/// overcapacity can be negative. A simple way to have negative overcapacity is to
-/// allocate a fresh text block, which will have ideal capacity, and then grow it
-/// by 1 byte. It will then have -1 overcapacity.
-text_block_free_list: std.ArrayListUnmanaged(*TextBlock) = .{},
+/// pub fn main() void {
+///     var foo = Foo{ .a = 1 };
+///     _ = foo;
+/// }
+/// ```
+///
+/// value assigned to label `foo` is an unnamed constant belonging/associated
+/// with `Decl` `main`, and lives as long as that `Decl`.
+unnamed_const_atoms: UnnamedConstTable = .{},
+anon_decls: AnonDeclTable = .{},
 
-/// Pointer to the last allocated text block
-last_text_block: ?*TextBlock = null,
+/// A table of relocations indexed by the owning them `Atom`.
+/// Note that once we refactor `Atom`'s lifetime and ownership rules,
+/// this will be a table indexed by index into the list of Atoms.
+relocs: RelocationTable = .{},
+/// TODO I do not have time to make this right but this will go once
+/// MachO linker is rewritten more-or-less to feature the same resolution
+/// mechanism as the ELF linker.
+actions: ActionTable = .{},
 
-/// A list of all PIE fixups required for this run of the linker.
-/// Warning, this is currently NOT thread-safe. See the TODO below.
-/// TODO Move this list inside `updateDecl` where it should be allocated
-/// prior to calling `generateSymbol`, and then immediately deallocated
-/// rather than sitting in the global scope.
-/// TODO We should also rewrite this using generic relocations common to all
-/// backends.
-pie_fixups: std.ArrayListUnmanaged(PIEFixup) = .{},
+/// A table of rebases indexed by the owning them `Atom`.
+/// Note that once we refactor `Atom`'s lifetime and ownership rules,
+/// this will be a table indexed by index into the list of Atoms.
+rebases: RebaseTable = .{},
 
-/// A list of all stub (extern decls) fixups required for this run of the linker.
-/// Warning, this is currently NOT thread-safe. See the TODO below.
-/// TODO Move this list inside `updateDecl` where it should be allocated
-/// prior to calling `generateSymbol`, and then immediately deallocated
-/// rather than sitting in the global scope.
-stub_fixups: std.ArrayListUnmanaged(StubFixup) = .{},
+/// A table of bindings indexed by the owning them `Atom`.
+/// Note that once we refactor `Atom`'s lifetime and ownership rules,
+/// this will be a table indexed by index into the list of Atoms.
+bindings: BindingTable = .{},
 
-pub const GOTEntry = struct {
-    /// GOT entry can either be a local pointer or an extern (nonlazy) import.
-    kind: enum {
-        Local,
-        Extern,
-    },
+/// Table of tracked LazySymbols.
+lazy_syms: LazySymbolTable = .{},
 
-    /// Id to the macho.nlist_64 from the respective table: either locals or nonlazy imports.
-    /// TODO I'm more and more inclined to just manage a single, max two symbol tables
-    ///  rather than 4 as we currently do, but I'll follow up in the future PR.
-    symbol: u32,
+/// Table of tracked Decls.
+decls: DeclTable = .{},
 
-    /// Index of this entry in the GOT.
-    index: u32,
-};
+/// Table of threadlocal variables descriptors.
+/// They are emitted in the `__thread_vars` section.
+tlv_table: TlvSymbolTable = .{},
 
-pub const Import = struct {
-    /// MachO symbol table entry.
-    symbol: macho.nlist_64,
+/// Hot-code swapping state.
+hot_state: if (is_hot_update_compatible) HotUpdateState else struct {} = .{},
 
-    /// Id of the dynamic library where the specified entries can be found.
-    dylib_ordinal: i64,
+pub fn openPath(allocator: Allocator, options: link.Options) !*MachO {
+    assert(options.target.ofmt == .macho);
 
-    /// Index of this import within the import list.
-    index: u32,
-};
+    if (options.emit == null) {
+        return createEmpty(allocator, options);
+    }
 
-pub const PIEFixup = struct {
-    /// Target VM address of this relocation.
-    target_addr: u64,
-
-    /// Offset within the byte stream.
-    offset: usize,
-
-    /// Size of the relocation.
-    size: usize,
-};
-
-pub const StubFixup = struct {
-    /// Id of extern (lazy) symbol.
-    symbol: u32,
-    /// Signals whether the symbol has already been declared before. If so,
-    /// then there is no need to rewrite the stub entry and related.
-    already_defined: bool,
-    /// Where in the byte stream we should perform the fixup.
-    start: usize,
-    /// The length of the byte stream. For x86_64, this will be
-    /// variable. For aarch64, it will be fixed at 4 bytes.
-    len: usize,
-};
-
-/// When allocating, the ideal_capacity is calculated by
-/// actual_capacity + (actual_capacity / ideal_factor)
-const ideal_factor = 2;
-
-/// Default path to dyld
-/// TODO instead of hardcoding it, we should probably look through some env vars and search paths
-/// instead but this will do for now.
-const DEFAULT_DYLD_PATH: [*:0]const u8 = "/usr/lib/dyld";
-
-/// Default lib search path
-/// TODO instead of hardcoding it, we should probably look through some env vars and search paths
-/// instead but this will do for now.
-const DEFAULT_LIB_SEARCH_PATH: []const u8 = "/usr/lib";
-
-const LIB_SYSTEM_NAME: [*:0]const u8 = "System";
-/// TODO we should search for libSystem and fail if it doesn't exist, instead of hardcoding it
-const LIB_SYSTEM_PATH: [*:0]const u8 = DEFAULT_LIB_SEARCH_PATH ++ "/libSystem.B.dylib";
-
-/// In order for a slice of bytes to be considered eligible to keep metadata pointing at
-/// it as a possible place to put new symbols, it must have enough room for this many bytes
-/// (plus extra for reserved capacity).
-const minimum_text_block_size = 64;
-const min_text_capacity = padToIdeal(minimum_text_block_size);
-
-pub const TextBlock = struct {
-    /// Each decl always gets a local symbol with the fully qualified name.
-    /// The vaddr and size are found here directly.
-    /// The file offset is found by computing the vaddr offset from the section vaddr
-    /// the symbol references, and adding that to the file offset of the section.
-    /// If this field is 0, it means the codegen size = 0 and there is no symbol or
-    /// offset table entry.
-    local_sym_index: u32,
-    /// Index into offset table
-    /// This field is undefined for symbols with size = 0.
-    offset_table_index: u32,
-    /// Size of this text block
-    /// Unlike in Elf, we need to store the size of this symbol as part of
-    /// the TextBlock since macho.nlist_64 lacks this information.
-    size: u64,
-    /// Points to the previous and next neighbours
-    prev: ?*TextBlock,
-    next: ?*TextBlock,
-
-    /// Previous/next linked list pointers.
-    /// This is the linked list node for this Decl's corresponding .debug_info tag.
-    dbg_info_prev: ?*TextBlock,
-    dbg_info_next: ?*TextBlock,
-    /// Offset into .debug_info pointing to the tag for this Decl.
-    dbg_info_off: u32,
-    /// Size of the .debug_info tag for this Decl, not including padding.
-    dbg_info_len: u32,
-
-    pub const empty = TextBlock{
-        .local_sym_index = 0,
-        .offset_table_index = undefined,
-        .size = 0,
-        .prev = null,
-        .next = null,
-        .dbg_info_prev = null,
-        .dbg_info_next = null,
-        .dbg_info_off = undefined,
-        .dbg_info_len = undefined,
+    const emit = options.emit.?;
+    const mode: Mode = mode: {
+        if (options.use_llvm or options.module == null or options.cache_mode == .whole)
+            break :mode .zld;
+        break :mode .incremental;
     };
-
-    /// Returns how much room there is to grow in virtual address space.
-    /// File offset relocation happens transparently, so it is not included in
-    /// this calculation.
-    fn capacity(self: TextBlock, macho_file: MachO) u64 {
-        const self_sym = macho_file.locals.items[self.local_sym_index];
-        if (self.next) |next| {
-            const next_sym = macho_file.locals.items[next.local_sym_index];
-            return next_sym.n_value - self_sym.n_value;
-        } else {
-            // We are the last block.
-            // The capacity is limited only by virtual address space.
-            return std.math.maxInt(u64) - self_sym.n_value;
+    const sub_path = if (mode == .zld) blk: {
+        if (options.module == null) {
+            // No point in opening a file, we would not write anything to it.
+            // Initialize with empty.
+            return createEmpty(allocator, options);
         }
+        // Open a temporary object file, not the final output file because we
+        // want to link with LLD.
+        break :blk try std.fmt.allocPrint(allocator, "{s}{s}", .{
+            emit.sub_path, options.target.ofmt.fileExt(options.target.cpu.arch),
+        });
+    } else emit.sub_path;
+    errdefer if (mode == .zld) allocator.free(sub_path);
+
+    const self = try createEmpty(allocator, options);
+    errdefer self.base.destroy();
+
+    if (mode == .zld) {
+        // TODO this intermediary_basename isn't enough; in the case of `zig build-exe`,
+        // we also want to put the intermediary object file in the cache while the
+        // main emit directory is the cwd.
+        self.base.intermediary_basename = sub_path;
+        return self;
     }
 
-    fn freeListEligible(self: TextBlock, macho_file: MachO) bool {
-        // No need to keep a free list node for the last block.
-        const next = self.next orelse return false;
-        const self_sym = macho_file.locals.items[self.local_sym_index];
-        const next_sym = macho_file.locals.items[next.local_sym_index];
-        const cap = next_sym.n_value - self_sym.n_value;
-        const ideal_cap = padToIdeal(self.size);
-        if (cap <= ideal_cap) return false;
-        const surplus = cap - ideal_cap;
-        return surplus >= min_text_capacity;
-    }
-};
-
-pub const Export = struct {
-    sym_index: ?u32 = null,
-};
-
-pub const SrcFn = struct {
-    /// Offset from the beginning of the Debug Line Program header that contains this function.
-    off: u32,
-    /// Size of the line number program component belonging to this function, not
-    /// including padding.
-    len: u32,
-
-    /// Points to the previous and next neighbors, based on the offset from .debug_line.
-    /// This can be used to find, for example, the capacity of this `SrcFn`.
-    prev: ?*SrcFn,
-    next: ?*SrcFn,
-
-    pub const empty: SrcFn = .{
-        .off = 0,
-        .len = 0,
-        .prev = null,
-        .next = null,
-    };
-};
-
-pub fn openPath(allocator: *Allocator, sub_path: []const u8, options: link.Options) !*MachO {
-    assert(options.object_format == .macho);
-
-    if (options.use_llvm) return error.LLVM_BackendIsTODO_ForMachO; // TODO
-    if (options.use_lld) return error.LLD_LinkingIsTODO_ForMachO; // TODO
-
-    const file = try options.emit.?.directory.handle.createFile(sub_path, .{
+    const file = try emit.directory.handle.createFile(sub_path, .{
         .truncate = false,
         .read = true,
         .mode = link.determineMode(options),
     });
     errdefer file.close();
-
-    const self = try createEmpty(allocator, options);
-    errdefer {
-        self.base.file = null;
-        self.base.destroy();
-    }
-
     self.base.file = file;
 
-    // Create dSYM bundle.
-    const d_sym_path = try fmt.allocPrint(allocator, "{s}.dSYM/Contents/Resources/DWARF/", .{sub_path});
-    defer allocator.free(d_sym_path);
-    var d_sym_bundle = try options.emit.?.directory.handle.makeOpenPath(d_sym_path, .{});
-    defer d_sym_bundle.close();
-    const d_sym_file = try d_sym_bundle.createFile(sub_path, .{
-        .truncate = false,
-        .read = true,
-    });
-    self.d_sym = .{
-        .base = self,
-        .file = d_sym_file,
-    };
+    if (!options.strip and options.module != null) {
+        // Create dSYM bundle.
+        log.debug("creating {s}.dSYM bundle", .{sub_path});
+
+        const d_sym_path = try std.fmt.allocPrint(
+            allocator,
+            "{s}.dSYM" ++ fs.path.sep_str ++ "Contents" ++ fs.path.sep_str ++ "Resources" ++ fs.path.sep_str ++ "DWARF",
+            .{sub_path},
+        );
+        defer allocator.free(d_sym_path);
+
+        var d_sym_bundle = try emit.directory.handle.makeOpenPath(d_sym_path, .{});
+        defer d_sym_bundle.close();
+
+        const d_sym_file = try d_sym_bundle.createFile(sub_path, .{
+            .truncate = false,
+            .read = true,
+        });
+
+        self.d_sym = .{
+            .allocator = allocator,
+            .dwarf = link.File.Dwarf.init(allocator, &self.base, .dwarf32),
+            .file = d_sym_file,
+        };
+    }
 
     // Index 0 is always a null symbol.
     try self.locals.append(allocator, .{
@@ -384,26 +223,21 @@ pub fn openPath(allocator: *Allocator, sub_path: []const u8, options: link.Optio
         .n_desc = 0,
         .n_value = 0,
     });
-
-    switch (options.output_mode) {
-        .Exe => {},
-        .Obj => {},
-        .Lib => return error.TODOImplementWritingLibFiles,
-    }
+    try self.strtab.buffer.append(allocator, 0);
 
     try self.populateMissingMetadata();
-    try self.writeLocalSymbol(0);
 
-    if (self.d_sym) |*ds| {
-        try ds.populateMissingMetadata(allocator);
-        try ds.writeLocalSymbol(0);
+    if (self.d_sym) |*d_sym| {
+        try d_sym.populateMissingMetadata(self);
     }
 
     return self;
 }
 
-pub fn createEmpty(gpa: *Allocator, options: link.Options) !*MachO {
+pub fn createEmpty(gpa: Allocator, options: link.Options) !*MachO {
     const self = try gpa.create(MachO);
+    errdefer gpa.destroy(self);
+
     self.* = .{
         .base = .{
             .tag = .macho,
@@ -411,2883 +245,5571 @@ pub fn createEmpty(gpa: *Allocator, options: link.Options) !*MachO {
             .allocator = gpa,
             .file = null,
         },
-        .page_size = if (options.target.cpu.arch == .aarch64) 0x4000 else 0x1000,
+        .mode = if (options.use_llvm or options.module == null or options.cache_mode == .whole)
+            .zld
+        else
+            .incremental,
     };
+
+    if (options.use_llvm and options.module != null) {
+        self.llvm_object = try LlvmObject.create(gpa, options);
+    }
+
+    log.debug("selected linker mode '{s}'", .{@tagName(self.mode)});
+
     return self;
 }
 
-pub fn flush(self: *MachO, comp: *Compilation) !void {
-    if (build_options.have_llvm and self.base.options.use_lld) {
-        return self.linkWithLLD(comp);
-    } else {
-        switch (self.base.options.effectiveOutputMode()) {
-            .Exe, .Obj => {},
-            .Lib => return error.TODOImplementWritingLibFiles,
+pub fn flush(self: *MachO, comp: *Compilation, prog_node: *std.Progress.Node) link.File.FlushError!void {
+    if (self.base.options.emit == null) {
+        if (self.llvm_object) |llvm_object| {
+            try llvm_object.flushModule(comp, prog_node);
         }
-        return self.flushModule(comp);
+        return;
+    }
+
+    if (self.base.options.output_mode == .Lib and self.base.options.link_mode == .Static) {
+        if (build_options.have_llvm) {
+            return self.base.linkAsArchive(comp, prog_node);
+        } else {
+            try self.misc_errors.ensureUnusedCapacity(self.base.allocator, 1);
+            self.misc_errors.appendAssumeCapacity(.{
+                .msg = try self.base.allocator.dupe(u8, "TODO: non-LLVM archiver for MachO object files"),
+            });
+            return error.FlushFailure;
+        }
+    }
+
+    switch (self.mode) {
+        .zld => return zld.linkWithZld(self, comp, prog_node),
+        .incremental => return self.flushModule(comp, prog_node),
     }
 }
 
-pub fn flushModule(self: *MachO, comp: *Compilation) !void {
+pub fn flushModule(self: *MachO, comp: *Compilation, prog_node: *std.Progress.Node) link.File.FlushError!void {
     const tracy = trace(@src());
     defer tracy.end();
 
-    const output_mode = self.base.options.output_mode;
-    const target = self.base.options.target;
-
-    switch (output_mode) {
-        .Exe => {
-            if (self.entry_addr) |addr| {
-                // Update LC_MAIN with entry offset.
-                const text_segment = self.load_commands.items[self.text_segment_cmd_index.?].Segment;
-                const main_cmd = &self.load_commands.items[self.main_cmd_index.?].Main;
-                main_cmd.entryoff = addr - text_segment.inner.vmaddr;
-                self.load_commands_dirty = true;
-            }
-            try self.writeRebaseInfoTable();
-            try self.writeBindingInfoTable();
-            try self.writeLazyBindingInfoTable();
-            try self.writeExportTrie();
-            try self.writeAllGlobalAndUndefSymbols();
-            try self.writeIndirectSymbolTable();
-            try self.writeStringTable();
-            try self.updateLinkeditSegmentSizes();
-
-            if (self.d_sym) |*ds| {
-                // Flush debug symbols bundle.
-                try ds.flushModule(self.base.allocator, self.base.options);
-            }
-
-            if (target.cpu.arch == .aarch64) {
-                // Preallocate space for the code signature.
-                // We need to do this at this stage so that we have the load commands with proper values
-                // written out to the file.
-                // The most important here is to have the correct vm and filesize of the __LINKEDIT segment
-                // where the code signature goes into.
-                try self.writeCodeSignaturePadding();
-            }
-        },
-        .Obj => {},
-        .Lib => return error.TODOImplementWritingLibFiles,
+    if (self.llvm_object) |llvm_object| {
+        return try llvm_object.flushModule(comp, prog_node);
     }
-
-    try self.writeLoadCommands();
-    try self.writeHeader();
-
-    if (self.entry_addr == null and self.base.options.output_mode == .Exe) {
-        log.debug("flushing. no_entry_point_found = true", .{});
-        self.error_flags.no_entry_point_found = true;
-    } else {
-        log.debug("flushing. no_entry_point_found = false", .{});
-        self.error_flags.no_entry_point_found = false;
-    }
-
-    assert(!self.offset_table_count_dirty);
-    assert(!self.header_dirty);
-    assert(!self.load_commands_dirty);
-    assert(!self.rebase_info_dirty);
-    assert(!self.binding_info_dirty);
-    assert(!self.lazy_binding_info_dirty);
-    assert(!self.export_info_dirty);
-    assert(!self.string_table_dirty);
-    assert(!self.string_table_needs_relocation);
-
-    if (target.cpu.arch == .aarch64) {
-        switch (output_mode) {
-            .Exe, .Lib => try self.writeCodeSignature(), // code signing always comes last
-            else => {},
-        }
-    }
-}
-
-fn linkWithLLD(self: *MachO, comp: *Compilation) !void {
-    const tracy = trace(@src());
-    defer tracy.end();
 
     var arena_allocator = std.heap.ArenaAllocator.init(self.base.allocator);
     defer arena_allocator.deinit();
-    const arena = &arena_allocator.allocator;
+    const arena = arena_allocator.allocator();
 
-    const directory = self.base.options.emit.?.directory; // Just an alias to make it shorter to type.
+    var sub_prog_node = prog_node.start("MachO Flush", 0);
+    sub_prog_node.activate();
+    defer sub_prog_node.end();
 
-    // If there is no Zig code to compile, then we should skip flushing the output file because it
-    // will not be part of the linker line anyway.
-    const module_obj_path: ?[]const u8 = if (self.base.options.module) |module| blk: {
-        const use_stage1 = build_options.is_stage1 and self.base.options.use_llvm;
-        if (use_stage1) {
-            const obj_basename = try std.zig.binNameAlloc(arena, .{
-                .root_name = self.base.options.root_name,
-                .target = self.base.options.target,
-                .output_mode = .Obj,
-            });
-            const o_directory = self.base.options.module.?.zig_cache_artifact_directory;
-            const full_obj_path = try o_directory.join(arena, &[_][]const u8{obj_basename});
-            break :blk full_obj_path;
-        }
+    const module = self.base.options.module orelse return error.LinkingWithoutZigSourceUnimplemented;
 
-        try self.flushModule(comp);
-        const obj_basename = self.base.intermediary_basename.?;
-        const full_obj_path = try directory.join(arena, &[_][]const u8{obj_basename});
-        break :blk full_obj_path;
-    } else null;
+    if (self.lazy_syms.getPtr(.none)) |metadata| {
+        // Most lazy symbols can be updated on first use, but
+        // anyerror needs to wait for everything to be flushed.
+        if (metadata.text_state != .unused) self.updateLazySymbolAtom(
+            File.LazySymbol.initDecl(.code, null, module),
+            metadata.text_atom,
+            self.text_section_index.?,
+        ) catch |err| return switch (err) {
+            error.CodegenFail => error.FlushFailure,
+            else => |e| e,
+        };
+        if (metadata.data_const_state != .unused) self.updateLazySymbolAtom(
+            File.LazySymbol.initDecl(.const_data, null, module),
+            metadata.data_const_atom,
+            self.data_const_section_index.?,
+        ) catch |err| return switch (err) {
+            error.CodegenFail => error.FlushFailure,
+            else => |e| e,
+        };
+    }
+    for (self.lazy_syms.values()) |*metadata| {
+        if (metadata.text_state != .unused) metadata.text_state = .flushed;
+        if (metadata.data_const_state != .unused) metadata.data_const_state = .flushed;
+    }
 
-    const is_lib = self.base.options.output_mode == .Lib;
-    const is_dyn_lib = self.base.options.link_mode == .Dynamic and is_lib;
-    const is_exe_or_dyn_lib = is_dyn_lib or self.base.options.output_mode == .Exe;
-    const target = self.base.options.target;
-    const stack_size = self.base.options.stack_size_override orelse 16777216;
-    const allow_shlib_undefined = self.base.options.allow_shlib_undefined orelse !self.base.options.is_native_os;
+    if (self.d_sym) |*d_sym| {
+        try d_sym.dwarf.flushModule(module);
+    }
 
-    const id_symlink_basename = "lld.id";
+    var libs = std.StringArrayHashMap(link.SystemLib).init(arena);
+    try self.resolveLibSystem(arena, comp, &.{}, &libs);
 
+    const id_symlink_basename = "link.id";
+
+    const cache_dir_handle = module.zig_cache_artifact_directory.handle;
     var man: Cache.Manifest = undefined;
-    defer if (!self.base.options.disable_lld_caching) man.deinit();
+    defer man.deinit();
 
     var digest: [Cache.hex_digest_len]u8 = undefined;
+    man = comp.cache_parent.obtain();
+    man.want_shared_lock = false;
+    self.base.releaseLock();
 
-    if (!self.base.options.disable_lld_caching) {
-        man = comp.cache_parent.obtain();
+    man.hash.addListOfBytes(libs.keys());
 
-        // We are about to obtain this lock, so here we give other processes a chance first.
-        self.base.releaseLock();
+    _ = try man.hit();
+    digest = man.final();
 
-        try man.addOptionalFile(self.base.options.linker_script);
-        try man.addOptionalFile(self.base.options.version_script);
-        try man.addListOfFiles(self.base.options.objects);
-        for (comp.c_object_table.items()) |entry| {
-            _ = try man.addFile(entry.key.status.success.object_path, null);
-        }
-        try man.addOptionalFile(module_obj_path);
-        // We can skip hashing libc and libc++ components that we are in charge of building from Zig
-        // installation sources because they are always a product of the compiler version + target information.
-        man.hash.add(stack_size);
-        man.hash.add(self.base.options.rdynamic);
-        man.hash.addListOfBytes(self.base.options.extra_lld_args);
-        man.hash.addListOfBytes(self.base.options.lib_dirs);
-        man.hash.addListOfBytes(self.base.options.framework_dirs);
-        man.hash.addListOfBytes(self.base.options.frameworks);
-        man.hash.addListOfBytes(self.base.options.rpath_list);
-        man.hash.add(self.base.options.skip_linker_dependencies);
-        man.hash.add(self.base.options.z_nodelete);
-        man.hash.add(self.base.options.z_defs);
-        if (is_dyn_lib) {
-            man.hash.addOptional(self.base.options.version);
-        }
-        man.hash.addStringSet(self.base.options.system_libs);
-        man.hash.add(allow_shlib_undefined);
-        man.hash.add(self.base.options.bind_global_refs_locally);
-        man.hash.add(self.base.options.system_linker_hack);
-        man.hash.addOptionalBytes(self.base.options.syslibroot);
-
-        // We don't actually care whether it's a cache hit or miss; we just need the digest and the lock.
-        _ = try man.hit();
-        digest = man.final();
-
-        var prev_digest_buf: [digest.len]u8 = undefined;
-        const prev_digest: []u8 = Cache.readSmallFile(
-            directory.handle,
-            id_symlink_basename,
-            &prev_digest_buf,
-        ) catch |err| blk: {
-            log.debug("MachO LLD new_digest={s} error: {s}", .{ std.fmt.fmtSliceHexLower(&digest), @errorName(err) });
-            // Handle this as a cache miss.
-            break :blk prev_digest_buf[0..0];
-        };
+    var prev_digest_buf: [digest.len]u8 = undefined;
+    const prev_digest: []u8 = Cache.readSmallFile(
+        cache_dir_handle,
+        id_symlink_basename,
+        &prev_digest_buf,
+    ) catch |err| blk: {
+        log.debug("MachO Zld new_digest={s} error: {s}", .{
+            std.fmt.fmtSliceHexLower(&digest),
+            @errorName(err),
+        });
+        // Handle this as a cache miss.
+        break :blk prev_digest_buf[0..0];
+    };
+    const cache_miss: bool = cache_miss: {
         if (mem.eql(u8, prev_digest, &digest)) {
-            log.debug("MachO LLD digest={s} match - skipping invocation", .{std.fmt.fmtSliceHexLower(&digest)});
-            // Hot diggity dog! The output binary is already there.
-            self.base.lock = man.toOwnedLock();
-            return;
+            log.debug("MachO Zld digest={s} match", .{
+                std.fmt.fmtSliceHexLower(&digest),
+            });
+            if (!self.cold_start) {
+                log.debug("  skipping parsing linker line objects", .{});
+                break :cache_miss false;
+            } else {
+                log.debug("  TODO parse prelinked binary and continue linking where we left off", .{});
+            }
         }
-        log.debug("MachO LLD prev_digest={s} new_digest={s}", .{ std.fmt.fmtSliceHexLower(prev_digest), std.fmt.fmtSliceHexLower(&digest) });
-
+        log.debug("MachO Zld prev_digest={s} new_digest={s}", .{
+            std.fmt.fmtSliceHexLower(prev_digest),
+            std.fmt.fmtSliceHexLower(&digest),
+        });
         // We are about to change the output file to be different, so we invalidate the build hash now.
-        directory.handle.deleteFile(id_symlink_basename) catch |err| switch (err) {
+        cache_dir_handle.deleteFile(id_symlink_basename) catch |err| switch (err) {
             error.FileNotFound => {},
             else => |e| return e,
         };
+        break :cache_miss true;
+    };
+
+    if (cache_miss) {
+        for (self.dylibs.items) |*dylib| {
+            dylib.deinit(self.base.allocator);
+        }
+        self.dylibs.clearRetainingCapacity();
+        self.dylibs_map.clearRetainingCapacity();
+        self.referenced_dylibs.clearRetainingCapacity();
+
+        var dependent_libs = std.fifo.LinearFifo(DylibReExportInfo, .Dynamic).init(arena);
+
+        for (libs.keys(), libs.values()) |path, lib| {
+            const in_file = try std.fs.cwd().openFile(path, .{});
+            defer in_file.close();
+
+            var parse_ctx = ParseErrorCtx.init(self.base.allocator);
+            defer parse_ctx.deinit();
+
+            self.parseLibrary(
+                in_file,
+                path,
+                lib,
+                false,
+                false,
+                null,
+                &dependent_libs,
+                &parse_ctx,
+            ) catch |err| try self.handleAndReportParseError(path, err, &parse_ctx);
+        }
+
+        try self.parseDependentLibs(&dependent_libs);
     }
 
-    const full_out_path = try directory.join(arena, &[_][]const u8{self.base.options.emit.?.sub_path});
+    try self.resolveSymbols();
 
-    if (self.base.options.output_mode == .Obj) {
-        // LLD's MachO driver does not support the equvialent of `-r` so we do a simple file copy
-        // here. TODO: think carefully about how we can avoid this redundant operation when doing
-        // build-obj. See also the corresponding TODO in linkAsArchive.
-        const the_object_path = blk: {
-            if (self.base.options.objects.len != 0)
-                break :blk self.base.options.objects[0];
+    if (self.getEntryPoint() == null) {
+        self.error_flags.no_entry_point_found = true;
+    }
+    if (self.unresolved.count() > 0) {
+        try self.reportUndefined();
+        return error.FlushFailure;
+    }
 
-            if (comp.c_object_table.count() != 0)
-                break :blk comp.c_object_table.items()[0].key.status.success.object_path;
-
-            if (module_obj_path) |p|
-                break :blk p;
-
-            // TODO I think this is unreachable. Audit this situation when solving the above TODO
-            // regarding eliding redundant object -> object transformations.
-            return error.NoObjectsToLink;
-        };
-        // This can happen when using --enable-cache and using the stage1 backend. In this case
-        // we can skip the file copy.
-        if (!mem.eql(u8, the_object_path, full_out_path)) {
-            try fs.cwd().copyFile(the_object_path, fs.cwd(), full_out_path, .{});
-        }
-    } else outer: {
-        const use_zld = blk: {
-            if (self.base.options.is_native_os and self.base.options.system_linker_hack) {
-                // If the user forces the use of ld64, make sure we are running native!
-                break :blk false;
-            }
-
-            if (self.base.options.target.cpu.arch == .aarch64) {
-                // On aarch64, always use zld.
-                break :blk true;
-            }
-
-            if (self.base.options.link_libcpp or
-                self.base.options.output_mode == .Lib or
-                self.base.options.linker_script != null)
-            {
-                // Fallback to LLD in this handful of cases on x86_64 only.
-                break :blk false;
-            }
-
-            break :blk true;
-        };
-
-        if (use_zld) {
-            var zld = Zld.init(self.base.allocator);
-            defer zld.deinit();
-            zld.arch = target.cpu.arch;
-
-            var input_files = std.ArrayList([]const u8).init(self.base.allocator);
-            defer input_files.deinit();
-            // Positional arguments to the linker such as object files.
-            try input_files.appendSlice(self.base.options.objects);
-            for (comp.c_object_table.items()) |entry| {
-                try input_files.append(entry.key.status.success.object_path);
-            }
-            if (module_obj_path) |p| {
-                try input_files.append(p);
-            }
-            try input_files.append(comp.compiler_rt_static_lib.?.full_object_path);
-            // libc++ dep
-            if (self.base.options.link_libcpp) {
-                try input_files.append(comp.libcxxabi_static_lib.?.full_object_path);
-                try input_files.append(comp.libcxx_static_lib.?.full_object_path);
-            }
-
-            if (self.base.options.verbose_link) {
-                var argv = std.ArrayList([]const u8).init(self.base.allocator);
-                defer argv.deinit();
-
-                try argv.append("zig");
-                try argv.append("ld");
-
-                try argv.ensureCapacity(input_files.items.len);
-                for (input_files.items) |f| {
-                    argv.appendAssumeCapacity(f);
-                }
-
-                try argv.append("-o");
-                try argv.append(full_out_path);
-
-                Compilation.dump_argv(argv.items);
-            }
-
-            try zld.link(input_files.items, full_out_path);
-
-            break :outer;
-        }
-
-        // Create an LLD command line and invoke it.
-        var argv = std.ArrayList([]const u8).init(self.base.allocator);
-        defer argv.deinit();
-
-        // TODO https://github.com/ziglang/zig/issues/6971
-        // Note that there is no need to check if running natively since we do that already
-        // when setting `system_linker_hack` in Compilation struct.
-        if (self.base.options.system_linker_hack) {
-            try argv.append("ld");
-        } else {
-            // We will invoke ourselves as a child process to gain access to LLD.
-            // This is necessary because LLD does not behave properly as a library -
-            // it calls exit() and does not reset all global data between invocations.
-            try argv.appendSlice(&[_][]const u8{ comp.self_exe_path.?, "ld64.lld" });
-
-            try argv.append("-error-limit");
-            try argv.append("0");
-        }
-
-        if (self.base.options.lto) {
-            switch (self.base.options.optimize_mode) {
-                .Debug => {},
-                .ReleaseSmall => try argv.append("-O2"),
-                .ReleaseFast, .ReleaseSafe => try argv.append("-O3"),
-            }
-        }
-        try argv.append("-demangle");
-
-        if (self.base.options.rdynamic and !self.base.options.system_linker_hack) {
-            try argv.append("--export-dynamic");
-        }
-
-        try argv.appendSlice(self.base.options.extra_lld_args);
-
-        if (self.base.options.z_nodelete) {
-            try argv.append("-z");
-            try argv.append("nodelete");
-        }
-        if (self.base.options.z_defs) {
-            try argv.append("-z");
-            try argv.append("defs");
-        }
-
-        if (is_exe_or_dyn_lib) {
-            try argv.append("-dynamic");
-        }
-
-        if (is_dyn_lib) {
-            try argv.append("-dylib");
-
-            if (self.base.options.version) |ver| {
-                const compat_vers = try std.fmt.allocPrint(arena, "{d}.0.0", .{ver.major});
-                try argv.append("-compatibility_version");
-                try argv.append(compat_vers);
-
-                const cur_vers = try std.fmt.allocPrint(arena, "{d}.{d}.{d}", .{ ver.major, ver.minor, ver.patch });
-                try argv.append("-current_version");
-                try argv.append(cur_vers);
-            }
-
-            const dylib_install_name = try std.fmt.allocPrint(arena, "@rpath/{s}", .{self.base.options.emit.?.sub_path});
-            try argv.append("-install_name");
-            try argv.append(dylib_install_name);
-        }
-
-        try argv.append("-arch");
-        try argv.append(darwinArchString(target.cpu.arch));
-
-        switch (target.os.tag) {
-            .macos => {
-                try argv.append("-macosx_version_min");
-            },
-            .ios, .tvos, .watchos => switch (target.cpu.arch) {
-                .i386, .x86_64 => {
-                    try argv.append("-ios_simulator_version_min");
-                },
-                else => {
-                    try argv.append("-iphoneos_version_min");
-                },
-            },
-            else => unreachable,
-        }
-        const ver = target.os.version_range.semver.min;
-        const version_string = try std.fmt.allocPrint(arena, "{d}.{d}.{d}", .{ ver.major, ver.minor, ver.patch });
-        try argv.append(version_string);
-
-        try argv.append("-sdk_version");
-        try argv.append(version_string);
-
-        if (target_util.requiresPIE(target) and self.base.options.output_mode == .Exe) {
-            try argv.append("-pie");
-        }
-
-        try argv.append("-o");
-        try argv.append(full_out_path);
-
-        // rpaths
-        var rpath_table = std.StringHashMap(void).init(self.base.allocator);
-        defer rpath_table.deinit();
-        for (self.base.options.rpath_list) |rpath| {
-            if ((try rpath_table.fetchPut(rpath, {})) == null) {
-                try argv.append("-rpath");
-                try argv.append(rpath);
-            }
-        }
-        if (is_dyn_lib) {
-            if ((try rpath_table.fetchPut(full_out_path, {})) == null) {
-                try argv.append("-rpath");
-                try argv.append(full_out_path);
-            }
-        }
-
-        if (self.base.options.syslibroot) |dir| {
-            try argv.append("-syslibroot");
-            try argv.append(dir);
-        }
-
-        for (self.base.options.lib_dirs) |lib_dir| {
-            try argv.append("-L");
-            try argv.append(lib_dir);
-        }
-
-        // Positional arguments to the linker such as object files.
-        try argv.appendSlice(self.base.options.objects);
-
-        for (comp.c_object_table.items()) |entry| {
-            try argv.append(entry.key.status.success.object_path);
-        }
-        if (module_obj_path) |p| {
-            try argv.append(p);
-        }
-
-        // compiler_rt on darwin is missing some stuff, so we still build it and rely on LinkOnce
-        if (is_exe_or_dyn_lib and !self.base.options.skip_linker_dependencies) {
-            try argv.append(comp.compiler_rt_static_lib.?.full_object_path);
-        }
-
-        // Shared libraries.
-        const system_libs = self.base.options.system_libs.items();
-        try argv.ensureCapacity(argv.items.len + system_libs.len);
-        for (system_libs) |entry| {
-            const link_lib = entry.key;
-            // By this time, we depend on these libs being dynamically linked libraries and not static libraries
-            // (the check for that needs to be earlier), but they could be full paths to .dylib files, in which
-            // case we want to avoid prepending "-l".
-            const ext = Compilation.classifyFileExt(link_lib);
-            const arg = if (ext == .shared_library) link_lib else try std.fmt.allocPrint(arena, "-l{s}", .{link_lib});
-            argv.appendAssumeCapacity(arg);
-        }
-
-        // libc++ dep
-        if (self.base.options.link_libcpp) {
-            try argv.append(comp.libcxxabi_static_lib.?.full_object_path);
-            try argv.append(comp.libcxx_static_lib.?.full_object_path);
-        }
-
-        // On Darwin, libSystem has libc in it, but also you have to use it
-        // to make syscalls because the syscall numbers are not documented
-        // and change between versions. So we always link against libSystem.
-        // LLD craps out if you do -lSystem cross compiling, so until that
-        // codebase gets some love from the new maintainers we're left with
-        // this dirty hack.
-        if (self.base.options.is_native_os) {
-            try argv.append("-lSystem");
-        }
-
-        for (self.base.options.framework_dirs) |framework_dir| {
-            try argv.append("-F");
-            try argv.append(framework_dir);
-        }
-        for (self.base.options.frameworks) |framework| {
-            try argv.append("-framework");
-            try argv.append(framework);
-        }
-
-        if (allow_shlib_undefined) {
-            try argv.append("-undefined");
-            try argv.append("dynamic_lookup");
-        }
-        if (self.base.options.bind_global_refs_locally) {
-            try argv.append("-Bsymbolic");
-        }
-
-        if (self.base.options.verbose_link) {
-            // Potentially skip over our own name so that the LLD linker name is the first argv item.
-            const adjusted_argv = if (self.base.options.system_linker_hack) argv.items else argv.items[1..];
-            Compilation.dump_argv(adjusted_argv);
-        }
-
-        // TODO https://github.com/ziglang/zig/issues/6971
-        // Note that there is no need to check if running natively since we do that already
-        // when setting `system_linker_hack` in Compilation struct.
-        if (self.base.options.system_linker_hack) {
-            const result = try std.ChildProcess.exec(.{ .allocator = self.base.allocator, .argv = argv.items });
-            defer {
-                self.base.allocator.free(result.stdout);
-                self.base.allocator.free(result.stderr);
-            }
-            if (result.stdout.len != 0) {
-                log.warn("unexpected LD stdout: {s}", .{result.stdout});
-            }
-            if (result.stderr.len != 0) {
-                log.warn("unexpected LD stderr: {s}", .{result.stderr});
-            }
-            if (result.term != .Exited or result.term.Exited != 0) {
-                // TODO parse this output and surface with the Compilation API rather than
-                // directly outputting to stderr here.
-                log.err("{s}", .{result.stderr});
-                return error.LDReportedFailure;
-            }
-        } else {
-            // Sadly, we must run LLD as a child process because it does not behave
-            // properly as a library.
-            const child = try std.ChildProcess.init(argv.items, arena);
-            defer child.deinit();
-
-            if (comp.clang_passthrough_mode) {
-                child.stdin_behavior = .Inherit;
-                child.stdout_behavior = .Inherit;
-                child.stderr_behavior = .Inherit;
-
-                const term = child.spawnAndWait() catch |err| {
-                    log.err("unable to spawn {s}: {s}", .{ argv.items[0], @errorName(err) });
-                    return error.UnableToSpawnSelf;
-                };
-                switch (term) {
-                    .Exited => |code| {
-                        if (code != 0) {
-                            // TODO https://github.com/ziglang/zig/issues/6342
-                            std.process.exit(1);
-                        }
-                    },
-                    else => {
-                        log.err("{s} terminated", .{argv.items[0]});
-                        return error.LLDCrashed;
-                    },
-                }
-            } else {
-                child.stdin_behavior = .Ignore;
-                child.stdout_behavior = .Ignore;
-                child.stderr_behavior = .Pipe;
-
-                try child.spawn();
-
-                const stderr = try child.stderr.?.reader().readAllAlloc(arena, 10 * 1024 * 1024);
-
-                const term = child.wait() catch |err| {
-                    log.err("unable to spawn {s}: {s}", .{ argv.items[0], @errorName(err) });
-                    return error.UnableToSpawnSelf;
-                };
-
-                switch (term) {
-                    .Exited => |code| {
-                        if (code != 0) {
-                            // TODO parse this output and surface with the Compilation API rather than
-                            // directly outputting to stderr here.
-                            std.debug.print("{s}", .{stderr});
-                            return error.LLDReportedFailure;
-                        }
-                    },
-                    else => {
-                        log.err("{s} terminated with stderr:\n{s}", .{ argv.items[0], stderr });
-                        return error.LLDCrashed;
-                    },
-                }
-
-                if (stderr.len != 0) {
-                    log.warn("unexpected LLD stderr:\n{s}", .{stderr});
-                }
-            }
+    {
+        var it = self.actions.iterator();
+        while (it.next()) |entry| {
+            const global_index = entry.key_ptr.*;
+            const global = self.globals.items[global_index];
+            const flags = entry.value_ptr.*;
+            if (flags.add_got) try self.addGotEntry(global);
+            if (flags.add_stub) try self.addStubEntry(global);
         }
     }
 
-    if (!self.base.options.disable_lld_caching) {
+    try self.createDyldPrivateAtom();
+    try self.writeStubHelperPreamble();
+
+    if (self.base.options.output_mode == .Exe and self.getEntryPoint() != null) {
+        const global = self.getEntryPoint().?;
+        if (self.getSymbol(global).undf()) {
+            // We do one additional check here in case the entry point was found in one of the dylibs.
+            // (I actually have no idea what this would imply but it is a possible outcome and so we
+            // support it.)
+            try self.addStubEntry(global);
+        }
+    }
+
+    try self.allocateSpecialSymbols();
+
+    for (self.relocs.keys()) |atom_index| {
+        const relocs = self.relocs.get(atom_index).?;
+        const needs_update = for (relocs.items) |reloc| {
+            if (reloc.dirty) break true;
+        } else false;
+
+        if (!needs_update) continue;
+
+        const atom = self.getAtom(atom_index);
+        const sym = atom.getSymbol(self);
+        const section = self.sections.get(sym.n_sect - 1).header;
+        const file_offset = section.offset + sym.n_value - section.addr;
+
+        var code = std.ArrayList(u8).init(self.base.allocator);
+        defer code.deinit();
+        try code.resize(math.cast(usize, atom.size) orelse return error.Overflow);
+
+        const amt = try self.base.file.?.preadAll(code.items, file_offset);
+        if (amt != code.items.len) return error.InputOutput;
+
+        try self.writeAtom(atom_index, code.items);
+    }
+
+    // Update GOT if it got moved in memory.
+    if (self.got_table_contents_dirty) {
+        for (self.got_table.entries.items, 0..) |entry, i| {
+            if (!self.got_table.lookup.contains(entry)) continue;
+            // TODO: write all in one go rather than incrementally.
+            try self.writeOffsetTableEntry(i);
+        }
+        self.got_table_contents_dirty = false;
+    }
+
+    // Update stubs if we moved any section in memory.
+    // TODO: we probably don't need to update all sections if only one got moved.
+    if (self.stub_table_contents_dirty) {
+        for (self.stub_table.entries.items, 0..) |entry, i| {
+            if (!self.stub_table.lookup.contains(entry)) continue;
+            // TODO: write all in one go rather than incrementally.
+            try self.writeStubTableEntry(i);
+        }
+        self.stub_table_contents_dirty = false;
+    }
+
+    if (build_options.enable_logging) {
+        self.logSymtab();
+        self.logSections();
+        self.logAtoms();
+    }
+
+    try self.writeLinkeditSegmentData();
+
+    var codesig: ?CodeSignature = if (requiresCodeSignature(&self.base.options)) blk: {
+        // Preallocate space for the code signature.
+        // We need to do this at this stage so that we have the load commands with proper values
+        // written out to the file.
+        // The most important here is to have the correct vm and filesize of the __LINKEDIT segment
+        // where the code signature goes into.
+        var codesig = CodeSignature.init(getPageSize(self.base.options.target.cpu.arch));
+        codesig.code_directory.ident = self.base.options.emit.?.sub_path;
+        if (self.base.options.entitlements) |path| {
+            try codesig.addEntitlements(self.base.allocator, path);
+        }
+        try self.writeCodeSignaturePadding(&codesig);
+        break :blk codesig;
+    } else null;
+    defer if (codesig) |*csig| csig.deinit(self.base.allocator);
+
+    // Write load commands
+    var lc_buffer = std.ArrayList(u8).init(arena);
+    const lc_writer = lc_buffer.writer();
+
+    try self.writeSegmentHeaders(lc_writer);
+    try lc_writer.writeStruct(self.dyld_info_cmd);
+    try lc_writer.writeStruct(self.symtab_cmd);
+    try lc_writer.writeStruct(self.dysymtab_cmd);
+    try load_commands.writeDylinkerLC(lc_writer);
+
+    switch (self.base.options.output_mode) {
+        .Exe => blk: {
+            const seg_id = self.header_segment_cmd_index.?;
+            const seg = self.segments.items[seg_id];
+            const global = self.getEntryPoint() orelse break :blk;
+            const sym = self.getSymbol(global);
+
+            const addr: u64 = if (sym.undf())
+                // In this case, the symbol has been resolved in one of dylibs and so we point
+                // to the stub as its vmaddr value.
+                self.getStubsEntryAddress(global).?
+            else
+                sym.n_value;
+
+            try lc_writer.writeStruct(macho.entry_point_command{
+                .entryoff = @as(u32, @intCast(addr - seg.vmaddr)),
+                .stacksize = self.base.options.stack_size_override orelse 0,
+            });
+        },
+        .Lib => if (self.base.options.link_mode == .Dynamic) {
+            try load_commands.writeDylibIdLC(self.base.allocator, &self.base.options, lc_writer);
+        },
+        else => {},
+    }
+
+    try load_commands.writeRpathLCs(self.base.allocator, &self.base.options, lc_writer);
+    try lc_writer.writeStruct(macho.source_version_command{
+        .version = 0,
+    });
+    {
+        const platform = Platform.fromTarget(self.base.options.target);
+        const sdk_version: ?std.SemanticVersion = load_commands.inferSdkVersion(arena, comp);
+        if (platform.isBuildVersionCompatible()) {
+            try load_commands.writeBuildVersionLC(platform, sdk_version, lc_writer);
+        } else if (platform.isVersionMinCompatible()) {
+            try load_commands.writeVersionMinLC(platform, sdk_version, lc_writer);
+        }
+    }
+
+    const uuid_cmd_offset = @sizeOf(macho.mach_header_64) + @as(u32, @intCast(lc_buffer.items.len));
+    try lc_writer.writeStruct(self.uuid_cmd);
+
+    try load_commands.writeLoadDylibLCs(self.dylibs.items, self.referenced_dylibs.keys(), lc_writer);
+
+    if (codesig != null) {
+        try lc_writer.writeStruct(self.codesig_cmd);
+    }
+
+    const ncmds = load_commands.calcNumOfLCs(lc_buffer.items);
+    try self.base.file.?.pwriteAll(lc_buffer.items, @sizeOf(macho.mach_header_64));
+    try self.writeHeader(ncmds, @as(u32, @intCast(lc_buffer.items.len)));
+    try self.writeUuid(comp, uuid_cmd_offset, codesig != null);
+
+    if (codesig) |*csig| {
+        try self.writeCodeSignature(comp, csig); // code signing always comes last
+        const emit = self.base.options.emit.?;
+        try invalidateKernelCache(emit.directory.handle, emit.sub_path);
+    }
+
+    if (self.d_sym) |*d_sym| {
+        // Flush debug symbols bundle.
+        try d_sym.flushModule(self);
+    }
+
+    if (cache_miss) {
         // Update the file with the digest. If it fails we can continue; it only
         // means that the next invocation will have an unnecessary cache miss.
-        Cache.writeSmallFile(directory.handle, id_symlink_basename, &digest) catch |err| {
-            log.warn("failed to save linking hash digest file: {s}", .{@errorName(err)});
+        Cache.writeSmallFile(cache_dir_handle, id_symlink_basename, &digest) catch |err| {
+            log.debug("failed to save linking hash digest file: {s}", .{@errorName(err)});
         };
         // Again failure here only means an unnecessary cache miss.
         man.writeManifest() catch |err| {
-            log.warn("failed to write cache manifest when linking: {s}", .{@errorName(err)});
+            log.debug("failed to write cache manifest when linking: {s}", .{@errorName(err)});
         };
         // We hang on to this lock so that the output file path can be used without
         // other processes clobbering it.
         self.base.lock = man.toOwnedLock();
     }
+
+    self.cold_start = false;
 }
 
-fn darwinArchString(arch: std.Target.Cpu.Arch) []const u8 {
-    return switch (arch) {
-        .aarch64, .aarch64_be, .aarch64_32 => "arm64",
-        .thumb, .arm => "arm",
-        .thumbeb, .armeb => "armeb",
-        .powerpc => "ppc",
-        .powerpc64 => "ppc64",
-        .powerpc64le => "ppc64le",
-        else => @tagName(arch),
+/// XNU starting with Big Sur running on arm64 is caching inodes of running binaries.
+/// Any change to the binary will effectively invalidate the kernel's cache
+/// resulting in a SIGKILL on each subsequent run. Since when doing incremental
+/// linking we're modifying a binary in-place, this will end up with the kernel
+/// killing it on every subsequent run. To circumvent it, we will copy the file
+/// into a new inode, remove the original file, and rename the copy to match
+/// the original file. This is super messy, but there doesn't seem any other
+/// way to please the XNU.
+pub fn invalidateKernelCache(dir: std.fs.Dir, sub_path: []const u8) !void {
+    if (comptime builtin.target.isDarwin() and builtin.target.cpu.arch == .aarch64) {
+        try dir.copyFile(sub_path, dir, sub_path, .{});
+    }
+}
+
+inline fn conformUuid(out: *[Md5.digest_length]u8) void {
+    // LC_UUID uuids should conform to RFC 4122 UUID version 4 & UUID version 5 formats
+    out[6] = (out[6] & 0x0F) | (3 << 4);
+    out[8] = (out[8] & 0x3F) | 0x80;
+}
+
+pub fn resolveLibSystem(
+    self: *MachO,
+    arena: Allocator,
+    comp: *Compilation,
+    search_dirs: []const []const u8,
+    out_libs: anytype,
+) !void {
+    var tmp_arena_allocator = std.heap.ArenaAllocator.init(self.base.allocator);
+    defer tmp_arena_allocator.deinit();
+    const tmp_arena = tmp_arena_allocator.allocator();
+
+    var test_path = std.ArrayList(u8).init(tmp_arena);
+    var checked_paths = std.ArrayList([]const u8).init(tmp_arena);
+
+    success: {
+        for (search_dirs) |dir| if (try accessLibPath(
+            tmp_arena,
+            &test_path,
+            &checked_paths,
+            dir,
+            "libSystem",
+        )) break :success;
+
+        if (self.base.options.darwin_sdk_layout) |sdk_layout| switch (sdk_layout) {
+            .sdk => {
+                const dir = try fs.path.join(tmp_arena, &[_][]const u8{ self.base.options.sysroot.?, "usr", "lib" });
+                if (try accessLibPath(tmp_arena, &test_path, &checked_paths, dir, "libSystem")) break :success;
+            },
+            .vendored => {
+                const dir = try comp.zig_lib_directory.join(tmp_arena, &[_][]const u8{ "libc", "darwin" });
+                if (try accessLibPath(tmp_arena, &test_path, &checked_paths, dir, "libSystem")) break :success;
+            },
+        };
+
+        try self.reportMissingLibraryError(checked_paths.items, "unable to find libSystem system library", .{});
+        return;
+    }
+
+    const libsystem_path = try arena.dupe(u8, test_path.items);
+    try out_libs.put(libsystem_path, .{
+        .needed = true,
+        .weak = false,
+        .path = libsystem_path,
+    });
+}
+
+fn accessLibPath(
+    gpa: Allocator,
+    test_path: *std.ArrayList(u8),
+    checked_paths: *std.ArrayList([]const u8),
+    search_dir: []const u8,
+    lib_name: []const u8,
+) !bool {
+    const sep = fs.path.sep_str;
+
+    tbd: {
+        test_path.clearRetainingCapacity();
+        try test_path.writer().print("{s}" ++ sep ++ "{s}.tbd", .{ search_dir, lib_name });
+        try checked_paths.append(try gpa.dupe(u8, test_path.items));
+        fs.cwd().access(test_path.items, .{}) catch |err| switch (err) {
+            error.FileNotFound => break :tbd,
+            else => |e| return e,
+        };
+        return true;
+    }
+
+    dylib: {
+        test_path.clearRetainingCapacity();
+        try test_path.writer().print("{s}" ++ sep ++ "{s}.dylib", .{ search_dir, lib_name });
+        try checked_paths.append(try gpa.dupe(u8, test_path.items));
+        fs.cwd().access(test_path.items, .{}) catch |err| switch (err) {
+            error.FileNotFound => break :dylib,
+            else => |e| return e,
+        };
+        return true;
+    }
+
+    noextension: {
+        test_path.clearRetainingCapacity();
+        try test_path.writer().print("{s}" ++ sep ++ "{s}", .{ search_dir, lib_name });
+        try checked_paths.append(try gpa.dupe(u8, test_path.items));
+        fs.cwd().access(test_path.items, .{}) catch |err| switch (err) {
+            error.FileNotFound => break :noextension,
+            else => |e| return e,
+        };
+        return true;
+    }
+
+    return false;
+}
+
+const ParseError = error{
+    UnknownFileType,
+    InvalidTarget,
+    InvalidTargetFatLibrary,
+    DylibAlreadyExists,
+    IncompatibleDylibVersion,
+    OutOfMemory,
+    Overflow,
+    InputOutput,
+    MalformedArchive,
+    NotLibStub,
+    EndOfStream,
+    FileSystem,
+    NotSupported,
+} || std.os.SeekError || std.fs.File.OpenError || std.fs.File.ReadError || tapi.TapiError;
+
+pub fn parsePositional(
+    self: *MachO,
+    file: std.fs.File,
+    path: []const u8,
+    must_link: bool,
+    dependent_libs: anytype,
+    ctx: *ParseErrorCtx,
+) ParseError!void {
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    if (Object.isObject(file)) {
+        try self.parseObject(file, path, ctx);
+    } else {
+        try self.parseLibrary(file, path, .{
+            .path = null,
+            .needed = false,
+            .weak = false,
+        }, must_link, false, null, dependent_libs, ctx);
+    }
+}
+
+fn parseObject(
+    self: *MachO,
+    file: std.fs.File,
+    path: []const u8,
+    ctx: *ParseErrorCtx,
+) ParseError!void {
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    const gpa = self.base.allocator;
+    const mtime: u64 = mtime: {
+        const stat = file.stat() catch break :mtime 0;
+        break :mtime @as(u64, @intCast(@divFloor(stat.mtime, 1_000_000_000)));
     };
+    const file_stat = try file.stat();
+    const file_size = math.cast(usize, file_stat.size) orelse return error.Overflow;
+    const contents = try file.readToEndAllocOptions(gpa, file_size, file_size, @alignOf(u64), null);
+
+    var object = Object{
+        .name = try gpa.dupe(u8, path),
+        .mtime = mtime,
+        .contents = contents,
+    };
+    errdefer object.deinit(gpa);
+    try object.parse(gpa);
+
+    const detected_cpu_arch: std.Target.Cpu.Arch = switch (object.header.cputype) {
+        macho.CPU_TYPE_ARM64 => .aarch64,
+        macho.CPU_TYPE_X86_64 => .x86_64,
+        else => unreachable,
+    };
+    const detected_platform = object.getPlatform();
+    const this_cpu_arch = self.base.options.target.cpu.arch;
+    const this_platform = Platform.fromTarget(self.base.options.target);
+
+    if (this_cpu_arch != detected_cpu_arch or
+        (detected_platform != null and !detected_platform.?.eqlTarget(this_platform)))
+    {
+        const platform = detected_platform orelse this_platform;
+        try ctx.detected_targets.append(try platform.allocPrintTarget(ctx.arena(), detected_cpu_arch));
+        return error.InvalidTarget;
+    }
+
+    try self.objects.append(gpa, object);
+}
+
+pub fn parseLibrary(
+    self: *MachO,
+    file: std.fs.File,
+    path: []const u8,
+    lib: link.SystemLib,
+    must_link: bool,
+    is_dependent: bool,
+    reexport_info: ?DylibReExportInfo,
+    dependent_libs: anytype,
+    ctx: *ParseErrorCtx,
+) ParseError!void {
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    if (fat.isFatLibrary(file)) {
+        const offset = try self.parseFatLibrary(file, self.base.options.target.cpu.arch, ctx);
+        try file.seekTo(offset);
+
+        if (Archive.isArchive(file, offset)) {
+            try self.parseArchive(path, offset, must_link, ctx);
+        } else if (Dylib.isDylib(file, offset)) {
+            try self.parseDylib(file, path, offset, dependent_libs, .{
+                .needed = lib.needed,
+                .weak = lib.weak,
+                .dependent = is_dependent,
+                .reexport_info = reexport_info,
+            }, ctx);
+        } else return error.UnknownFileType;
+    } else if (Archive.isArchive(file, 0)) {
+        try self.parseArchive(path, 0, must_link, ctx);
+    } else if (Dylib.isDylib(file, 0)) {
+        try self.parseDylib(file, path, 0, dependent_libs, .{
+            .needed = lib.needed,
+            .weak = lib.weak,
+            .dependent = is_dependent,
+            .reexport_info = reexport_info,
+        }, ctx);
+    } else {
+        self.parseLibStub(file, path, dependent_libs, .{
+            .needed = lib.needed,
+            .weak = lib.weak,
+            .dependent = is_dependent,
+            .reexport_info = reexport_info,
+        }, ctx) catch |err| switch (err) {
+            error.NotLibStub, error.UnexpectedToken => return error.UnknownFileType,
+            else => |e| return e,
+        };
+    }
+}
+
+pub fn parseFatLibrary(
+    self: *MachO,
+    file: std.fs.File,
+    cpu_arch: std.Target.Cpu.Arch,
+    ctx: *ParseErrorCtx,
+) ParseError!u64 {
+    const gpa = self.base.allocator;
+
+    const fat_archs = try fat.parseArchs(gpa, file);
+    defer gpa.free(fat_archs);
+
+    const offset = for (fat_archs) |arch| {
+        if (arch.tag == cpu_arch) break arch.offset;
+    } else {
+        try ctx.detected_targets.ensureUnusedCapacity(fat_archs.len);
+        for (fat_archs) |arch| {
+            ctx.detected_targets.appendAssumeCapacity(try ctx.arena().dupe(u8, @tagName(arch.tag)));
+        }
+        return error.InvalidTargetFatLibrary;
+    };
+    return offset;
+}
+
+fn parseArchive(
+    self: *MachO,
+    path: []const u8,
+    fat_offset: u64,
+    must_link: bool,
+    ctx: *ParseErrorCtx,
+) ParseError!void {
+    const gpa = self.base.allocator;
+
+    // We take ownership of the file so that we can store it for the duration of symbol resolution.
+    // TODO we shouldn't need to do that and could pre-parse the archive like we do for zld/ELF?
+    const file = try std.fs.cwd().openFile(path, .{});
+    try file.seekTo(fat_offset);
+
+    var archive = Archive{
+        .file = file,
+        .fat_offset = fat_offset,
+        .name = try gpa.dupe(u8, path),
+    };
+    errdefer archive.deinit(gpa);
+
+    try archive.parse(gpa, file.reader());
+
+    // Verify arch and platform
+    if (archive.toc.values().len > 0) {
+        const offsets = archive.toc.values()[0].items;
+        assert(offsets.len > 0);
+        const off = offsets[0];
+        var object = try archive.parseObject(gpa, off); // TODO we are doing all this work to pull the header only!
+        defer object.deinit(gpa);
+
+        const detected_cpu_arch: std.Target.Cpu.Arch = switch (object.header.cputype) {
+            macho.CPU_TYPE_ARM64 => .aarch64,
+            macho.CPU_TYPE_X86_64 => .x86_64,
+            else => unreachable,
+        };
+        const detected_platform = object.getPlatform();
+        const this_cpu_arch = self.base.options.target.cpu.arch;
+        const this_platform = Platform.fromTarget(self.base.options.target);
+
+        if (this_cpu_arch != detected_cpu_arch or
+            (detected_platform != null and !detected_platform.?.eqlTarget(this_platform)))
+        {
+            const platform = detected_platform orelse this_platform;
+            try ctx.detected_targets.append(try platform.allocPrintTarget(gpa, detected_cpu_arch));
+            return error.InvalidTarget;
+        }
+    }
+
+    if (must_link) {
+        // Get all offsets from the ToC
+        var offsets = std.AutoArrayHashMap(u32, void).init(gpa);
+        defer offsets.deinit();
+        for (archive.toc.values()) |offs| {
+            for (offs.items) |off| {
+                _ = try offsets.getOrPut(off);
+            }
+        }
+        for (offsets.keys()) |off| {
+            const object = try archive.parseObject(gpa, off);
+            try self.objects.append(gpa, object);
+        }
+    } else {
+        try self.archives.append(gpa, archive);
+    }
+}
+
+pub const DylibReExportInfo = struct {
+    id: Dylib.Id,
+    parent: u16,
+};
+
+const DylibOpts = struct {
+    reexport_info: ?DylibReExportInfo = null,
+    dependent: bool = false,
+    needed: bool = false,
+    weak: bool = false,
+};
+
+fn parseDylib(
+    self: *MachO,
+    file: std.fs.File,
+    path: []const u8,
+    offset: u64,
+    dependent_libs: anytype,
+    dylib_options: DylibOpts,
+    ctx: *ParseErrorCtx,
+) ParseError!void {
+    const gpa = self.base.allocator;
+    const file_stat = try file.stat();
+    const file_size = math.cast(usize, file_stat.size - offset) orelse return error.Overflow;
+
+    const contents = try file.readToEndAllocOptions(gpa, file_size, file_size, @alignOf(u64), null);
+    defer gpa.free(contents);
+
+    var dylib = Dylib{ .path = try gpa.dupe(u8, path), .weak = dylib_options.weak };
+    errdefer dylib.deinit(gpa);
+
+    try dylib.parseFromBinary(
+        gpa,
+        @intCast(self.dylibs.items.len), // TODO defer it till later
+        dependent_libs,
+        path,
+        contents,
+    );
+
+    const detected_cpu_arch: std.Target.Cpu.Arch = switch (dylib.header.?.cputype) {
+        macho.CPU_TYPE_ARM64 => .aarch64,
+        macho.CPU_TYPE_X86_64 => .x86_64,
+        else => unreachable,
+    };
+    const detected_platform = dylib.getPlatform(contents);
+    const this_cpu_arch = self.base.options.target.cpu.arch;
+    const this_platform = Platform.fromTarget(self.base.options.target);
+
+    if (this_cpu_arch != detected_cpu_arch or
+        (detected_platform != null and !detected_platform.?.eqlTarget(this_platform)))
+    {
+        const platform = detected_platform orelse this_platform;
+        try ctx.detected_targets.append(try platform.allocPrintTarget(ctx.arena(), detected_cpu_arch));
+        return error.InvalidTarget;
+    }
+
+    try self.addDylib(dylib, dylib_options, ctx);
+}
+
+fn parseLibStub(
+    self: *MachO,
+    file: std.fs.File,
+    path: []const u8,
+    dependent_libs: anytype,
+    dylib_options: DylibOpts,
+    ctx: *ParseErrorCtx,
+) ParseError!void {
+    const gpa = self.base.allocator;
+    var lib_stub = try LibStub.loadFromFile(gpa, file);
+    defer lib_stub.deinit();
+
+    if (lib_stub.inner.len == 0) return error.NotLibStub;
+
+    // Verify target
+    {
+        var matcher = try Dylib.TargetMatcher.init(gpa, self.base.options.target);
+        defer matcher.deinit();
+
+        const first_tbd = lib_stub.inner[0];
+        const targets = try first_tbd.targets(gpa);
+        defer {
+            for (targets) |t| gpa.free(t);
+            gpa.free(targets);
+        }
+        if (!matcher.matchesTarget(targets)) {
+            try ctx.detected_targets.ensureUnusedCapacity(targets.len);
+            for (targets) |t| {
+                ctx.detected_targets.appendAssumeCapacity(try ctx.arena().dupe(u8, t));
+            }
+            return error.InvalidTarget;
+        }
+    }
+
+    var dylib = Dylib{ .path = try gpa.dupe(u8, path), .weak = dylib_options.weak };
+    errdefer dylib.deinit(gpa);
+
+    try dylib.parseFromStub(
+        gpa,
+        self.base.options.target,
+        lib_stub,
+        @intCast(self.dylibs.items.len), // TODO defer it till later
+        dependent_libs,
+        path,
+    );
+
+    try self.addDylib(dylib, dylib_options, ctx);
+}
+
+fn addDylib(self: *MachO, dylib: Dylib, dylib_options: DylibOpts, ctx: *ParseErrorCtx) ParseError!void {
+    if (dylib_options.reexport_info) |reexport_info| {
+        if (dylib.id.?.current_version < reexport_info.id.compatibility_version) {
+            ctx.detected_dylib_id = .{
+                .parent = reexport_info.parent,
+                .required_version = reexport_info.id.compatibility_version,
+                .found_version = dylib.id.?.current_version,
+            };
+            return error.IncompatibleDylibVersion;
+        }
+    }
+
+    const gpa = self.base.allocator;
+    const gop = try self.dylibs_map.getOrPut(gpa, dylib.id.?.name);
+    if (gop.found_existing) return error.DylibAlreadyExists;
+
+    gop.value_ptr.* = @as(u16, @intCast(self.dylibs.items.len));
+    try self.dylibs.append(gpa, dylib);
+
+    const should_link_dylib_even_if_unreachable = blk: {
+        if (self.base.options.dead_strip_dylibs and !dylib_options.needed) break :blk false;
+        break :blk !(dylib_options.dependent or self.referenced_dylibs.contains(gop.value_ptr.*));
+    };
+
+    if (should_link_dylib_even_if_unreachable) {
+        try self.referenced_dylibs.putNoClobber(gpa, gop.value_ptr.*, {});
+    }
+}
+
+pub fn parseDependentLibs(self: *MachO, dependent_libs: anytype) !void {
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    // At this point, we can now parse dependents of dylibs preserving the inclusion order of:
+    // 1) anything on the linker line is parsed first
+    // 2) afterwards, we parse dependents of the included dylibs
+    // TODO this should not be performed if the user specifies `-flat_namespace` flag.
+    // See ld64 manpages.
+    const gpa = self.base.allocator;
+
+    while (dependent_libs.readItem()) |dep_id| {
+        defer dep_id.id.deinit(gpa);
+
+        if (self.dylibs_map.contains(dep_id.id.name)) continue;
+
+        const parent = &self.dylibs.items[dep_id.parent];
+        const weak = parent.weak;
+        const dirname = fs.path.dirname(dep_id.id.name) orelse "";
+        const stem = fs.path.stem(dep_id.id.name);
+
+        var arena_allocator = std.heap.ArenaAllocator.init(gpa);
+        defer arena_allocator.deinit();
+        const arena = arena_allocator.allocator();
+
+        var test_path = std.ArrayList(u8).init(arena);
+        var checked_paths = std.ArrayList([]const u8).init(arena);
+
+        success: {
+            if (self.base.options.sysroot) |root| {
+                const dir = try fs.path.join(arena, &[_][]const u8{ root, dirname });
+                if (try accessLibPath(gpa, &test_path, &checked_paths, dir, stem)) break :success;
+            }
+
+            if (try accessLibPath(gpa, &test_path, &checked_paths, dirname, stem)) break :success;
+
+            try self.reportMissingLibraryError(
+                checked_paths.items,
+                "missing dynamic library dependency: '{s}'",
+                .{dep_id.id.name},
+            );
+            continue;
+        }
+
+        const full_path = test_path.items;
+        const file = try std.fs.cwd().openFile(full_path, .{});
+        defer file.close();
+
+        log.debug("parsing dependency {s} at fully resolved path {s}", .{ dep_id.id.name, full_path });
+
+        var parse_ctx = ParseErrorCtx.init(gpa);
+        defer parse_ctx.deinit();
+
+        self.parseLibrary(file, full_path, .{
+            .path = null,
+            .needed = false,
+            .weak = weak,
+        }, false, true, dep_id, dependent_libs, &parse_ctx) catch |err|
+            try self.handleAndReportParseError(full_path, err, &parse_ctx);
+
+        // TODO I think that it would be nice to rewrite this error to include metadata for failed dependency
+        // in addition to parsing error
+    }
+}
+
+pub fn writeAtom(self: *MachO, atom_index: Atom.Index, code: []u8) !void {
+    const atom = self.getAtom(atom_index);
+    const sym = atom.getSymbol(self);
+    const section = self.sections.get(sym.n_sect - 1);
+    const file_offset = section.header.offset + sym.n_value - section.header.addr;
+    log.debug("writing atom for symbol {s} at file offset 0x{x}", .{ atom.getName(self), file_offset });
+
+    // Gather relocs which can be resolved.
+    var relocs = std.ArrayList(*Relocation).init(self.base.allocator);
+    defer relocs.deinit();
+
+    if (self.relocs.getPtr(atom_index)) |rels| {
+        try relocs.ensureTotalCapacityPrecise(rels.items.len);
+        for (rels.items) |*reloc| {
+            if (reloc.isResolvable(self) and reloc.dirty) {
+                relocs.appendAssumeCapacity(reloc);
+            }
+        }
+    }
+
+    Atom.resolveRelocations(self, atom_index, relocs.items, code);
+
+    if (is_hot_update_compatible) {
+        if (self.hot_state.mach_task) |task| {
+            self.writeToMemory(task, section.segment_index, sym.n_value, code) catch |err| {
+                log.warn("cannot hot swap: writing to memory failed: {s}", .{@errorName(err)});
+            };
+        }
+    }
+
+    try self.base.file.?.pwriteAll(code, file_offset);
+
+    // Now we can mark the relocs as resolved.
+    while (relocs.popOrNull()) |reloc| {
+        reloc.dirty = false;
+    }
+}
+
+fn writeToMemory(self: *MachO, task: std.os.darwin.MachTask, segment_index: u8, addr: u64, code: []const u8) !void {
+    const segment = self.segments.items[segment_index];
+    const cpu_arch = self.base.options.target.cpu.arch;
+    const nwritten = if (!segment.isWriteable())
+        try task.writeMemProtected(addr, code, cpu_arch)
+    else
+        try task.writeMem(addr, code, cpu_arch);
+    if (nwritten != code.len) return error.InputOutput;
+}
+
+fn writeOffsetTableEntry(self: *MachO, index: usize) !void {
+    const sect_id = self.got_section_index.?;
+
+    if (self.got_table_count_dirty) {
+        const needed_size = self.got_table.entries.items.len * @sizeOf(u64);
+        try self.growSection(sect_id, needed_size);
+        self.got_table_count_dirty = false;
+    }
+
+    const header = &self.sections.items(.header)[sect_id];
+    const segment_index = self.sections.items(.segment_index)[sect_id];
+    const entry = self.got_table.entries.items[index];
+    const entry_value = self.getSymbol(entry).n_value;
+    const entry_offset = index * @sizeOf(u64);
+    const file_offset = header.offset + entry_offset;
+    const vmaddr = header.addr + entry_offset;
+
+    log.debug("writing GOT entry {d}: @{x} => {x}", .{ index, vmaddr, entry_value });
+
+    var buf: [@sizeOf(u64)]u8 = undefined;
+    mem.writeInt(u64, &buf, entry_value, .little);
+    try self.base.file.?.pwriteAll(&buf, file_offset);
+
+    if (is_hot_update_compatible) {
+        if (self.hot_state.mach_task) |task| {
+            self.writeToMemory(task, segment_index, vmaddr, &buf) catch |err| {
+                log.warn("cannot hot swap: writing to memory failed: {s}", .{@errorName(err)});
+            };
+        }
+    }
+}
+
+fn writeStubHelperPreamble(self: *MachO) !void {
+    if (self.stub_helper_preamble_allocated) return;
+
+    const gpa = self.base.allocator;
+    const cpu_arch = self.base.options.target.cpu.arch;
+    const size = stubs.stubHelperPreambleSize(cpu_arch);
+
+    var buf = try std.ArrayList(u8).initCapacity(gpa, size);
+    defer buf.deinit();
+
+    const dyld_private_addr = self.getAtom(self.dyld_private_atom_index.?).getSymbol(self).n_value;
+    const dyld_stub_binder_got_addr = blk: {
+        const index = self.got_table.lookup.get(self.getGlobalByIndex(self.dyld_stub_binder_index.?)).?;
+        const header = self.sections.items(.header)[self.got_section_index.?];
+        break :blk header.addr + @sizeOf(u64) * index;
+    };
+    const header = self.sections.items(.header)[self.stub_helper_section_index.?];
+
+    try stubs.writeStubHelperPreambleCode(.{
+        .cpu_arch = cpu_arch,
+        .source_addr = header.addr,
+        .dyld_private_addr = dyld_private_addr,
+        .dyld_stub_binder_got_addr = dyld_stub_binder_got_addr,
+    }, buf.writer());
+    try self.base.file.?.pwriteAll(buf.items, header.offset);
+
+    self.stub_helper_preamble_allocated = true;
+}
+
+fn writeStubTableEntry(self: *MachO, index: usize) !void {
+    const stubs_sect_id = self.stubs_section_index.?;
+    const stub_helper_sect_id = self.stub_helper_section_index.?;
+    const laptr_sect_id = self.la_symbol_ptr_section_index.?;
+
+    const cpu_arch = self.base.options.target.cpu.arch;
+    const stub_entry_size = stubs.stubSize(cpu_arch);
+    const stub_helper_entry_size = stubs.stubHelperSize(cpu_arch);
+    const stub_helper_preamble_size = stubs.stubHelperPreambleSize(cpu_arch);
+
+    if (self.stub_table_count_dirty) {
+        // We grow all 3 sections one by one.
+        {
+            const needed_size = stub_entry_size * self.stub_table.entries.items.len;
+            try self.growSection(stubs_sect_id, needed_size);
+        }
+        {
+            const needed_size = stub_helper_preamble_size + stub_helper_entry_size * self.stub_table.entries.items.len;
+            try self.growSection(stub_helper_sect_id, needed_size);
+        }
+        {
+            const needed_size = @sizeOf(u64) * self.stub_table.entries.items.len;
+            try self.growSection(laptr_sect_id, needed_size);
+        }
+        self.stub_table_count_dirty = false;
+    }
+
+    const gpa = self.base.allocator;
+
+    const stubs_header = self.sections.items(.header)[stubs_sect_id];
+    const stub_helper_header = self.sections.items(.header)[stub_helper_sect_id];
+    const laptr_header = self.sections.items(.header)[laptr_sect_id];
+
+    const entry = self.stub_table.entries.items[index];
+    const stub_addr: u64 = stubs_header.addr + stub_entry_size * index;
+    const stub_helper_addr: u64 = stub_helper_header.addr + stub_helper_preamble_size + stub_helper_entry_size * index;
+    const laptr_addr: u64 = laptr_header.addr + @sizeOf(u64) * index;
+
+    log.debug("writing stub entry {d}: @{x} => '{s}'", .{ index, stub_addr, self.getSymbolName(entry) });
+
+    {
+        var buf = try std.ArrayList(u8).initCapacity(gpa, stub_entry_size);
+        defer buf.deinit();
+        try stubs.writeStubCode(.{
+            .cpu_arch = cpu_arch,
+            .source_addr = stub_addr,
+            .target_addr = laptr_addr,
+        }, buf.writer());
+        const off = stubs_header.offset + stub_entry_size * index;
+        try self.base.file.?.pwriteAll(buf.items, off);
+    }
+
+    {
+        var buf = try std.ArrayList(u8).initCapacity(gpa, stub_helper_entry_size);
+        defer buf.deinit();
+        try stubs.writeStubHelperCode(.{
+            .cpu_arch = cpu_arch,
+            .source_addr = stub_helper_addr,
+            .target_addr = stub_helper_header.addr,
+        }, buf.writer());
+        const off = stub_helper_header.offset + stub_helper_preamble_size + stub_helper_entry_size * index;
+        try self.base.file.?.pwriteAll(buf.items, off);
+    }
+
+    {
+        var buf: [@sizeOf(u64)]u8 = undefined;
+        mem.writeInt(u64, &buf, stub_helper_addr, .little);
+        const off = laptr_header.offset + @sizeOf(u64) * index;
+        try self.base.file.?.pwriteAll(&buf, off);
+    }
+
+    // TODO: generating new stub entry will require pulling the address of the symbol from the
+    // target dylib when updating directly in memory.
+    if (is_hot_update_compatible) {
+        if (self.hot_state.mach_task) |_| {
+            @panic("TODO: update a stub entry in memory");
+        }
+    }
+}
+
+fn markRelocsDirtyByTarget(self: *MachO, target: SymbolWithLoc) void {
+    log.debug("marking relocs dirty by target: {}", .{target});
+    // TODO: reverse-lookup might come in handy here
+    for (self.relocs.values()) |*relocs| {
+        for (relocs.items) |*reloc| {
+            if (!reloc.target.eql(target)) continue;
+            reloc.dirty = true;
+        }
+    }
+}
+
+fn markRelocsDirtyByAddress(self: *MachO, addr: u64) void {
+    log.debug("marking relocs dirty by address: {x}", .{addr});
+
+    const got_moved = blk: {
+        const sect_id = self.got_section_index orelse break :blk false;
+        break :blk self.sections.items(.header)[sect_id].addr > addr;
+    };
+    const stubs_moved = blk: {
+        const sect_id = self.stubs_section_index orelse break :blk false;
+        break :blk self.sections.items(.header)[sect_id].addr > addr;
+    };
+
+    for (self.relocs.values()) |*relocs| {
+        for (relocs.items) |*reloc| {
+            if (reloc.isGotIndirection()) {
+                reloc.dirty = reloc.dirty or got_moved;
+            } else if (reloc.isStubTrampoline(self)) {
+                reloc.dirty = reloc.dirty or stubs_moved;
+            } else {
+                const target_addr = reloc.getTargetBaseAddress(self) orelse continue;
+                if (target_addr > addr) reloc.dirty = true;
+            }
+        }
+    }
+
+    // TODO: dirty only really affected GOT cells
+    for (self.got_table.entries.items) |entry| {
+        const target_addr = self.getSymbol(entry).n_value;
+        if (target_addr > addr) {
+            self.got_table_contents_dirty = true;
+            break;
+        }
+    }
+
+    {
+        const stubs_addr = self.getSegment(self.stubs_section_index.?).vmaddr;
+        const stub_helper_addr = self.getSegment(self.stub_helper_section_index.?).vmaddr;
+        const laptr_addr = self.getSegment(self.la_symbol_ptr_section_index.?).vmaddr;
+        if (stubs_addr > addr or stub_helper_addr > addr or laptr_addr > addr)
+            self.stub_table_contents_dirty = true;
+    }
+}
+
+pub fn allocateSpecialSymbols(self: *MachO) !void {
+    for (&[_][]const u8{
+        "___dso_handle",
+        "__mh_execute_header",
+    }) |name| {
+        const global = self.getGlobal(name) orelse continue;
+        if (global.getFile() != null) continue;
+        const sym = self.getSymbolPtr(global);
+        const seg = self.getSegment(self.text_section_index.?);
+        sym.n_sect = self.text_section_index.? + 1;
+        sym.n_value = seg.vmaddr;
+
+        log.debug("allocating {s}(@0x{x},sect({d})) at the start of {s}", .{
+            name,
+            sym.n_value,
+            sym.n_sect,
+            seg.segName(),
+        });
+    }
+
+    for (self.globals.items) |global| {
+        const sym = self.getSymbolPtr(global);
+        if (sym.n_desc != N_BOUNDARY) continue;
+        if (self.getSectionBoundarySymbol(global)) |bsym| {
+            const sect_id = self.getSectionByName(bsym.segname, bsym.sectname) orelse {
+                try self.reportUnresolvedBoundarySymbol(self.getSymbolName(global), "section not found: {s},{s}", .{
+                    bsym.segname, bsym.sectname,
+                });
+                continue;
+            };
+            const sect = self.sections.items(.header)[sect_id];
+            sym.n_sect = sect_id + 1;
+            sym.n_value = switch (bsym.kind) {
+                .start => sect.addr,
+                .stop => sect.addr + sect.size,
+            };
+
+            log.debug("allocating {s} at @0x{x} sect({d})", .{
+                self.getSymbolName(global),
+                sym.n_value,
+                sym.n_sect,
+            });
+
+            continue;
+        }
+        if (self.getSegmentBoundarySymbol(global)) |bsym| {
+            const seg_id = self.getSegmentByName(bsym.segname) orelse {
+                try self.reportUnresolvedBoundarySymbol(self.getSymbolName(global), "segment not found: {s}", .{
+                    bsym.segname,
+                });
+
+                continue;
+            };
+            const seg = self.segments.items[seg_id];
+            sym.n_value = switch (bsym.kind) {
+                .start => seg.vmaddr,
+                .stop => seg.vmaddr + seg.vmsize,
+            };
+
+            log.debug("allocating {s} at @0x{x} ", .{ self.getSymbolName(global), sym.n_value });
+
+            continue;
+        }
+    }
+}
+
+const CreateAtomOpts = struct {
+    size: u64 = 0,
+    alignment: Alignment = .@"1",
+};
+
+pub fn createAtom(self: *MachO, sym_index: u32, opts: CreateAtomOpts) !Atom.Index {
+    const gpa = self.base.allocator;
+    const index = @as(Atom.Index, @intCast(self.atoms.items.len));
+    const atom = try self.atoms.addOne(gpa);
+    atom.* = .{};
+    atom.sym_index = sym_index;
+    atom.size = opts.size;
+    atom.alignment = opts.alignment;
+    log.debug("creating ATOM(%{d}) at index {d}", .{ sym_index, index });
+    return index;
+}
+
+pub fn createTentativeDefAtoms(self: *MachO) !void {
+    const gpa = self.base.allocator;
+
+    for (self.globals.items) |global| {
+        const sym = self.getSymbolPtr(global);
+        if (!sym.tentative()) continue;
+        if (sym.n_desc == N_DEAD) continue;
+        if (sym.n_desc == N_BOUNDARY) continue;
+
+        log.debug("creating tentative definition for ATOM(%{d}, '{s}') in object({?})", .{
+            global.sym_index, self.getSymbolName(global), global.file,
+        });
+
+        // Convert any tentative definition into a regular symbol and allocate
+        // text blocks for each tentative definition.
+        const size = sym.n_value;
+        const alignment = (sym.n_desc >> 8) & 0x0f;
+
+        if (self.bss_section_index == null) {
+            self.bss_section_index = try self.initSection("__DATA", "__bss", .{
+                .flags = macho.S_ZEROFILL,
+            });
+        }
+
+        sym.* = .{
+            .n_strx = sym.n_strx,
+            .n_type = macho.N_SECT | macho.N_EXT,
+            .n_sect = self.bss_section_index.? + 1,
+            .n_desc = 0,
+            .n_value = 0,
+        };
+
+        const atom_index = try self.createAtom(global.sym_index, .{
+            .size = size,
+            .alignment = @enumFromInt(alignment),
+        });
+        const atom = self.getAtomPtr(atom_index);
+        atom.file = global.file;
+
+        self.addAtomToSection(atom_index);
+
+        assert(global.getFile() != null);
+        const object = &self.objects.items[global.getFile().?];
+        try object.atoms.append(gpa, atom_index);
+        object.atom_by_index_table[global.sym_index] = atom_index;
+    }
+}
+
+pub fn createDyldPrivateAtom(self: *MachO) !void {
+    if (self.dyld_private_atom_index != null) return;
+
+    const sym_index = try self.allocateSymbol();
+    const atom_index = try self.createAtom(sym_index, .{
+        .size = @sizeOf(u64),
+        .alignment = .@"8",
+    });
+    try self.atom_by_index_table.putNoClobber(self.base.allocator, sym_index, atom_index);
+
+    if (self.data_section_index == null) {
+        self.data_section_index = try self.initSection("__DATA", "__data", .{});
+    }
+
+    const atom = self.getAtom(atom_index);
+    const sym = atom.getSymbolPtr(self);
+    sym.n_type = macho.N_SECT;
+    sym.n_sect = self.data_section_index.? + 1;
+    self.dyld_private_atom_index = atom_index;
+
+    switch (self.mode) {
+        .zld => self.addAtomToSection(atom_index),
+        .incremental => {
+            sym.n_value = try self.allocateAtom(atom_index, atom.size, .@"8");
+            log.debug("allocated dyld_private atom at 0x{x}", .{sym.n_value});
+            var buffer: [@sizeOf(u64)]u8 = [_]u8{0} ** @sizeOf(u64);
+            try self.writeAtom(atom_index, &buffer);
+        },
+    }
+}
+
+fn createThreadLocalDescriptorAtom(self: *MachO, sym_name: []const u8, target: SymbolWithLoc) !Atom.Index {
+    const gpa = self.base.allocator;
+    const size = 3 * @sizeOf(u64);
+    const required_alignment: Alignment = .@"1";
+    const sym_index = try self.allocateSymbol();
+    const atom_index = try self.createAtom(sym_index, .{});
+    try self.atom_by_index_table.putNoClobber(gpa, sym_index, atom_index);
+    self.getAtomPtr(atom_index).size = size;
+
+    const sym = self.getAtom(atom_index).getSymbolPtr(self);
+    sym.n_type = macho.N_SECT;
+    sym.n_sect = self.thread_vars_section_index.? + 1;
+    sym.n_strx = try self.strtab.insert(gpa, sym_name);
+    sym.n_value = try self.allocateAtom(atom_index, size, required_alignment);
+
+    log.debug("allocated threadlocal descriptor atom '{s}' at 0x{x}", .{ sym_name, sym.n_value });
+
+    try Atom.addRelocation(self, atom_index, .{
+        .type = .tlv_initializer,
+        .target = target,
+        .offset = 0x10,
+        .addend = 0,
+        .pcrel = false,
+        .length = 3,
+    });
+
+    var code: [size]u8 = undefined;
+    @memset(&code, 0);
+    try self.writeAtom(atom_index, &code);
+
+    return atom_index;
+}
+
+pub fn createMhExecuteHeaderSymbol(self: *MachO) !void {
+    if (self.base.options.output_mode != .Exe) return;
+
+    const gpa = self.base.allocator;
+    const sym_index = try self.allocateSymbol();
+    const sym_loc = SymbolWithLoc{ .sym_index = sym_index };
+    const sym = self.getSymbolPtr(sym_loc);
+    sym.* = .{
+        .n_strx = try self.strtab.insert(gpa, "__mh_execute_header"),
+        .n_type = macho.N_SECT | macho.N_EXT,
+        .n_sect = 0,
+        .n_desc = macho.REFERENCED_DYNAMICALLY,
+        .n_value = 0,
+    };
+
+    const gop = try self.getOrPutGlobalPtr("__mh_execute_header");
+    if (gop.found_existing) {
+        const global = gop.value_ptr.*;
+        if (global.getFile()) |file| {
+            const global_object = &self.objects.items[file];
+            global_object.globals_lookup[global.sym_index] = self.getGlobalIndex("__mh_execute_header").?;
+        }
+    }
+    gop.value_ptr.* = sym_loc;
+}
+
+pub fn createDsoHandleSymbol(self: *MachO) !void {
+    const global = self.getGlobalPtr("___dso_handle") orelse return;
+    if (!self.getSymbol(global.*).undf()) return;
+
+    const gpa = self.base.allocator;
+    const sym_index = try self.allocateSymbol();
+    const sym_loc = SymbolWithLoc{ .sym_index = sym_index };
+    const sym = self.getSymbolPtr(sym_loc);
+    sym.* = .{
+        .n_strx = try self.strtab.insert(gpa, "___dso_handle"),
+        .n_type = macho.N_SECT | macho.N_EXT,
+        .n_sect = 0,
+        .n_desc = macho.N_WEAK_DEF,
+        .n_value = 0,
+    };
+    const global_index = self.getGlobalIndex("___dso_handle").?;
+    if (global.getFile()) |file| {
+        const global_object = &self.objects.items[file];
+        global_object.globals_lookup[global.sym_index] = global_index;
+    }
+    global.* = sym_loc;
+    _ = self.unresolved.swapRemove(self.getGlobalIndex("___dso_handle").?);
+}
+
+pub fn resolveSymbols(self: *MachO) !void {
+    // We add the specified entrypoint as the first unresolved symbols so that
+    // we search for it in libraries should there be no object files specified
+    // on the linker line.
+    if (self.base.options.output_mode == .Exe) {
+        const entry_name = self.base.options.entry orelse load_commands.default_entry_point;
+        _ = try self.addUndefined(entry_name, .{});
+    }
+
+    // Force resolution of any symbols requested by the user.
+    for (self.base.options.force_undefined_symbols.keys()) |sym_name| {
+        _ = try self.addUndefined(sym_name, .{});
+    }
+
+    for (self.objects.items, 0..) |_, object_id| {
+        try self.resolveSymbolsInObject(@as(u32, @intCast(object_id)));
+    }
+
+    try self.resolveSymbolsInArchives();
+
+    // Finally, force resolution of dyld_stub_binder if there are imports
+    // requested.
+    if (self.unresolved.count() > 0 and self.dyld_stub_binder_index == null) {
+        self.dyld_stub_binder_index = try self.addUndefined("dyld_stub_binder", .{ .add_got = true });
+    }
+    if (!self.base.options.single_threaded and self.mode == .incremental) {
+        _ = try self.addUndefined("__tlv_bootstrap", .{});
+    }
+
+    try self.resolveSymbolsInDylibs();
+
+    try self.createMhExecuteHeaderSymbol();
+    try self.createDsoHandleSymbol();
+    try self.resolveSymbolsAtLoading();
+
+    // Final stop, check if unresolved contain any of the special magic boundary symbols
+    // * section$start$
+    // * section$stop$
+    // * segment$start$
+    // * segment$stop$
+    try self.resolveBoundarySymbols();
+}
+
+fn resolveGlobalSymbol(self: *MachO, current: SymbolWithLoc) !void {
+    const gpa = self.base.allocator;
+    const sym = self.getSymbol(current);
+    const sym_name = self.getSymbolName(current);
+
+    const gop = try self.getOrPutGlobalPtr(sym_name);
+    if (!gop.found_existing) {
+        gop.value_ptr.* = current;
+        if (sym.undf() and !sym.tentative()) {
+            try self.unresolved.putNoClobber(gpa, self.getGlobalIndex(sym_name).?, {});
+        }
+        return;
+    }
+    const global_index = self.getGlobalIndex(sym_name).?;
+    const global = gop.value_ptr.*;
+    const global_sym = self.getSymbol(global);
+
+    // Cases to consider: sym vs global_sym
+    // 1.  strong(sym) and strong(global_sym) => error
+    // 2.  strong(sym) and weak(global_sym) => sym
+    // 3.  strong(sym) and tentative(global_sym) => sym
+    // 4.  strong(sym) and undf(global_sym) => sym
+    // 5.  weak(sym) and strong(global_sym) => global_sym
+    // 6.  weak(sym) and tentative(global_sym) => sym
+    // 7.  weak(sym) and undf(global_sym) => sym
+    // 8.  tentative(sym) and strong(global_sym) => global_sym
+    // 9.  tentative(sym) and weak(global_sym) => global_sym
+    // 10. tentative(sym) and tentative(global_sym) => pick larger
+    // 11. tentative(sym) and undf(global_sym) => sym
+    // 12. undf(sym) and * => global_sym
+    //
+    // Reduces to:
+    // 1. strong(sym) and strong(global_sym) => error
+    // 2. * and strong(global_sym) => global_sym
+    // 3. weak(sym) and weak(global_sym) => global_sym
+    // 4. tentative(sym) and tentative(global_sym) => pick larger
+    // 5. undf(sym) and * => global_sym
+    // 6. else => sym
+
+    const sym_is_strong = sym.sect() and !(sym.weakDef() or sym.pext());
+    const global_is_strong = global_sym.sect() and !(global_sym.weakDef() or global_sym.pext());
+    const sym_is_weak = sym.sect() and (sym.weakDef() or sym.pext());
+    const global_is_weak = global_sym.sect() and (global_sym.weakDef() or global_sym.pext());
+
+    if (sym_is_strong and global_is_strong) {
+        // TODO redo this logic with corresponding logic in updateExports to avoid this
+        // ugly check.
+        if (self.mode == .zld) {
+            try self.reportSymbolCollision(global, current);
+        }
+        return error.MultipleSymbolDefinitions;
+    }
+
+    if (current.getFile()) |file| {
+        const object = &self.objects.items[file];
+        object.globals_lookup[current.sym_index] = global_index;
+    }
+
+    if (global_is_strong) return;
+    if (sym_is_weak and global_is_weak) return;
+    if (sym.tentative() and global_sym.tentative()) {
+        if (global_sym.n_value >= sym.n_value) return;
+    }
+    if (sym.undf() and !sym.tentative()) return;
+
+    if (global.getFile()) |file| {
+        const global_object = &self.objects.items[file];
+        global_object.globals_lookup[global.sym_index] = global_index;
+    }
+    _ = self.unresolved.swapRemove(global_index);
+
+    gop.value_ptr.* = current;
+}
+
+fn resolveSymbolsInObject(self: *MachO, object_id: u32) !void {
+    const object = &self.objects.items[object_id];
+    const in_symtab = object.in_symtab orelse return;
+
+    log.debug("resolving symbols in '{s}'", .{object.name});
+
+    var sym_index: u32 = 0;
+    while (sym_index < in_symtab.len) : (sym_index += 1) {
+        const sym = &object.symtab[sym_index];
+        const sym_name = object.getSymbolName(sym_index);
+        const sym_with_loc = SymbolWithLoc{
+            .sym_index = sym_index,
+            .file = object_id + 1,
+        };
+
+        if (sym.stab() or sym.indr() or sym.abs()) {
+            try self.reportUnhandledSymbolType(sym_with_loc);
+            continue;
+        }
+
+        if (sym.sect() and !sym.ext()) {
+            log.debug("symbol '{s}' local to object {s}; skipping...", .{
+                sym_name,
+                object.name,
+            });
+            continue;
+        }
+
+        self.resolveGlobalSymbol(.{
+            .sym_index = sym_index,
+            .file = object_id + 1,
+        }) catch |err| switch (err) {
+            error.MultipleSymbolDefinitions => return error.FlushFailure,
+            else => |e| return e,
+        };
+    }
+}
+
+fn resolveSymbolsInArchives(self: *MachO) !void {
+    if (self.archives.items.len == 0) return;
+
+    const gpa = self.base.allocator;
+    var next_sym: usize = 0;
+    loop: while (next_sym < self.unresolved.count()) {
+        const global = self.globals.items[self.unresolved.keys()[next_sym]];
+        const sym_name = self.getSymbolName(global);
+
+        for (self.archives.items) |archive| {
+            // Check if the entry exists in a static archive.
+            const offsets = archive.toc.get(sym_name) orelse {
+                // No hit.
+                continue;
+            };
+            assert(offsets.items.len > 0);
+
+            const object_id = @as(u16, @intCast(self.objects.items.len));
+            const object = try archive.parseObject(gpa, offsets.items[0]);
+            try self.objects.append(gpa, object);
+            try self.resolveSymbolsInObject(object_id);
+
+            continue :loop;
+        }
+
+        next_sym += 1;
+    }
+}
+
+fn resolveSymbolsInDylibs(self: *MachO) !void {
+    if (self.dylibs.items.len == 0) return;
+
+    const gpa = self.base.allocator;
+    var next_sym: usize = 0;
+    loop: while (next_sym < self.unresolved.count()) {
+        const global_index = self.unresolved.keys()[next_sym];
+        const global = self.globals.items[global_index];
+        const sym = self.getSymbolPtr(global);
+        const sym_name = self.getSymbolName(global);
+
+        for (self.dylibs.items, 0..) |dylib, id| {
+            if (!dylib.symbols.contains(sym_name)) continue;
+
+            const dylib_id = @as(u16, @intCast(id));
+            if (!self.referenced_dylibs.contains(dylib_id)) {
+                try self.referenced_dylibs.putNoClobber(gpa, dylib_id, {});
+            }
+
+            const ordinal = self.referenced_dylibs.getIndex(dylib_id) orelse unreachable;
+            sym.n_type |= macho.N_EXT;
+            sym.n_desc = @as(u16, @intCast(ordinal + 1)) * macho.N_SYMBOL_RESOLVER;
+
+            if (dylib.weak) {
+                sym.n_desc |= macho.N_WEAK_REF;
+            }
+
+            _ = self.unresolved.swapRemove(global_index);
+
+            continue :loop;
+        }
+
+        next_sym += 1;
+    }
+}
+
+fn resolveSymbolsAtLoading(self: *MachO) !void {
+    const is_lib = self.base.options.output_mode == .Lib;
+    const is_dyn_lib = self.base.options.link_mode == .Dynamic and is_lib;
+    const allow_undef = is_dyn_lib and (self.base.options.allow_shlib_undefined orelse false);
+
+    var next_sym: usize = 0;
+    while (next_sym < self.unresolved.count()) {
+        const global_index = self.unresolved.keys()[next_sym];
+        const global = self.globals.items[global_index];
+        const sym = self.getSymbolPtr(global);
+
+        if (sym.discarded()) {
+            sym.* = .{
+                .n_strx = 0,
+                .n_type = macho.N_UNDF,
+                .n_sect = 0,
+                .n_desc = 0,
+                .n_value = 0,
+            };
+            _ = self.unresolved.swapRemove(global_index);
+            continue;
+        } else if (allow_undef) {
+            const n_desc = @as(
+                u16,
+                @bitCast(macho.BIND_SPECIAL_DYLIB_FLAT_LOOKUP * @as(i16, @intCast(macho.N_SYMBOL_RESOLVER))),
+            );
+            sym.n_type = macho.N_EXT;
+            sym.n_desc = n_desc;
+            _ = self.unresolved.swapRemove(global_index);
+            continue;
+        }
+
+        next_sym += 1;
+    }
+}
+
+fn resolveBoundarySymbols(self: *MachO) !void {
+    var next_sym: usize = 0;
+    while (next_sym < self.unresolved.count()) {
+        const global_index = self.unresolved.keys()[next_sym];
+        const global = &self.globals.items[global_index];
+
+        if (self.getSectionBoundarySymbol(global.*) != null or self.getSegmentBoundarySymbol(global.*) != null) {
+            const sym_index = try self.allocateSymbol();
+            const sym_loc = SymbolWithLoc{ .sym_index = sym_index };
+            const sym = self.getSymbolPtr(sym_loc);
+            sym.* = .{
+                .n_strx = try self.strtab.insert(self.base.allocator, self.getSymbolName(global.*)),
+                .n_type = macho.N_SECT | macho.N_EXT,
+                .n_sect = 0,
+                .n_desc = N_BOUNDARY,
+                .n_value = 0,
+            };
+            if (global.getFile()) |file| {
+                const global_object = &self.objects.items[file];
+                global_object.globals_lookup[global.sym_index] = global_index;
+            }
+            global.* = sym_loc;
+            _ = self.unresolved.swapRemove(global_index);
+            continue;
+        }
+    }
 }
 
 pub fn deinit(self: *MachO) void {
-    if (self.d_sym) |*ds| {
-        ds.deinit(self.base.allocator);
+    const gpa = self.base.allocator;
+
+    if (self.llvm_object) |llvm_object| llvm_object.destroy(gpa);
+
+    if (self.d_sym) |*d_sym| {
+        d_sym.deinit();
     }
-    for (self.lazy_imports.items()) |*entry| {
-        self.base.allocator.free(entry.key);
+
+    self.got_table.deinit(gpa);
+    self.stub_table.deinit(gpa);
+    self.tlv_ptr_table.deinit(gpa);
+    self.thunk_table.deinit(gpa);
+
+    for (self.thunks.items) |*thunk| {
+        thunk.deinit(gpa);
     }
-    self.lazy_imports.deinit(self.base.allocator);
-    for (self.nonlazy_imports.items()) |*entry| {
-        self.base.allocator.free(entry.key);
-    }
-    self.nonlazy_imports.deinit(self.base.allocator);
-    self.pie_fixups.deinit(self.base.allocator);
-    self.stub_fixups.deinit(self.base.allocator);
-    self.text_block_free_list.deinit(self.base.allocator);
-    self.offset_table.deinit(self.base.allocator);
-    self.offset_table_free_list.deinit(self.base.allocator);
+    self.thunks.deinit(gpa);
+
+    self.strtab.deinit(gpa);
+    self.locals.deinit(gpa);
+    self.globals.deinit(gpa);
+    self.locals_free_list.deinit(gpa);
+    self.globals_free_list.deinit(gpa);
+    self.unresolved.deinit(gpa);
+
     {
-        var it = self.string_table_directory.iterator();
-        while (it.next()) |entry| {
-            self.base.allocator.free(entry.key);
+        var it = self.resolver.keyIterator();
+        while (it.next()) |key_ptr| {
+            gpa.free(key_ptr.*);
         }
+        self.resolver.deinit(gpa);
     }
-    self.string_table_directory.deinit(self.base.allocator);
-    self.string_table.deinit(self.base.allocator);
-    self.globals.deinit(self.base.allocator);
-    self.globals_free_list.deinit(self.base.allocator);
-    self.locals.deinit(self.base.allocator);
-    self.locals_free_list.deinit(self.base.allocator);
-    for (self.load_commands.items) |*lc| {
-        lc.deinit(self.base.allocator);
+
+    for (self.objects.items) |*object| {
+        object.deinit(gpa);
     }
-    self.load_commands.deinit(self.base.allocator);
+    self.objects.deinit(gpa);
+    for (self.archives.items) |*archive| {
+        archive.deinit(gpa);
+    }
+    self.archives.deinit(gpa);
+    for (self.dylibs.items) |*dylib| {
+        dylib.deinit(gpa);
+    }
+    self.dylibs.deinit(gpa);
+    self.dylibs_map.deinit(gpa);
+    self.referenced_dylibs.deinit(gpa);
+
+    self.segments.deinit(gpa);
+
+    for (self.sections.items(.free_list)) |*list| {
+        list.deinit(gpa);
+    }
+    self.sections.deinit(gpa);
+
+    self.atoms.deinit(gpa);
+
+    for (self.decls.values()) |*m| {
+        m.exports.deinit(gpa);
+    }
+    self.decls.deinit(gpa);
+
+    self.lazy_syms.deinit(gpa);
+    self.tlv_table.deinit(gpa);
+
+    for (self.unnamed_const_atoms.values()) |*atoms| {
+        atoms.deinit(gpa);
+    }
+    self.unnamed_const_atoms.deinit(gpa);
+
+    {
+        var it = self.anon_decls.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.exports.deinit(gpa);
+        }
+        self.anon_decls.deinit(gpa);
+    }
+
+    self.atom_by_index_table.deinit(gpa);
+
+    for (self.relocs.values()) |*relocs| {
+        relocs.deinit(gpa);
+    }
+    self.relocs.deinit(gpa);
+    self.actions.deinit(gpa);
+
+    for (self.rebases.values()) |*rebases| {
+        rebases.deinit(gpa);
+    }
+    self.rebases.deinit(gpa);
+
+    for (self.bindings.values()) |*bindings| {
+        bindings.deinit(gpa);
+    }
+    self.bindings.deinit(gpa);
+
+    for (self.misc_errors.items) |*err| {
+        err.deinit(gpa);
+    }
+    self.misc_errors.deinit(gpa);
 }
 
-fn freeTextBlock(self: *MachO, text_block: *TextBlock) void {
+fn freeAtom(self: *MachO, atom_index: Atom.Index) void {
+    const gpa = self.base.allocator;
+    log.debug("freeAtom {d}", .{atom_index});
+
+    // Remove any relocs and base relocs associated with this Atom
+    Atom.freeRelocations(self, atom_index);
+
+    const atom = self.getAtom(atom_index);
+    const sect_id = atom.getSymbol(self).n_sect - 1;
+    const free_list = &self.sections.items(.free_list)[sect_id];
     var already_have_free_list_node = false;
     {
         var i: usize = 0;
-        // TODO turn text_block_free_list into a hash map
-        while (i < self.text_block_free_list.items.len) {
-            if (self.text_block_free_list.items[i] == text_block) {
-                _ = self.text_block_free_list.swapRemove(i);
+        // TODO turn free_list into a hash map
+        while (i < free_list.items.len) {
+            if (free_list.items[i] == atom_index) {
+                _ = free_list.swapRemove(i);
                 continue;
             }
-            if (self.text_block_free_list.items[i] == text_block.prev) {
+            if (free_list.items[i] == atom.prev_index) {
                 already_have_free_list_node = true;
             }
             i += 1;
         }
     }
-    // TODO process free list for dbg info just like we do above for vaddrs
 
-    if (self.last_text_block == text_block) {
-        // TODO shrink the __text section size here
-        self.last_text_block = text_block.prev;
+    const maybe_last_atom_index = &self.sections.items(.last_atom_index)[sect_id];
+    if (maybe_last_atom_index.*) |last_atom_index| {
+        if (last_atom_index == atom_index) {
+            if (atom.prev_index) |prev_index| {
+                // TODO shrink the section size here
+                maybe_last_atom_index.* = prev_index;
+            } else {
+                maybe_last_atom_index.* = null;
+            }
+        }
     }
 
-    if (text_block.prev) |prev| {
-        prev.next = text_block.next;
+    if (atom.prev_index) |prev_index| {
+        const prev = self.getAtomPtr(prev_index);
+        prev.next_index = atom.next_index;
 
-        if (!already_have_free_list_node and prev.freeListEligible(self.*)) {
+        if (!already_have_free_list_node and prev.*.freeListEligible(self)) {
             // The free list is heuristics, it doesn't have to be perfect, so we can ignore
             // the OOM here.
-            self.text_block_free_list.append(self.base.allocator, prev) catch {};
+            free_list.append(gpa, prev_index) catch {};
         }
     } else {
-        text_block.prev = null;
+        self.getAtomPtr(atom_index).prev_index = null;
     }
 
-    if (text_block.next) |next| {
-        next.prev = text_block.prev;
+    if (atom.next_index) |next_index| {
+        self.getAtomPtr(next_index).prev_index = atom.prev_index;
     } else {
-        text_block.next = null;
+        self.getAtomPtr(atom_index).next_index = null;
     }
+
+    // Appending to free lists is allowed to fail because the free lists are heuristics based anyway.
+    const sym_index = atom.getSymbolIndex().?;
+
+    self.locals_free_list.append(gpa, sym_index) catch {};
+
+    // Try freeing GOT atom if this decl had one
+    self.got_table.freeEntry(gpa, .{ .sym_index = sym_index });
+
+    if (self.d_sym) |*d_sym| {
+        d_sym.swapRemoveRelocs(sym_index);
+    }
+
+    self.locals.items[sym_index].n_type = 0;
+    _ = self.atom_by_index_table.remove(sym_index);
+    log.debug("  adding local symbol index {d} to free list", .{sym_index});
+    self.getAtomPtr(atom_index).sym_index = 0;
 }
 
-fn shrinkTextBlock(self: *MachO, text_block: *TextBlock, new_block_size: u64) void {
+fn shrinkAtom(self: *MachO, atom_index: Atom.Index, new_block_size: u64) void {
+    _ = self;
+    _ = atom_index;
+    _ = new_block_size;
     // TODO check the new capacity, and if it crosses the size threshold into a big enough
     // capacity, insert a free list node for it.
 }
 
-fn growTextBlock(self: *MachO, text_block: *TextBlock, new_block_size: u64, alignment: u64) !u64 {
-    const sym = self.locals.items[text_block.local_sym_index];
-    const align_ok = mem.alignBackwardGeneric(u64, sym.n_value, alignment) == sym.n_value;
-    const need_realloc = !align_ok or new_block_size > text_block.capacity(self.*);
+fn growAtom(self: *MachO, atom_index: Atom.Index, new_atom_size: u64, alignment: Alignment) !u64 {
+    const atom = self.getAtom(atom_index);
+    const sym = atom.getSymbol(self);
+    const align_ok = alignment.check(sym.n_value);
+    const need_realloc = !align_ok or new_atom_size > atom.capacity(self);
     if (!need_realloc) return sym.n_value;
-    return self.allocateTextBlock(text_block, new_block_size, alignment);
+    return self.allocateAtom(atom_index, new_atom_size, alignment);
 }
 
-pub fn allocateDeclIndexes(self: *MachO, decl: *Module.Decl) !void {
-    if (decl.link.macho.local_sym_index != 0) return;
+pub fn allocateSymbol(self: *MachO) !u32 {
+    try self.locals.ensureUnusedCapacity(self.base.allocator, 1);
 
-    try self.locals.ensureCapacity(self.base.allocator, self.locals.items.len + 1);
-    try self.offset_table.ensureCapacity(self.base.allocator, self.offset_table.items.len + 1);
+    const index = blk: {
+        if (self.locals_free_list.popOrNull()) |index| {
+            log.debug("  (reusing symbol index {d})", .{index});
+            break :blk index;
+        } else {
+            log.debug("  (allocating symbol index {d})", .{self.locals.items.len});
+            const index = @as(u32, @intCast(self.locals.items.len));
+            _ = self.locals.addOneAssumeCapacity();
+            break :blk index;
+        }
+    };
 
-    if (self.locals_free_list.popOrNull()) |i| {
-        log.debug("reusing symbol index {d} for {s}", .{ i, decl.name });
-        decl.link.macho.local_sym_index = i;
-    } else {
-        log.debug("allocating symbol index {d} for {s}", .{ self.locals.items.len, decl.name });
-        decl.link.macho.local_sym_index = @intCast(u32, self.locals.items.len);
-        _ = self.locals.addOneAssumeCapacity();
-    }
-
-    if (self.offset_table_free_list.popOrNull()) |i| {
-        log.debug("reusing offset table entry index {d} for {s}", .{ i, decl.name });
-        decl.link.macho.offset_table_index = i;
-    } else {
-        log.debug("allocating offset table entry index {d} for {s}", .{ self.offset_table.items.len, decl.name });
-        decl.link.macho.offset_table_index = @intCast(u32, self.offset_table.items.len);
-        _ = self.offset_table.addOneAssumeCapacity();
-        self.offset_table_count_dirty = true;
-        self.rebase_info_dirty = true;
-    }
-
-    self.locals.items[decl.link.macho.local_sym_index] = .{
+    self.locals.items[index] = .{
         .n_strx = 0,
         .n_type = 0,
         .n_sect = 0,
         .n_desc = 0,
         .n_value = 0,
     };
-    self.offset_table.items[decl.link.macho.offset_table_index] = .{
-        .kind = .Local,
-        .symbol = decl.link.macho.local_sym_index,
-        .index = decl.link.macho.offset_table_index,
-    };
+
+    return index;
 }
 
-pub fn updateDecl(self: *MachO, module: *Module, decl: *Module.Decl) !void {
+fn allocateGlobal(self: *MachO) !u32 {
+    try self.globals.ensureUnusedCapacity(self.base.allocator, 1);
+
+    const index = blk: {
+        if (self.globals_free_list.popOrNull()) |index| {
+            log.debug("  (reusing global index {d})", .{index});
+            break :blk index;
+        } else {
+            log.debug("  (allocating symbol index {d})", .{self.globals.items.len});
+            const index = @as(u32, @intCast(self.globals.items.len));
+            _ = self.globals.addOneAssumeCapacity();
+            break :blk index;
+        }
+    };
+
+    self.globals.items[index] = .{ .sym_index = 0 };
+
+    return index;
+}
+
+pub fn addGotEntry(self: *MachO, target: SymbolWithLoc) !void {
+    if (self.got_table.lookup.contains(target)) return;
+    const got_index = try self.got_table.allocateEntry(self.base.allocator, target);
+    if (self.got_section_index == null) {
+        self.got_section_index = try self.initSection("__DATA_CONST", "__got", .{
+            .flags = macho.S_NON_LAZY_SYMBOL_POINTERS,
+        });
+    }
+    if (self.mode == .incremental) {
+        try self.writeOffsetTableEntry(got_index);
+        self.got_table_count_dirty = true;
+        self.markRelocsDirtyByTarget(target);
+    }
+}
+
+pub fn addStubEntry(self: *MachO, target: SymbolWithLoc) !void {
+    if (self.stub_table.lookup.contains(target)) return;
+    const stub_index = try self.stub_table.allocateEntry(self.base.allocator, target);
+    if (self.stubs_section_index == null) {
+        self.stubs_section_index = try self.initSection("__TEXT", "__stubs", .{
+            .flags = macho.S_SYMBOL_STUBS |
+                macho.S_ATTR_PURE_INSTRUCTIONS |
+                macho.S_ATTR_SOME_INSTRUCTIONS,
+            .reserved2 = stubs.stubSize(self.base.options.target.cpu.arch),
+        });
+        self.stub_helper_section_index = try self.initSection("__TEXT", "__stub_helper", .{
+            .flags = macho.S_REGULAR |
+                macho.S_ATTR_PURE_INSTRUCTIONS |
+                macho.S_ATTR_SOME_INSTRUCTIONS,
+        });
+        self.la_symbol_ptr_section_index = try self.initSection("__DATA", "__la_symbol_ptr", .{
+            .flags = macho.S_LAZY_SYMBOL_POINTERS,
+        });
+    }
+    if (self.mode == .incremental) {
+        try self.writeStubTableEntry(stub_index);
+        self.stub_table_count_dirty = true;
+        self.markRelocsDirtyByTarget(target);
+    }
+}
+
+pub fn addTlvPtrEntry(self: *MachO, target: SymbolWithLoc) !void {
+    if (self.tlv_ptr_table.lookup.contains(target)) return;
+    _ = try self.tlv_ptr_table.allocateEntry(self.base.allocator, target);
+    if (self.tlv_ptr_section_index == null) {
+        self.tlv_ptr_section_index = try self.initSection("__DATA", "__thread_ptrs", .{
+            .flags = macho.S_THREAD_LOCAL_VARIABLE_POINTERS,
+        });
+    }
+}
+
+pub fn updateFunc(self: *MachO, mod: *Module, func_index: InternPool.Index, air: Air, liveness: Liveness) !void {
+    if (build_options.skip_non_native and builtin.object_format != .macho) {
+        @panic("Attempted to compile for object format that was disabled by build configuration");
+    }
+    if (self.llvm_object) |llvm_object| return llvm_object.updateFunc(mod, func_index, air, liveness);
     const tracy = trace(@src());
     defer tracy.end();
 
-    const typed_value = decl.typed_value.most_recent.typed_value;
-    if (typed_value.val.tag() == .extern_fn) {
-        return; // TODO Should we do more when front-end analyzed extern decl?
-    }
+    const func = mod.funcInfo(func_index);
+    const decl_index = func.owner_decl;
+    const decl = mod.declPtr(decl_index);
+
+    const atom_index = try self.getOrCreateAtomForDecl(decl_index);
+    self.freeUnnamedConsts(decl_index);
+    Atom.freeRelocations(self, atom_index);
 
     var code_buffer = std.ArrayList(u8).init(self.base.allocator);
     defer code_buffer.deinit();
 
-    var debug_buffers = if (self.d_sym) |*ds| try ds.initDeclDebugBuffers(self.base.allocator, module, decl) else null;
-    defer {
-        if (debug_buffers) |*dbg| {
-            dbg.dbg_line_buffer.deinit();
-            dbg.dbg_info_buffer.deinit();
-            var it = dbg.dbg_info_type_relocs.iterator();
-            while (it.next()) |entry| {
-                entry.value.relocs.deinit(self.base.allocator);
-            }
-            dbg.dbg_info_type_relocs.deinit(self.base.allocator);
-        }
-    }
+    var decl_state = if (self.d_sym) |*d_sym|
+        try d_sym.dwarf.initDeclState(mod, decl_index)
+    else
+        null;
+    defer if (decl_state) |*ds| ds.deinit();
 
-    const res = if (debug_buffers) |*dbg|
-        try codegen.generateSymbol(&self.base, decl.srcLoc(), typed_value, &code_buffer, .{
-            .dwarf = .{
-                .dbg_line = &dbg.dbg_line_buffer,
-                .dbg_info = &dbg.dbg_info_buffer,
-                .dbg_info_type_relocs = &dbg.dbg_info_type_relocs,
-            },
+    const res = if (decl_state) |*ds|
+        try codegen.generateFunction(&self.base, decl.srcLoc(mod), func_index, air, liveness, &code_buffer, .{
+            .dwarf = ds,
         })
     else
-        try codegen.generateSymbol(&self.base, decl.srcLoc(), typed_value, &code_buffer, .none);
+        try codegen.generateFunction(&self.base, decl.srcLoc(mod), func_index, air, liveness, &code_buffer, .none);
 
-    const code = switch (res) {
-        .externally_managed => |x| x,
-        .appended => code_buffer.items,
+    var code = switch (res) {
+        .ok => code_buffer.items,
         .fail => |em| {
-            // Clear any PIE fixups for this decl.
-            self.pie_fixups.shrinkRetainingCapacity(0);
-            // Clear any stub fixups for this decl.
-            self.stub_fixups.shrinkRetainingCapacity(0);
             decl.analysis = .codegen_failure;
-            try module.failed_decls.put(module.gpa, decl, em);
+            try mod.failed_decls.put(mod.gpa, decl_index, em);
             return;
         },
     };
 
-    const required_alignment = typed_value.ty.abiAlignment(self.base.options.target);
-    assert(decl.link.macho.local_sym_index != 0); // Caller forgot to call allocateDeclIndexes()
-    const symbol = &self.locals.items[decl.link.macho.local_sym_index];
+    const addr = try self.updateDeclCode(decl_index, code);
 
-    if (decl.link.macho.size != 0) {
-        const capacity = decl.link.macho.capacity(self.*);
-        const need_realloc = code.len > capacity or !mem.isAlignedGeneric(u64, symbol.n_value, required_alignment);
-        if (need_realloc) {
-            const vaddr = try self.growTextBlock(&decl.link.macho, code.len, required_alignment);
-            log.debug("growing {s} from 0x{x} to 0x{x}", .{ decl.name, symbol.n_value, vaddr });
-            if (vaddr != symbol.n_value) {
-                log.debug(" (writing new offset table entry)", .{});
-                self.offset_table.items[decl.link.macho.offset_table_index] = .{
-                    .kind = .Local,
-                    .symbol = decl.link.macho.local_sym_index,
-                    .index = decl.link.macho.offset_table_index,
-                };
-                try self.writeOffsetTableEntry(decl.link.macho.offset_table_index);
-            }
-        } else if (code.len < decl.link.macho.size) {
-            self.shrinkTextBlock(&decl.link.macho, code.len);
-        }
-        decl.link.macho.size = code.len;
-        symbol.n_strx = try self.updateString(symbol.n_strx, mem.spanZ(decl.name));
-        symbol.n_type = macho.N_SECT;
-        symbol.n_sect = @intCast(u8, self.text_section_index.?) + 1;
-        symbol.n_desc = 0;
-
-        try self.writeLocalSymbol(decl.link.macho.local_sym_index);
-        if (self.d_sym) |*ds|
-            try ds.writeLocalSymbol(decl.link.macho.local_sym_index);
-    } else {
-        const decl_name = mem.spanZ(decl.name);
-        const name_str_index = try self.makeString(decl_name);
-        const addr = try self.allocateTextBlock(&decl.link.macho, code.len, required_alignment);
-        log.debug("allocated text block for {s} at 0x{x}", .{ decl_name, addr });
-        errdefer self.freeTextBlock(&decl.link.macho);
-
-        symbol.* = .{
-            .n_strx = name_str_index,
-            .n_type = macho.N_SECT,
-            .n_sect = @intCast(u8, self.text_section_index.?) + 1,
-            .n_desc = 0,
-            .n_value = addr,
-        };
-        self.offset_table.items[decl.link.macho.offset_table_index] = .{
-            .kind = .Local,
-            .symbol = decl.link.macho.local_sym_index,
-            .index = decl.link.macho.offset_table_index,
-        };
-
-        try self.writeLocalSymbol(decl.link.macho.local_sym_index);
-        if (self.d_sym) |*ds|
-            try ds.writeLocalSymbol(decl.link.macho.local_sym_index);
-        try self.writeOffsetTableEntry(decl.link.macho.offset_table_index);
-    }
-
-    // Calculate displacements to target addr (if any).
-    while (self.pie_fixups.popOrNull()) |fixup| {
-        assert(fixup.size == 4);
-        const this_addr = symbol.n_value + fixup.offset;
-        const target_addr = fixup.target_addr;
-
-        switch (self.base.options.target.cpu.arch) {
-            .x86_64 => {
-                const displacement = try math.cast(u32, target_addr - this_addr - 4);
-                mem.writeIntLittle(u32, code_buffer.items[fixup.offset..][0..4], displacement);
-            },
-            .aarch64 => {
-                // TODO optimize instruction based on jump length (use ldr(literal) + nop if possible).
-                {
-                    const inst = code_buffer.items[fixup.offset..][0..4];
-                    var parsed = mem.bytesAsValue(meta.TagPayload(
-                        aarch64.Instruction,
-                        aarch64.Instruction.PCRelativeAddress,
-                    ), inst);
-                    const this_page = @intCast(i32, this_addr >> 12);
-                    const target_page = @intCast(i32, target_addr >> 12);
-                    const pages = @bitCast(u21, @intCast(i21, target_page - this_page));
-                    parsed.immhi = @truncate(u19, pages >> 2);
-                    parsed.immlo = @truncate(u2, pages);
-                }
-                {
-                    const inst = code_buffer.items[fixup.offset + 4 ..][0..4];
-                    var parsed = mem.bytesAsValue(meta.TagPayload(
-                        aarch64.Instruction,
-                        aarch64.Instruction.LoadStoreRegister,
-                    ), inst);
-                    const narrowed = @truncate(u12, target_addr);
-                    const offset = try math.divExact(u12, narrowed, 8);
-                    parsed.offset = offset;
-                }
-            },
-            else => unreachable, // unsupported target architecture
-        }
-    }
-
-    // Resolve stubs (if any)
-    const text_segment = self.load_commands.items[self.text_segment_cmd_index.?].Segment;
-    const stubs = text_segment.sections.items[self.stubs_section_index.?];
-    for (self.stub_fixups.items) |fixup| {
-        const stub_addr = stubs.addr + fixup.symbol * stubs.reserved2;
-        const text_addr = symbol.n_value + fixup.start;
-        switch (self.base.options.target.cpu.arch) {
-            .x86_64 => {
-                assert(stub_addr >= text_addr + fixup.len);
-                const displacement = try math.cast(u32, stub_addr - text_addr - fixup.len);
-                var placeholder = code_buffer.items[fixup.start + fixup.len - @sizeOf(u32) ..][0..@sizeOf(u32)];
-                mem.writeIntSliceLittle(u32, placeholder, displacement);
-            },
-            .aarch64 => {
-                assert(stub_addr >= text_addr);
-                const displacement = try math.cast(i28, stub_addr - text_addr);
-                var placeholder = code_buffer.items[fixup.start..][0..fixup.len];
-                mem.writeIntSliceLittle(u32, placeholder, aarch64.Instruction.bl(displacement).toU32());
-            },
-            else => unreachable, // unsupported target architecture
-        }
-        if (!fixup.already_defined) {
-            try self.writeStub(fixup.symbol);
-            try self.writeStubInStubHelper(fixup.symbol);
-            try self.writeLazySymbolPointer(fixup.symbol);
-
-            self.rebase_info_dirty = true;
-            self.lazy_binding_info_dirty = true;
-        }
-    }
-    self.stub_fixups.shrinkRetainingCapacity(0);
-
-    const text_section = text_segment.sections.items[self.text_section_index.?];
-    const section_offset = symbol.n_value - text_section.addr;
-    const file_offset = text_section.offset + section_offset;
-    try self.base.file.?.pwriteAll(code, file_offset);
-
-    if (debug_buffers) |*db| {
-        try self.d_sym.?.commitDeclDebugInfo(
-            self.base.allocator,
-            module,
-            decl,
-            db,
-            self.base.options.target,
+    if (decl_state) |*ds| {
+        try self.d_sym.?.dwarf.commitDeclState(
+            mod,
+            decl_index,
+            addr,
+            self.getAtom(atom_index).size,
+            ds,
         );
     }
 
-    // Since we updated the vaddr and the size, each corresponding export symbol also needs to be updated.
-    const decl_exports = module.decl_exports.get(decl) orelse &[0]*Module.Export{};
-    try self.updateDeclExports(module, decl, decl_exports);
+    // Since we updated the vaddr and the size, each corresponding export symbol also
+    // needs to be updated.
+    try self.updateExports(mod, .{ .decl_index = decl_index }, mod.getDeclExports(decl_index));
 }
 
-pub fn updateDeclLineNumber(self: *MachO, module: *Module, decl: *const Module.Decl) !void {
-    if (self.d_sym) |*ds| {
-        try ds.updateDeclLineNumber(module, decl);
+pub fn lowerUnnamedConst(self: *MachO, typed_value: TypedValue, decl_index: Module.Decl.Index) !u32 {
+    const gpa = self.base.allocator;
+    const mod = self.base.options.module.?;
+    const gop = try self.unnamed_const_atoms.getOrPut(gpa, decl_index);
+    if (!gop.found_existing) {
+        gop.value_ptr.* = .{};
     }
+    const unnamed_consts = gop.value_ptr;
+    const decl = mod.declPtr(decl_index);
+    const decl_name = mod.intern_pool.stringToSlice(try decl.getFullyQualifiedName(mod));
+    const index = unnamed_consts.items.len;
+    const name = try std.fmt.allocPrint(gpa, "___unnamed_{s}_{d}", .{ decl_name, index });
+    defer gpa.free(name);
+    const atom_index = switch (try self.lowerConst(name, typed_value, typed_value.ty.abiAlignment(mod), self.data_const_section_index.?, decl.srcLoc(mod))) {
+        .ok => |atom_index| atom_index,
+        .fail => |em| {
+            decl.analysis = .codegen_failure;
+            try mod.failed_decls.put(mod.gpa, decl_index, em);
+            log.debug("{s}", .{em.msg});
+            return error.CodegenFail;
+        },
+    };
+    try unnamed_consts.append(gpa, atom_index);
+    const atom = self.getAtomPtr(atom_index);
+    return atom.getSymbolIndex().?;
 }
 
-pub fn updateDeclExports(
+const LowerConstResult = union(enum) {
+    ok: Atom.Index,
+    fail: *Module.ErrorMsg,
+};
+
+fn lowerConst(
     self: *MachO,
-    module: *Module,
-    decl: *Module.Decl,
-    exports: []const *Module.Export,
-) !void {
+    name: []const u8,
+    tv: TypedValue,
+    required_alignment: InternPool.Alignment,
+    sect_id: u8,
+    src_loc: Module.SrcLoc,
+) !LowerConstResult {
+    const gpa = self.base.allocator;
+
+    var code_buffer = std.ArrayList(u8).init(gpa);
+    defer code_buffer.deinit();
+
+    log.debug("allocating symbol indexes for {s}", .{name});
+
+    const sym_index = try self.allocateSymbol();
+    const atom_index = try self.createAtom(sym_index, .{});
+    try self.atom_by_index_table.putNoClobber(gpa, sym_index, atom_index);
+
+    const res = try codegen.generateSymbol(&self.base, src_loc, tv, &code_buffer, .none, .{
+        .parent_atom_index = self.getAtom(atom_index).getSymbolIndex().?,
+    });
+    var code = switch (res) {
+        .ok => code_buffer.items,
+        .fail => |em| return .{ .fail = em },
+    };
+
+    const atom = self.getAtomPtr(atom_index);
+    atom.size = code.len;
+    // TODO: work out logic for disambiguating functions from function pointers
+    // const sect_id = self.getDeclOutputSection(decl_index);
+    const symbol = atom.getSymbolPtr(self);
+    const name_str_index = try self.strtab.insert(gpa, name);
+    symbol.n_strx = name_str_index;
+    symbol.n_type = macho.N_SECT;
+    symbol.n_sect = sect_id + 1;
+    symbol.n_value = try self.allocateAtom(atom_index, code.len, required_alignment);
+    errdefer self.freeAtom(atom_index);
+
+    log.debug("allocated atom for {s} at 0x{x}", .{ name, symbol.n_value });
+    log.debug("  (required alignment 0x{x})", .{required_alignment});
+
+    try self.writeAtom(atom_index, code);
+    self.markRelocsDirtyByTarget(atom.getSymbolWithLoc());
+
+    return .{ .ok = atom_index };
+}
+
+pub fn updateDecl(self: *MachO, mod: *Module, decl_index: Module.Decl.Index) !void {
+    if (build_options.skip_non_native and builtin.object_format != .macho) {
+        @panic("Attempted to compile for object format that was disabled by build configuration");
+    }
+    if (self.llvm_object) |llvm_object| return llvm_object.updateDecl(mod, decl_index);
     const tracy = trace(@src());
     defer tracy.end();
 
-    try self.globals.ensureCapacity(self.base.allocator, self.globals.items.len + exports.len);
-    if (decl.link.macho.local_sym_index == 0) return;
-    const decl_sym = &self.locals.items[decl.link.macho.local_sym_index];
+    const decl = mod.declPtr(decl_index);
+
+    if (decl.val.getExternFunc(mod)) |_| {
+        return;
+    }
+
+    if (decl.isExtern(mod)) {
+        // TODO make this part of getGlobalSymbol
+        const name = mod.intern_pool.stringToSlice(decl.name);
+        const sym_name = try std.fmt.allocPrint(self.base.allocator, "_{s}", .{name});
+        defer self.base.allocator.free(sym_name);
+        _ = try self.addUndefined(sym_name, .{ .add_got = true });
+        return;
+    }
+
+    const is_threadlocal = if (decl.val.getVariable(mod)) |variable|
+        variable.is_threadlocal and !self.base.options.single_threaded
+    else
+        false;
+    if (is_threadlocal) return self.updateThreadlocalVariable(mod, decl_index);
+
+    const atom_index = try self.getOrCreateAtomForDecl(decl_index);
+    const sym_index = self.getAtom(atom_index).getSymbolIndex().?;
+    Atom.freeRelocations(self, atom_index);
+
+    var code_buffer = std.ArrayList(u8).init(self.base.allocator);
+    defer code_buffer.deinit();
+
+    var decl_state: ?Dwarf.DeclState = if (self.d_sym) |*d_sym|
+        try d_sym.dwarf.initDeclState(mod, decl_index)
+    else
+        null;
+    defer if (decl_state) |*ds| ds.deinit();
+
+    const decl_val = if (decl.val.getVariable(mod)) |variable| variable.init.toValue() else decl.val;
+    const res = if (decl_state) |*ds|
+        try codegen.generateSymbol(&self.base, decl.srcLoc(mod), .{
+            .ty = decl.ty,
+            .val = decl_val,
+        }, &code_buffer, .{
+            .dwarf = ds,
+        }, .{
+            .parent_atom_index = sym_index,
+        })
+    else
+        try codegen.generateSymbol(&self.base, decl.srcLoc(mod), .{
+            .ty = decl.ty,
+            .val = decl_val,
+        }, &code_buffer, .none, .{
+            .parent_atom_index = sym_index,
+        });
+
+    var code = switch (res) {
+        .ok => code_buffer.items,
+        .fail => |em| {
+            decl.analysis = .codegen_failure;
+            try mod.failed_decls.put(mod.gpa, decl_index, em);
+            return;
+        },
+    };
+    const addr = try self.updateDeclCode(decl_index, code);
+
+    if (decl_state) |*ds| {
+        try self.d_sym.?.dwarf.commitDeclState(
+            mod,
+            decl_index,
+            addr,
+            self.getAtom(atom_index).size,
+            ds,
+        );
+    }
+
+    // Since we updated the vaddr and the size, each corresponding export symbol also
+    // needs to be updated.
+    try self.updateExports(mod, .{ .decl_index = decl_index }, mod.getDeclExports(decl_index));
+}
+
+fn updateLazySymbolAtom(
+    self: *MachO,
+    sym: File.LazySymbol,
+    atom_index: Atom.Index,
+    section_index: u8,
+) !void {
+    const gpa = self.base.allocator;
+    const mod = self.base.options.module.?;
+
+    var required_alignment: Alignment = .none;
+    var code_buffer = std.ArrayList(u8).init(gpa);
+    defer code_buffer.deinit();
+
+    const name_str_index = blk: {
+        const name = try std.fmt.allocPrint(gpa, "___lazy_{s}_{}", .{
+            @tagName(sym.kind),
+            sym.ty.fmt(mod),
+        });
+        defer gpa.free(name);
+        break :blk try self.strtab.insert(gpa, name);
+    };
+    const name = self.strtab.get(name_str_index).?;
+
+    const atom = self.getAtomPtr(atom_index);
+    const local_sym_index = atom.getSymbolIndex().?;
+
+    const src = if (sym.ty.getOwnerDeclOrNull(mod)) |owner_decl|
+        mod.declPtr(owner_decl).srcLoc(mod)
+    else
+        Module.SrcLoc{
+            .file_scope = undefined,
+            .parent_decl_node = undefined,
+            .lazy = .unneeded,
+        };
+    const res = try codegen.generateLazySymbol(
+        &self.base,
+        src,
+        sym,
+        &required_alignment,
+        &code_buffer,
+        .none,
+        .{ .parent_atom_index = local_sym_index },
+    );
+    const code = switch (res) {
+        .ok => code_buffer.items,
+        .fail => |em| {
+            log.debug("{s}", .{em.msg});
+            return error.CodegenFail;
+        },
+    };
+
+    const symbol = atom.getSymbolPtr(self);
+    symbol.n_strx = name_str_index;
+    symbol.n_type = macho.N_SECT;
+    symbol.n_sect = section_index + 1;
+    symbol.n_desc = 0;
+
+    const vaddr = try self.allocateAtom(atom_index, code.len, required_alignment);
+    errdefer self.freeAtom(atom_index);
+
+    log.debug("allocated atom for {s} at 0x{x}", .{ name, vaddr });
+    log.debug("  (required alignment 0x{x})", .{required_alignment});
+
+    atom.size = code.len;
+    symbol.n_value = vaddr;
+
+    try self.addGotEntry(.{ .sym_index = local_sym_index });
+    try self.writeAtom(atom_index, code);
+}
+
+pub fn getOrCreateAtomForLazySymbol(self: *MachO, sym: File.LazySymbol) !Atom.Index {
+    const mod = self.base.options.module.?;
+    const gop = try self.lazy_syms.getOrPut(self.base.allocator, sym.getDecl(mod));
+    errdefer _ = if (!gop.found_existing) self.lazy_syms.pop();
+    if (!gop.found_existing) gop.value_ptr.* = .{};
+    const metadata: struct { atom: *Atom.Index, state: *LazySymbolMetadata.State } = switch (sym.kind) {
+        .code => .{ .atom = &gop.value_ptr.text_atom, .state = &gop.value_ptr.text_state },
+        .const_data => .{
+            .atom = &gop.value_ptr.data_const_atom,
+            .state = &gop.value_ptr.data_const_state,
+        },
+    };
+    switch (metadata.state.*) {
+        .unused => {
+            const sym_index = try self.allocateSymbol();
+            metadata.atom.* = try self.createAtom(sym_index, .{});
+            try self.atom_by_index_table.putNoClobber(self.base.allocator, sym_index, metadata.atom.*);
+        },
+        .pending_flush => return metadata.atom.*,
+        .flushed => {},
+    }
+    metadata.state.* = .pending_flush;
+    const atom = metadata.atom.*;
+    // anyerror needs to be deferred until flushModule
+    if (sym.getDecl(mod) != .none) try self.updateLazySymbolAtom(sym, atom, switch (sym.kind) {
+        .code => self.text_section_index.?,
+        .const_data => self.data_const_section_index.?,
+    });
+    return atom;
+}
+
+fn updateThreadlocalVariable(self: *MachO, module: *Module, decl_index: Module.Decl.Index) !void {
+    const mod = self.base.options.module.?;
+    // Lowering a TLV on macOS involves two stages:
+    // 1. first we lower the initializer into appopriate section (__thread_data or __thread_bss)
+    // 2. next, we create a corresponding threadlocal variable descriptor in __thread_vars
+
+    // 1. Lower the initializer value.
+    const init_atom_index = try self.getOrCreateAtomForDecl(decl_index);
+    const init_atom = self.getAtomPtr(init_atom_index);
+    const init_sym_index = init_atom.getSymbolIndex().?;
+    Atom.freeRelocations(self, init_atom_index);
+
+    const gpa = self.base.allocator;
+
+    var code_buffer = std.ArrayList(u8).init(gpa);
+    defer code_buffer.deinit();
+
+    var decl_state: ?Dwarf.DeclState = if (self.d_sym) |*d_sym|
+        try d_sym.dwarf.initDeclState(module, decl_index)
+    else
+        null;
+    defer if (decl_state) |*ds| ds.deinit();
+
+    const decl = module.declPtr(decl_index);
+    const decl_metadata = self.decls.get(decl_index).?;
+    const decl_val = decl.val.getVariable(mod).?.init.toValue();
+    const res = if (decl_state) |*ds|
+        try codegen.generateSymbol(&self.base, decl.srcLoc(mod), .{
+            .ty = decl.ty,
+            .val = decl_val,
+        }, &code_buffer, .{
+            .dwarf = ds,
+        }, .{
+            .parent_atom_index = init_sym_index,
+        })
+    else
+        try codegen.generateSymbol(&self.base, decl.srcLoc(mod), .{
+            .ty = decl.ty,
+            .val = decl_val,
+        }, &code_buffer, .none, .{
+            .parent_atom_index = init_sym_index,
+        });
+
+    var code = switch (res) {
+        .ok => code_buffer.items,
+        .fail => |em| {
+            decl.analysis = .codegen_failure;
+            try module.failed_decls.put(module.gpa, decl_index, em);
+            return;
+        },
+    };
+
+    const required_alignment = decl.getAlignment(mod);
+
+    const decl_name = mod.intern_pool.stringToSlice(try decl.getFullyQualifiedName(module));
+
+    const init_sym_name = try std.fmt.allocPrint(gpa, "{s}$tlv$init", .{decl_name});
+    defer gpa.free(init_sym_name);
+
+    const sect_id = decl_metadata.section;
+    const init_sym = init_atom.getSymbolPtr(self);
+    init_sym.n_strx = try self.strtab.insert(gpa, init_sym_name);
+    init_sym.n_type = macho.N_SECT;
+    init_sym.n_sect = sect_id + 1;
+    init_sym.n_desc = 0;
+    init_atom.size = code.len;
+
+    init_sym.n_value = try self.allocateAtom(init_atom_index, code.len, required_alignment);
+    errdefer self.freeAtom(init_atom_index);
+
+    log.debug("allocated atom for {s} at 0x{x}", .{ init_sym_name, init_sym.n_value });
+    log.debug("  (required alignment 0x{x})", .{required_alignment});
+
+    try self.writeAtom(init_atom_index, code);
+
+    if (decl_state) |*ds| {
+        try self.d_sym.?.dwarf.commitDeclState(
+            module,
+            decl_index,
+            init_sym.n_value,
+            self.getAtom(init_atom_index).size,
+            ds,
+        );
+    }
+
+    try self.updateExports(module, .{ .decl_index = decl_index }, module.getDeclExports(decl_index));
+
+    // 2. Create a TLV descriptor.
+    const init_atom_sym_loc = init_atom.getSymbolWithLoc();
+    const gop = try self.tlv_table.getOrPut(gpa, init_atom_sym_loc);
+    assert(!gop.found_existing);
+    gop.value_ptr.* = try self.createThreadLocalDescriptorAtom(decl_name, init_atom_sym_loc);
+    self.markRelocsDirtyByTarget(init_atom_sym_loc);
+}
+
+pub fn getOrCreateAtomForDecl(self: *MachO, decl_index: Module.Decl.Index) !Atom.Index {
+    const gop = try self.decls.getOrPut(self.base.allocator, decl_index);
+    if (!gop.found_existing) {
+        const sym_index = try self.allocateSymbol();
+        const atom_index = try self.createAtom(sym_index, .{});
+        try self.atom_by_index_table.putNoClobber(self.base.allocator, sym_index, atom_index);
+        gop.value_ptr.* = .{
+            .atom = atom_index,
+            .section = self.getDeclOutputSection(decl_index),
+            .exports = .{},
+        };
+    }
+    return gop.value_ptr.atom;
+}
+
+fn getDeclOutputSection(self: *MachO, decl_index: Module.Decl.Index) u8 {
+    const decl = self.base.options.module.?.declPtr(decl_index);
+    const ty = decl.ty;
+    const val = decl.val;
+    const mod = self.base.options.module.?;
+    const zig_ty = ty.zigTypeTag(mod);
+    const mode = self.base.options.optimize_mode;
+    const single_threaded = self.base.options.single_threaded;
+    const sect_id: u8 = blk: {
+        // TODO finish and audit this function
+        if (val.isUndefDeep(mod)) {
+            if (mode == .ReleaseFast or mode == .ReleaseSmall) {
+                @panic("TODO __DATA,__bss");
+            } else {
+                break :blk self.data_section_index.?;
+            }
+        }
+
+        if (val.getVariable(mod)) |variable| {
+            if (variable.is_threadlocal and !single_threaded) {
+                break :blk self.thread_data_section_index.?;
+            }
+            break :blk self.data_section_index.?;
+        }
+
+        switch (zig_ty) {
+            // TODO: what if this is a function pointer?
+            .Fn => break :blk self.text_section_index.?,
+            else => {
+                if (val.getVariable(mod)) |_| {
+                    break :blk self.data_section_index.?;
+                }
+                break :blk self.data_const_section_index.?;
+            },
+        }
+    };
+    return sect_id;
+}
+
+fn updateDeclCode(self: *MachO, decl_index: Module.Decl.Index, code: []u8) !u64 {
+    const gpa = self.base.allocator;
+    const mod = self.base.options.module.?;
+    const decl = mod.declPtr(decl_index);
+
+    const required_alignment = decl.getAlignment(mod);
+
+    const decl_name = mod.intern_pool.stringToSlice(try decl.getFullyQualifiedName(mod));
+
+    const decl_metadata = self.decls.get(decl_index).?;
+    const atom_index = decl_metadata.atom;
+    const atom = self.getAtom(atom_index);
+    const sym_index = atom.getSymbolIndex().?;
+    const sect_id = decl_metadata.section;
+    const header = &self.sections.items(.header)[sect_id];
+    const segment = self.getSegment(sect_id);
+    const code_len = code.len;
+
+    if (atom.size != 0) {
+        const sym = atom.getSymbolPtr(self);
+        sym.n_strx = try self.strtab.insert(gpa, decl_name);
+        sym.n_type = macho.N_SECT;
+        sym.n_sect = sect_id + 1;
+        sym.n_desc = 0;
+
+        const capacity = atom.capacity(self);
+        const need_realloc = code_len > capacity or !required_alignment.check(sym.n_value);
+
+        if (need_realloc) {
+            const vaddr = try self.growAtom(atom_index, code_len, required_alignment);
+            log.debug("growing {s} and moving from 0x{x} to 0x{x}", .{ decl_name, sym.n_value, vaddr });
+            log.debug("  (required alignment 0x{x})", .{required_alignment});
+
+            if (vaddr != sym.n_value) {
+                sym.n_value = vaddr;
+                log.debug("  (updating GOT entry)", .{});
+                const got_atom_index = self.got_table.lookup.get(.{ .sym_index = sym_index }).?;
+                try self.writeOffsetTableEntry(got_atom_index);
+                self.markRelocsDirtyByTarget(.{ .sym_index = sym_index });
+            }
+        } else if (code_len < atom.size) {
+            self.shrinkAtom(atom_index, code_len);
+        } else if (atom.next_index == null) {
+            const needed_size = (sym.n_value + code_len) - segment.vmaddr;
+            header.size = needed_size;
+        }
+        self.getAtomPtr(atom_index).size = code_len;
+    } else {
+        const sym = atom.getSymbolPtr(self);
+        sym.n_strx = try self.strtab.insert(gpa, decl_name);
+        sym.n_type = macho.N_SECT;
+        sym.n_sect = sect_id + 1;
+        sym.n_desc = 0;
+
+        const vaddr = try self.allocateAtom(atom_index, code_len, required_alignment);
+        errdefer self.freeAtom(atom_index);
+
+        log.debug("allocated atom for {s} at 0x{x}", .{ decl_name, vaddr });
+        log.debug("  (required alignment 0x{x})", .{required_alignment});
+
+        self.getAtomPtr(atom_index).size = code_len;
+        sym.n_value = vaddr;
+
+        try self.addGotEntry(.{ .sym_index = sym_index });
+    }
+
+    try self.writeAtom(atom_index, code);
+
+    return atom.getSymbol(self).n_value;
+}
+
+pub fn updateDeclLineNumber(self: *MachO, module: *Module, decl_index: Module.Decl.Index) !void {
+    if (self.d_sym) |*d_sym| {
+        try d_sym.dwarf.updateDeclLineNumber(module, decl_index);
+    }
+}
+
+pub fn updateExports(
+    self: *MachO,
+    mod: *Module,
+    exported: Module.Exported,
+    exports: []const *Module.Export,
+) File.UpdateExportsError!void {
+    if (build_options.skip_non_native and builtin.object_format != .macho) {
+        @panic("Attempted to compile for object format that was disabled by build configuration");
+    }
+    if (self.llvm_object) |llvm_object|
+        return llvm_object.updateExports(mod, exported, exports);
+
+    if (self.base.options.emit == null) return;
+
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    const gpa = self.base.allocator;
+
+    const metadata = switch (exported) {
+        .decl_index => |decl_index| blk: {
+            _ = try self.getOrCreateAtomForDecl(decl_index);
+            break :blk self.decls.getPtr(decl_index).?;
+        },
+        .value => |value| self.anon_decls.getPtr(value) orelse blk: {
+            const first_exp = exports[0];
+            const res = try self.lowerAnonDecl(value, .none, first_exp.getSrcLoc(mod));
+            switch (res) {
+                .ok => {},
+                .fail => |em| {
+                    // TODO maybe it's enough to return an error here and let Module.processExportsInner
+                    // handle the error?
+                    try mod.failed_exports.ensureUnusedCapacity(mod.gpa, 1);
+                    mod.failed_exports.putAssumeCapacityNoClobber(first_exp, em);
+                    return;
+                },
+            }
+            break :blk self.anon_decls.getPtr(value).?;
+        },
+    };
+    const atom_index = metadata.atom;
+    const atom = self.getAtom(atom_index);
+    const sym = atom.getSymbol(self);
 
     for (exports) |exp| {
-        if (exp.options.section) |section_name| {
-            if (!mem.eql(u8, section_name, "__text")) {
-                try module.failed_exports.ensureCapacity(module.gpa, module.failed_exports.items().len + 1);
-                module.failed_exports.putAssumeCapacityNoClobber(
-                    exp,
-                    try Module.ErrorMsg.create(self.base.allocator, decl.srcLoc(), "Unimplemented: ExportOptions.section", .{}),
-                );
+        const exp_name = try std.fmt.allocPrint(gpa, "_{}", .{
+            exp.opts.name.fmt(&mod.intern_pool),
+        });
+        defer gpa.free(exp_name);
+
+        log.debug("adding new export '{s}'", .{exp_name});
+
+        if (exp.opts.section.unwrap()) |section_name| {
+            if (!mod.intern_pool.stringEqlSlice(section_name, "__text")) {
+                try mod.failed_exports.putNoClobber(mod.gpa, exp, try Module.ErrorMsg.create(
+                    gpa,
+                    exp.getSrcLoc(mod),
+                    "Unimplemented: ExportOptions.section",
+                    .{},
+                ));
                 continue;
             }
         }
-        const n_desc = switch (exp.options.linkage) {
-            .Internal => macho.REFERENCE_FLAG_PRIVATE_DEFINED,
-            .Strong => blk: {
-                if (mem.eql(u8, exp.options.name, "_start")) {
-                    self.entry_addr = decl_sym.n_value;
+
+        if (exp.opts.linkage == .LinkOnce) {
+            try mod.failed_exports.putNoClobber(mod.gpa, exp, try Module.ErrorMsg.create(
+                gpa,
+                exp.getSrcLoc(mod),
+                "Unimplemented: GlobalLinkage.LinkOnce",
+                .{},
+            ));
+            continue;
+        }
+
+        const global_sym_index = metadata.getExport(self, exp_name) orelse blk: {
+            const global_sym_index = if (self.getGlobalIndex(exp_name)) |global_index| ind: {
+                const global = self.globals.items[global_index];
+                // TODO this is just plain wrong as it all should happen in a single `resolveSymbols`
+                // pass. This will go away once we abstact away Zig's incremental compilation into
+                // its own module.
+                if (global.getFile() == null and self.getSymbol(global).undf()) {
+                    _ = self.unresolved.swapRemove(global_index);
+                    break :ind global.sym_index;
                 }
-                break :blk macho.REFERENCE_FLAG_DEFINED;
-            },
-            .Weak => macho.N_WEAK_REF,
-            .LinkOnce => {
-                try module.failed_exports.ensureCapacity(module.gpa, module.failed_exports.items().len + 1);
-                module.failed_exports.putAssumeCapacityNoClobber(
-                    exp,
-                    try Module.ErrorMsg.create(self.base.allocator, decl.srcLoc(), "Unimplemented: GlobalLinkage.LinkOnce", .{}),
-                );
-                continue;
-            },
+                break :ind try self.allocateSymbol();
+            } else try self.allocateSymbol();
+            try metadata.exports.append(gpa, global_sym_index);
+            break :blk global_sym_index;
         };
-        const n_type = decl_sym.n_type | macho.N_EXT;
-        if (exp.link.macho.sym_index) |i| {
-            const sym = &self.globals.items[i];
-            sym.* = .{
-                .n_strx = try self.updateString(sym.n_strx, exp.options.name),
-                .n_type = n_type,
-                .n_sect = @intCast(u8, self.text_section_index.?) + 1,
-                .n_desc = n_desc,
-                .n_value = decl_sym.n_value,
-            };
-        } else {
-            const name_str_index = try self.makeString(exp.options.name);
-            const i = if (self.globals_free_list.popOrNull()) |i| i else blk: {
-                _ = self.globals.addOneAssumeCapacity();
-                self.export_info_dirty = true;
-                break :blk self.globals.items.len - 1;
-            };
-            self.globals.items[i] = .{
-                .n_strx = name_str_index,
-                .n_type = n_type,
-                .n_sect = @intCast(u8, self.text_section_index.?) + 1,
-                .n_desc = n_desc,
-                .n_value = decl_sym.n_value,
-            };
+        const global_sym_loc = SymbolWithLoc{ .sym_index = global_sym_index };
+        const global_sym = self.getSymbolPtr(global_sym_loc);
+        global_sym.* = .{
+            .n_strx = try self.strtab.insert(gpa, exp_name),
+            .n_type = macho.N_SECT | macho.N_EXT,
+            .n_sect = metadata.section + 1,
+            .n_desc = 0,
+            .n_value = sym.n_value,
+        };
 
-            exp.link.macho.sym_index = @intCast(u32, i);
+        switch (exp.opts.linkage) {
+            .Internal => {
+                // Symbol should be hidden, or in MachO lingo, private extern.
+                // We should also mark the symbol as Weak: n_desc == N_WEAK_DEF.
+                global_sym.n_type |= macho.N_PEXT;
+                global_sym.n_desc |= macho.N_WEAK_DEF;
+            },
+            .Strong => {},
+            .Weak => {
+                // Weak linkage is specified as part of n_desc field.
+                // Symbol's n_type is like for a symbol with strong linkage.
+                global_sym.n_desc |= macho.N_WEAK_DEF;
+            },
+            else => unreachable,
         }
-    }
-}
 
-pub fn deleteExport(self: *MachO, exp: Export) void {
-    const sym_index = exp.sym_index orelse return;
-    self.globals_free_list.append(self.base.allocator, sym_index) catch {};
-    self.globals.items[sym_index].n_type = 0;
-}
-
-pub fn freeDecl(self: *MachO, decl: *Module.Decl) void {
-    // Appending to free lists is allowed to fail because the free lists are heuristics based anyway.
-    self.freeTextBlock(&decl.link.macho);
-    if (decl.link.macho.local_sym_index != 0) {
-        self.locals_free_list.append(self.base.allocator, decl.link.macho.local_sym_index) catch {};
-        self.offset_table_free_list.append(self.base.allocator, decl.link.macho.offset_table_index) catch {};
-
-        self.locals.items[decl.link.macho.local_sym_index].n_type = 0;
-
-        decl.link.macho.local_sym_index = 0;
-    }
-}
-
-pub fn getDeclVAddr(self: *MachO, decl: *const Module.Decl) u64 {
-    assert(decl.link.macho.local_sym_index != 0);
-    return self.locals.items[decl.link.macho.local_sym_index].n_value;
-}
-
-pub fn populateMissingMetadata(self: *MachO) !void {
-    switch (self.base.options.output_mode) {
-        .Exe => {},
-        .Obj => return error.TODOImplementWritingObjFiles,
-        .Lib => return error.TODOImplementWritingLibFiles,
-    }
-
-    if (self.header == null) {
-        var header: macho.mach_header_64 = undefined;
-        header.magic = macho.MH_MAGIC_64;
-
-        const CpuInfo = struct {
-            cpu_type: macho.cpu_type_t,
-            cpu_subtype: macho.cpu_subtype_t,
+        self.resolveGlobalSymbol(global_sym_loc) catch |err| switch (err) {
+            error.MultipleSymbolDefinitions => {
+                // TODO: this needs rethinking
+                const global = self.getGlobal(exp_name).?;
+                if (global_sym_loc.sym_index != global.sym_index and global.getFile() != null) {
+                    _ = try mod.failed_exports.put(mod.gpa, exp, try Module.ErrorMsg.create(
+                        gpa,
+                        exp.getSrcLoc(mod),
+                        \\LinkError: symbol '{s}' defined multiple times
+                    ,
+                        .{exp_name},
+                    ));
+                }
+            },
+            else => |e| return e,
         };
-
-        const cpu_info: CpuInfo = switch (self.base.options.target.cpu.arch) {
-            .aarch64 => .{
-                .cpu_type = macho.CPU_TYPE_ARM64,
-                .cpu_subtype = macho.CPU_SUBTYPE_ARM_ALL,
-            },
-            .x86_64 => .{
-                .cpu_type = macho.CPU_TYPE_X86_64,
-                .cpu_subtype = macho.CPU_SUBTYPE_X86_64_ALL,
-            },
-            else => return error.UnsupportedMachOArchitecture,
-        };
-        header.cputype = cpu_info.cpu_type;
-        header.cpusubtype = cpu_info.cpu_subtype;
-
-        const filetype: u32 = switch (self.base.options.output_mode) {
-            .Exe => macho.MH_EXECUTE,
-            .Obj => macho.MH_OBJECT,
-            .Lib => switch (self.base.options.link_mode) {
-                .Static => return error.TODOStaticLibMachOType,
-                .Dynamic => macho.MH_DYLIB,
-            },
-        };
-        header.filetype = filetype;
-        // These will get populated at the end of flushing the results to file.
-        header.ncmds = 0;
-        header.sizeofcmds = 0;
-
-        switch (self.base.options.output_mode) {
-            .Exe => {
-                header.flags = macho.MH_NOUNDEFS | macho.MH_DYLDLINK | macho.MH_PIE;
-            },
-            else => {
-                header.flags = 0;
-            },
-        }
-        header.reserved = 0;
-        self.header = header;
-        self.header_dirty = true;
     }
+}
+
+pub fn deleteDeclExport(
+    self: *MachO,
+    decl_index: Module.Decl.Index,
+    name: InternPool.NullTerminatedString,
+) Allocator.Error!void {
+    if (self.llvm_object) |_| return;
+    const metadata = self.decls.getPtr(decl_index) orelse return;
+
+    const gpa = self.base.allocator;
+    const mod = self.base.options.module.?;
+    const exp_name = try std.fmt.allocPrint(gpa, "_{s}", .{mod.intern_pool.stringToSlice(name)});
+    defer gpa.free(exp_name);
+    const sym_index = metadata.getExportPtr(self, exp_name) orelse return;
+
+    const sym_loc = SymbolWithLoc{ .sym_index = sym_index.* };
+    const sym = self.getSymbolPtr(sym_loc);
+    log.debug("deleting export '{s}'", .{exp_name});
+    assert(sym.sect() and sym.ext());
+    sym.* = .{
+        .n_strx = 0,
+        .n_type = 0,
+        .n_sect = 0,
+        .n_desc = 0,
+        .n_value = 0,
+    };
+    self.locals_free_list.append(gpa, sym_index.*) catch {};
+
+    if (self.resolver.fetchRemove(exp_name)) |entry| {
+        defer gpa.free(entry.key);
+        self.globals_free_list.append(gpa, entry.value) catch {};
+        self.globals.items[entry.value] = .{ .sym_index = 0 };
+    }
+
+    sym_index.* = 0;
+}
+
+fn freeUnnamedConsts(self: *MachO, decl_index: Module.Decl.Index) void {
+    const gpa = self.base.allocator;
+    const unnamed_consts = self.unnamed_const_atoms.getPtr(decl_index) orelse return;
+    for (unnamed_consts.items) |atom| {
+        self.freeAtom(atom);
+    }
+    unnamed_consts.clearAndFree(gpa);
+}
+
+pub fn freeDecl(self: *MachO, decl_index: Module.Decl.Index) void {
+    if (self.llvm_object) |llvm_object| return llvm_object.freeDecl(decl_index);
+    const mod = self.base.options.module.?;
+    const decl = mod.declPtr(decl_index);
+
+    log.debug("freeDecl {*}", .{decl});
+
+    if (self.decls.fetchSwapRemove(decl_index)) |const_kv| {
+        var kv = const_kv;
+        self.freeAtom(kv.value.atom);
+        self.freeUnnamedConsts(decl_index);
+        kv.value.exports.deinit(self.base.allocator);
+    }
+
+    if (self.d_sym) |*d_sym| {
+        d_sym.dwarf.freeDecl(decl_index);
+    }
+}
+
+pub fn getDeclVAddr(self: *MachO, decl_index: Module.Decl.Index, reloc_info: File.RelocInfo) !u64 {
+    assert(self.llvm_object == null);
+
+    const this_atom_index = try self.getOrCreateAtomForDecl(decl_index);
+    const sym_index = self.getAtom(this_atom_index).getSymbolIndex().?;
+    const atom_index = self.getAtomIndexForSymbol(.{ .sym_index = reloc_info.parent_atom_index }).?;
+    try Atom.addRelocation(self, atom_index, .{
+        .type = .unsigned,
+        .target = .{ .sym_index = sym_index },
+        .offset = @as(u32, @intCast(reloc_info.offset)),
+        .addend = reloc_info.addend,
+        .pcrel = false,
+        .length = 3,
+    });
+    try Atom.addRebase(self, atom_index, @as(u32, @intCast(reloc_info.offset)));
+
+    return 0;
+}
+
+pub fn lowerAnonDecl(
+    self: *MachO,
+    decl_val: InternPool.Index,
+    explicit_alignment: InternPool.Alignment,
+    src_loc: Module.SrcLoc,
+) !codegen.Result {
+    const gpa = self.base.allocator;
+    const mod = self.base.options.module.?;
+    const ty = mod.intern_pool.typeOf(decl_val).toType();
+    const decl_alignment = switch (explicit_alignment) {
+        .none => ty.abiAlignment(mod),
+        else => explicit_alignment,
+    };
+    if (self.anon_decls.get(decl_val)) |metadata| {
+        const existing_addr = self.getAtom(metadata.atom).getSymbol(self).n_value;
+        if (decl_alignment.check(existing_addr))
+            return .ok;
+    }
+
+    const val = decl_val.toValue();
+    const tv = TypedValue{ .ty = ty, .val = val };
+    var name_buf: [32]u8 = undefined;
+    const name = std.fmt.bufPrint(&name_buf, "__anon_{d}", .{
+        @intFromEnum(decl_val),
+    }) catch unreachable;
+    const res = self.lowerConst(
+        name,
+        tv,
+        decl_alignment,
+        self.data_const_section_index.?,
+        src_loc,
+    ) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => |e| return .{ .fail = try Module.ErrorMsg.create(
+            gpa,
+            src_loc,
+            "unable to lower constant value: {s}",
+            .{@errorName(e)},
+        ) },
+    };
+    const atom_index = switch (res) {
+        .ok => |atom_index| atom_index,
+        .fail => |em| return .{ .fail = em },
+    };
+    try self.anon_decls.put(gpa, decl_val, .{
+        .atom = atom_index,
+        .section = self.data_const_section_index.?,
+    });
+    return .ok;
+}
+
+pub fn getAnonDeclVAddr(self: *MachO, decl_val: InternPool.Index, reloc_info: link.File.RelocInfo) !u64 {
+    assert(self.llvm_object == null);
+
+    const this_atom_index = self.anon_decls.get(decl_val).?.atom;
+    const sym_index = self.getAtom(this_atom_index).getSymbolIndex().?;
+    const atom_index = self.getAtomIndexForSymbol(.{ .sym_index = reloc_info.parent_atom_index }).?;
+    try Atom.addRelocation(self, atom_index, .{
+        .type = .unsigned,
+        .target = .{ .sym_index = sym_index },
+        .offset = @as(u32, @intCast(reloc_info.offset)),
+        .addend = reloc_info.addend,
+        .pcrel = false,
+        .length = 3,
+    });
+    try Atom.addRebase(self, atom_index, @as(u32, @intCast(reloc_info.offset)));
+
+    return 0;
+}
+
+fn populateMissingMetadata(self: *MachO) !void {
+    assert(self.mode == .incremental);
+
+    const gpa = self.base.allocator;
+    const cpu_arch = self.base.options.target.cpu.arch;
+    const pagezero_vmsize = self.calcPagezeroSize();
+
     if (self.pagezero_segment_cmd_index == null) {
-        self.pagezero_segment_cmd_index = @intCast(u16, self.load_commands.items.len);
-        try self.load_commands.append(self.base.allocator, .{
-            .Segment = SegmentCommand.empty(.{
-                .cmd = macho.LC_SEGMENT_64,
-                .cmdsize = @sizeOf(macho.segment_command_64),
+        if (pagezero_vmsize > 0) {
+            self.pagezero_segment_cmd_index = @as(u8, @intCast(self.segments.items.len));
+            try self.segments.append(gpa, .{
                 .segname = makeStaticString("__PAGEZERO"),
-                .vmaddr = 0,
-                .vmsize = 0x100000000, // size always set to 4GB
-                .fileoff = 0,
-                .filesize = 0,
-                .maxprot = 0,
-                .initprot = 0,
-                .nsects = 0,
-                .flags = 0,
-            }),
-        });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
-    }
-    if (self.text_segment_cmd_index == null) {
-        self.text_segment_cmd_index = @intCast(u16, self.load_commands.items.len);
-        const maxprot = macho.VM_PROT_READ | macho.VM_PROT_WRITE | macho.VM_PROT_EXECUTE;
-        const initprot = macho.VM_PROT_READ | macho.VM_PROT_EXECUTE;
-
-        const program_code_size_hint = self.base.options.program_code_size_hint;
-        const offset_table_size_hint = @sizeOf(u64) * self.base.options.symbol_count_hint;
-        const ideal_size = self.header_pad + program_code_size_hint + 3 * offset_table_size_hint;
-        const needed_size = mem.alignForwardGeneric(u64, padToIdeal(ideal_size), self.page_size);
-
-        log.debug("found __TEXT segment free space 0x{x} to 0x{x}", .{ 0, needed_size });
-
-        try self.load_commands.append(self.base.allocator, .{
-            .Segment = SegmentCommand.empty(.{
-                .cmd = macho.LC_SEGMENT_64,
+                .vmsize = pagezero_vmsize,
                 .cmdsize = @sizeOf(macho.segment_command_64),
-                .segname = makeStaticString("__TEXT"),
-                .vmaddr = 0x100000000, // always starts at 4GB
-                .vmsize = needed_size,
-                .fileoff = 0,
-                .filesize = needed_size,
-                .maxprot = maxprot,
-                .initprot = initprot,
-                .nsects = 0,
-                .flags = 0,
-            }),
-        });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
+            });
+        }
     }
+
+    if (self.header_segment_cmd_index == null) {
+        // The first __TEXT segment is immovable and covers MachO header and load commands.
+        self.header_segment_cmd_index = @as(u8, @intCast(self.segments.items.len));
+        const ideal_size = @max(self.base.options.headerpad_size orelse 0, default_headerpad_size);
+        const needed_size = mem.alignForward(u64, padToIdeal(ideal_size), getPageSize(cpu_arch));
+
+        log.debug("found __TEXT segment (header-only) free space 0x{x} to 0x{x}", .{ 0, needed_size });
+
+        try self.segments.append(gpa, .{
+            .segname = makeStaticString("__TEXT"),
+            .vmaddr = pagezero_vmsize,
+            .vmsize = needed_size,
+            .filesize = needed_size,
+            .maxprot = macho.PROT.READ | macho.PROT.EXEC,
+            .initprot = macho.PROT.READ | macho.PROT.EXEC,
+            .cmdsize = @sizeOf(macho.segment_command_64),
+        });
+        self.segment_table_dirty = true;
+    }
+
     if (self.text_section_index == null) {
-        const text_segment = &self.load_commands.items[self.text_segment_cmd_index.?].Segment;
-        self.text_section_index = @intCast(u16, text_segment.sections.items.len);
-
-        const alignment: u2 = switch (self.base.options.target.cpu.arch) {
-            .x86_64 => 0,
-            .aarch64 => 2,
-            else => unreachable, // unhandled architecture type
-        };
-        const flags = macho.S_REGULAR | macho.S_ATTR_PURE_INSTRUCTIONS | macho.S_ATTR_SOME_INSTRUCTIONS;
-        const needed_size = self.base.options.program_code_size_hint;
-        const off = text_segment.findFreeSpace(needed_size, @as(u16, 1) << alignment, self.header_pad);
-
-        log.debug("found __text section free space 0x{x} to 0x{x}", .{ off, off + needed_size });
-
-        try text_segment.addSection(self.base.allocator, .{
-            .sectname = makeStaticString("__text"),
-            .segname = makeStaticString("__TEXT"),
-            .addr = text_segment.inner.vmaddr + off,
-            .size = @intCast(u32, needed_size),
-            .offset = @intCast(u32, off),
-            .@"align" = alignment,
-            .reloff = 0,
-            .nreloc = 0,
-            .flags = flags,
-            .reserved1 = 0,
-            .reserved2 = 0,
-            .reserved3 = 0,
+        // Sadly, segments need unique string identfiers for some reason.
+        self.text_section_index = try self.allocateSection("__TEXT1", "__text", .{
+            .size = self.base.options.program_code_size_hint,
+            .alignment = switch (cpu_arch) {
+                .x86_64 => 1,
+                .aarch64 => @sizeOf(u32),
+                else => unreachable, // unhandled architecture type
+            },
+            .flags = macho.S_REGULAR | macho.S_ATTR_PURE_INSTRUCTIONS | macho.S_ATTR_SOME_INSTRUCTIONS,
+            .prot = macho.PROT.READ | macho.PROT.EXEC,
         });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
+        self.segment_table_dirty = true;
     }
+
     if (self.stubs_section_index == null) {
-        const text_segment = &self.load_commands.items[self.text_segment_cmd_index.?].Segment;
-        self.stubs_section_index = @intCast(u16, text_segment.sections.items.len);
-
-        const alignment: u2 = switch (self.base.options.target.cpu.arch) {
-            .x86_64 => 0,
-            .aarch64 => 2,
-            else => unreachable, // unhandled architecture type
-        };
-        const stub_size: u4 = switch (self.base.options.target.cpu.arch) {
-            .x86_64 => 6,
-            .aarch64 => 3 * @sizeOf(u32),
-            else => unreachable, // unhandled architecture type
-        };
-        const flags = macho.S_SYMBOL_STUBS | macho.S_ATTR_PURE_INSTRUCTIONS | macho.S_ATTR_SOME_INSTRUCTIONS;
-        const needed_size = @sizeOf(u64) * self.base.options.symbol_count_hint;
-        const off = text_segment.findFreeSpace(needed_size, @alignOf(u64), self.header_pad);
-        assert(off + needed_size <= text_segment.inner.fileoff + text_segment.inner.filesize); // TODO Must expand __TEXT segment.
-
-        log.debug("found __stubs section free space 0x{x} to 0x{x}", .{ off, off + needed_size });
-
-        try text_segment.addSection(self.base.allocator, .{
-            .sectname = makeStaticString("__stubs"),
-            .segname = makeStaticString("__TEXT"),
-            .addr = text_segment.inner.vmaddr + off,
-            .size = needed_size,
-            .offset = @intCast(u32, off),
-            .@"align" = alignment,
-            .reloff = 0,
-            .nreloc = 0,
-            .flags = flags,
-            .reserved1 = 0,
+        const stub_size = stubs.stubSize(cpu_arch);
+        self.stubs_section_index = try self.allocateSection("__TEXT2", "__stubs", .{
+            .size = stub_size,
+            .alignment = stubs.stubAlignment(cpu_arch),
+            .flags = macho.S_SYMBOL_STUBS | macho.S_ATTR_PURE_INSTRUCTIONS | macho.S_ATTR_SOME_INSTRUCTIONS,
             .reserved2 = stub_size,
-            .reserved3 = 0,
+            .prot = macho.PROT.READ | macho.PROT.EXEC,
         });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
+        self.segment_table_dirty = true;
     }
+
     if (self.stub_helper_section_index == null) {
-        const text_segment = &self.load_commands.items[self.text_segment_cmd_index.?].Segment;
-        self.stub_helper_section_index = @intCast(u16, text_segment.sections.items.len);
-
-        const alignment: u2 = switch (self.base.options.target.cpu.arch) {
-            .x86_64 => 0,
-            .aarch64 => 2,
-            else => unreachable, // unhandled architecture type
-        };
-        const flags = macho.S_REGULAR | macho.S_ATTR_PURE_INSTRUCTIONS | macho.S_ATTR_SOME_INSTRUCTIONS;
-        const needed_size = @sizeOf(u64) * self.base.options.symbol_count_hint;
-        const off = text_segment.findFreeSpace(needed_size, @alignOf(u64), self.header_pad);
-        assert(off + needed_size <= text_segment.inner.fileoff + text_segment.inner.filesize); // TODO Must expand __TEXT segment.
-
-        log.debug("found __stub_helper section free space 0x{x} to 0x{x}", .{ off, off + needed_size });
-
-        try text_segment.addSection(self.base.allocator, .{
-            .sectname = makeStaticString("__stub_helper"),
-            .segname = makeStaticString("__TEXT"),
-            .addr = text_segment.inner.vmaddr + off,
-            .size = needed_size,
-            .offset = @intCast(u32, off),
-            .@"align" = alignment,
-            .reloff = 0,
-            .nreloc = 0,
-            .flags = flags,
-            .reserved1 = 0,
-            .reserved2 = 0,
-            .reserved3 = 0,
+        self.stub_helper_section_index = try self.allocateSection("__TEXT3", "__stub_helper", .{
+            .size = @sizeOf(u32),
+            .alignment = stubs.stubAlignment(cpu_arch),
+            .flags = macho.S_REGULAR | macho.S_ATTR_PURE_INSTRUCTIONS | macho.S_ATTR_SOME_INSTRUCTIONS,
+            .prot = macho.PROT.READ | macho.PROT.EXEC,
         });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
+        self.segment_table_dirty = true;
     }
-    if (self.data_const_segment_cmd_index == null) {
-        self.data_const_segment_cmd_index = @intCast(u16, self.load_commands.items.len);
-        const maxprot = macho.VM_PROT_READ | macho.VM_PROT_WRITE | macho.VM_PROT_EXECUTE;
-        const initprot = macho.VM_PROT_READ | macho.VM_PROT_WRITE;
-        const address_and_offset = self.nextSegmentAddressAndOffset();
 
-        const ideal_size = @sizeOf(u64) * self.base.options.symbol_count_hint;
-        const needed_size = mem.alignForwardGeneric(u64, padToIdeal(ideal_size), self.page_size);
-
-        log.debug("found __DATA_CONST segment free space 0x{x} to 0x{x}", .{ address_and_offset.offset, address_and_offset.offset + needed_size });
-
-        try self.load_commands.append(self.base.allocator, .{
-            .Segment = SegmentCommand.empty(.{
-                .cmd = macho.LC_SEGMENT_64,
-                .cmdsize = @sizeOf(macho.segment_command_64),
-                .segname = makeStaticString("__DATA_CONST"),
-                .vmaddr = address_and_offset.address,
-                .vmsize = needed_size,
-                .fileoff = address_and_offset.offset,
-                .filesize = needed_size,
-                .maxprot = maxprot,
-                .initprot = initprot,
-                .nsects = 0,
-                .flags = 0,
-            }),
-        });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
-    }
     if (self.got_section_index == null) {
-        const dc_segment = &self.load_commands.items[self.data_const_segment_cmd_index.?].Segment;
-        self.got_section_index = @intCast(u16, dc_segment.sections.items.len);
-
-        const flags = macho.S_NON_LAZY_SYMBOL_POINTERS;
-        const needed_size = @sizeOf(u64) * self.base.options.symbol_count_hint;
-        const off = dc_segment.findFreeSpace(needed_size, @alignOf(u64), null);
-        assert(off + needed_size <= dc_segment.inner.fileoff + dc_segment.inner.filesize); // TODO Must expand __DATA_CONST segment.
-
-        log.debug("found __got section free space 0x{x} to 0x{x}", .{ off, off + needed_size });
-
-        try dc_segment.addSection(self.base.allocator, .{
-            .sectname = makeStaticString("__got"),
-            .segname = makeStaticString("__DATA_CONST"),
-            .addr = dc_segment.inner.vmaddr + off - dc_segment.inner.fileoff,
-            .size = needed_size,
-            .offset = @intCast(u32, off),
-            .@"align" = 3, // 2^3 = @sizeOf(u64)
-            .reloff = 0,
-            .nreloc = 0,
-            .flags = flags,
-            .reserved1 = 0,
-            .reserved2 = 0,
-            .reserved3 = 0,
+        self.got_section_index = try self.allocateSection("__DATA_CONST", "__got", .{
+            .size = @sizeOf(u64) * self.base.options.symbol_count_hint,
+            .alignment = @alignOf(u64),
+            .flags = macho.S_NON_LAZY_SYMBOL_POINTERS,
+            .prot = macho.PROT.READ | macho.PROT.WRITE,
         });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
+        self.segment_table_dirty = true;
     }
-    if (self.data_segment_cmd_index == null) {
-        self.data_segment_cmd_index = @intCast(u16, self.load_commands.items.len);
-        const maxprot = macho.VM_PROT_READ | macho.VM_PROT_WRITE | macho.VM_PROT_EXECUTE;
-        const initprot = macho.VM_PROT_READ | macho.VM_PROT_WRITE;
-        const address_and_offset = self.nextSegmentAddressAndOffset();
 
-        const ideal_size = 2 * @sizeOf(u64) * self.base.options.symbol_count_hint;
-        const needed_size = mem.alignForwardGeneric(u64, padToIdeal(ideal_size), self.page_size);
-
-        log.debug("found __DATA segment free space 0x{x} to 0x{x}", .{ address_and_offset.offset, address_and_offset.offset + needed_size });
-
-        try self.load_commands.append(self.base.allocator, .{
-            .Segment = SegmentCommand.empty(.{
-                .cmd = macho.LC_SEGMENT_64,
-                .cmdsize = @sizeOf(macho.segment_command_64),
-                .segname = makeStaticString("__DATA"),
-                .vmaddr = address_and_offset.address,
-                .vmsize = needed_size,
-                .fileoff = address_and_offset.offset,
-                .filesize = needed_size,
-                .maxprot = maxprot,
-                .initprot = initprot,
-                .nsects = 0,
-                .flags = 0,
-            }),
+    if (self.data_const_section_index == null) {
+        self.data_const_section_index = try self.allocateSection("__DATA_CONST1", "__const", .{
+            .size = @sizeOf(u64),
+            .alignment = @alignOf(u64),
+            .flags = macho.S_REGULAR,
+            .prot = macho.PROT.READ | macho.PROT.WRITE,
         });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
+        self.segment_table_dirty = true;
     }
+
     if (self.la_symbol_ptr_section_index == null) {
-        const data_segment = &self.load_commands.items[self.data_segment_cmd_index.?].Segment;
-        self.la_symbol_ptr_section_index = @intCast(u16, data_segment.sections.items.len);
-
-        const flags = macho.S_LAZY_SYMBOL_POINTERS;
-        const needed_size = @sizeOf(u64) * self.base.options.symbol_count_hint;
-        const off = data_segment.findFreeSpace(needed_size, @alignOf(u64), null);
-        assert(off + needed_size <= data_segment.inner.fileoff + data_segment.inner.filesize); // TODO Must expand __DATA segment.
-
-        log.debug("found __la_symbol_ptr section free space 0x{x} to 0x{x}", .{ off, off + needed_size });
-
-        try data_segment.addSection(self.base.allocator, .{
-            .sectname = makeStaticString("__la_symbol_ptr"),
-            .segname = makeStaticString("__DATA"),
-            .addr = data_segment.inner.vmaddr + off - data_segment.inner.fileoff,
-            .size = needed_size,
-            .offset = @intCast(u32, off),
-            .@"align" = 3, // 2^3 = @sizeOf(u64)
-            .reloff = 0,
-            .nreloc = 0,
-            .flags = flags,
-            .reserved1 = 0,
-            .reserved2 = 0,
-            .reserved3 = 0,
+        self.la_symbol_ptr_section_index = try self.allocateSection("__DATA", "__la_symbol_ptr", .{
+            .size = @sizeOf(u64),
+            .alignment = @alignOf(u64),
+            .flags = macho.S_LAZY_SYMBOL_POINTERS,
+            .prot = macho.PROT.READ | macho.PROT.WRITE,
         });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
+        self.segment_table_dirty = true;
     }
+
     if (self.data_section_index == null) {
-        const data_segment = &self.load_commands.items[self.data_segment_cmd_index.?].Segment;
-        self.data_section_index = @intCast(u16, data_segment.sections.items.len);
-
-        const flags = macho.S_REGULAR;
-        const needed_size = @sizeOf(u64) * self.base.options.symbol_count_hint;
-        const off = data_segment.findFreeSpace(needed_size, @alignOf(u64), null);
-        assert(off + needed_size <= data_segment.inner.fileoff + data_segment.inner.filesize); // TODO Must expand __DATA segment.
-
-        log.debug("found __data section free space 0x{x} to 0x{x}", .{ off, off + needed_size });
-
-        try data_segment.addSection(self.base.allocator, .{
-            .sectname = makeStaticString("__data"),
-            .segname = makeStaticString("__DATA"),
-            .addr = data_segment.inner.vmaddr + off - data_segment.inner.fileoff,
-            .size = needed_size,
-            .offset = @intCast(u32, off),
-            .@"align" = 3, // 2^3 = @sizeOf(u64)
-            .reloff = 0,
-            .nreloc = 0,
-            .flags = flags,
-            .reserved1 = 0,
-            .reserved2 = 0,
-            .reserved3 = 0,
+        self.data_section_index = try self.allocateSection("__DATA1", "__data", .{
+            .size = @sizeOf(u64),
+            .alignment = @alignOf(u64),
+            .flags = macho.S_REGULAR,
+            .prot = macho.PROT.READ | macho.PROT.WRITE,
         });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
+        self.segment_table_dirty = true;
     }
+
+    if (!self.base.options.single_threaded) {
+        if (self.thread_vars_section_index == null) {
+            self.thread_vars_section_index = try self.allocateSection("__DATA2", "__thread_vars", .{
+                .size = @sizeOf(u64) * 3,
+                .alignment = @sizeOf(u64),
+                .flags = macho.S_THREAD_LOCAL_VARIABLES,
+                .prot = macho.PROT.READ | macho.PROT.WRITE,
+            });
+            self.segment_table_dirty = true;
+        }
+
+        if (self.thread_data_section_index == null) {
+            self.thread_data_section_index = try self.allocateSection("__DATA3", "__thread_data", .{
+                .size = @sizeOf(u64),
+                .alignment = @alignOf(u64),
+                .flags = macho.S_THREAD_LOCAL_REGULAR,
+                .prot = macho.PROT.READ | macho.PROT.WRITE,
+            });
+            self.segment_table_dirty = true;
+        }
+    }
+
     if (self.linkedit_segment_cmd_index == null) {
-        self.linkedit_segment_cmd_index = @intCast(u16, self.load_commands.items.len);
+        self.linkedit_segment_cmd_index = @as(u8, @intCast(self.segments.items.len));
 
-        const maxprot = macho.VM_PROT_READ | macho.VM_PROT_WRITE | macho.VM_PROT_EXECUTE;
-        const initprot = macho.VM_PROT_READ;
-        const address_and_offset = self.nextSegmentAddressAndOffset();
-
-        log.debug("found __LINKEDIT segment free space at 0x{x}", .{address_and_offset.offset});
-
-        try self.load_commands.append(self.base.allocator, .{
-            .Segment = SegmentCommand.empty(.{
-                .cmd = macho.LC_SEGMENT_64,
-                .cmdsize = @sizeOf(macho.segment_command_64),
-                .segname = makeStaticString("__LINKEDIT"),
-                .vmaddr = address_and_offset.address,
-                .vmsize = 0,
-                .fileoff = address_and_offset.offset,
-                .filesize = 0,
-                .maxprot = maxprot,
-                .initprot = initprot,
-                .nsects = 0,
-                .flags = 0,
-            }),
+        try self.segments.append(gpa, .{
+            .segname = makeStaticString("__LINKEDIT"),
+            .maxprot = macho.PROT.READ,
+            .initprot = macho.PROT.READ,
+            .cmdsize = @sizeOf(macho.segment_command_64),
         });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
-    }
-    if (self.dyld_info_cmd_index == null) {
-        self.dyld_info_cmd_index = @intCast(u16, self.load_commands.items.len);
-
-        try self.load_commands.append(self.base.allocator, .{
-            .DyldInfoOnly = .{
-                .cmd = macho.LC_DYLD_INFO_ONLY,
-                .cmdsize = @sizeOf(macho.dyld_info_command),
-                .rebase_off = 0,
-                .rebase_size = 0,
-                .bind_off = 0,
-                .bind_size = 0,
-                .weak_bind_off = 0,
-                .weak_bind_size = 0,
-                .lazy_bind_off = 0,
-                .lazy_bind_size = 0,
-                .export_off = 0,
-                .export_size = 0,
-            },
-        });
-
-        const dyld = &self.load_commands.items[self.dyld_info_cmd_index.?].DyldInfoOnly;
-
-        // Preallocate rebase, binding, lazy binding info, and export info.
-        const expected_size = 48; // TODO This is totally random.
-        const rebase_off = self.findFreeSpaceLinkedit(expected_size, 1, null);
-        log.debug("found rebase info free space 0x{x} to 0x{x}", .{ rebase_off, rebase_off + expected_size });
-        dyld.rebase_off = @intCast(u32, rebase_off);
-        dyld.rebase_size = expected_size;
-
-        const bind_off = self.findFreeSpaceLinkedit(expected_size, 1, null);
-        log.debug("found binding info free space 0x{x} to 0x{x}", .{ bind_off, bind_off + expected_size });
-        dyld.bind_off = @intCast(u32, bind_off);
-        dyld.bind_size = expected_size;
-
-        const lazy_bind_off = self.findFreeSpaceLinkedit(expected_size, 1, null);
-        log.debug("found lazy binding info free space 0x{x} to 0x{x}", .{ lazy_bind_off, lazy_bind_off + expected_size });
-        dyld.lazy_bind_off = @intCast(u32, lazy_bind_off);
-        dyld.lazy_bind_size = expected_size;
-
-        const export_off = self.findFreeSpaceLinkedit(expected_size, 1, null);
-        log.debug("found export info free space 0x{x} to 0x{x}", .{ export_off, export_off + expected_size });
-        dyld.export_off = @intCast(u32, export_off);
-        dyld.export_size = expected_size;
-
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
-    }
-    if (self.symtab_cmd_index == null) {
-        self.symtab_cmd_index = @intCast(u16, self.load_commands.items.len);
-
-        try self.load_commands.append(self.base.allocator, .{
-            .Symtab = .{
-                .cmd = macho.LC_SYMTAB,
-                .cmdsize = @sizeOf(macho.symtab_command),
-                .symoff = 0,
-                .nsyms = 0,
-                .stroff = 0,
-                .strsize = 0,
-            },
-        });
-
-        const symtab = &self.load_commands.items[self.symtab_cmd_index.?].Symtab;
-
-        const symtab_size = self.base.options.symbol_count_hint * @sizeOf(macho.nlist_64);
-        const symtab_off = self.findFreeSpaceLinkedit(symtab_size, @sizeOf(macho.nlist_64), null);
-        log.debug("found symbol table free space 0x{x} to 0x{x}", .{ symtab_off, symtab_off + symtab_size });
-        symtab.symoff = @intCast(u32, symtab_off);
-        symtab.nsyms = @intCast(u32, self.base.options.symbol_count_hint);
-
-        try self.string_table.append(self.base.allocator, 0); // Need a null at position 0.
-        const strtab_size = self.string_table.items.len;
-        const strtab_off = self.findFreeSpaceLinkedit(strtab_size, 1, symtab_off);
-        log.debug("found string table free space 0x{x} to 0x{x}", .{ strtab_off, strtab_off + strtab_size });
-        symtab.stroff = @intCast(u32, strtab_off);
-        symtab.strsize = @intCast(u32, strtab_size);
-
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
-        self.string_table_dirty = true;
-    }
-    if (self.dysymtab_cmd_index == null) {
-        self.dysymtab_cmd_index = @intCast(u16, self.load_commands.items.len);
-
-        // Preallocate space for indirect symbol table.
-        const indsymtab_size = self.base.options.symbol_count_hint * @sizeOf(u64); // Each entry is just a u64.
-        const indsymtab_off = self.findFreeSpaceLinkedit(indsymtab_size, @sizeOf(u64), null);
-
-        log.debug("found indirect symbol table free space 0x{x} to 0x{x}", .{ indsymtab_off, indsymtab_off + indsymtab_size });
-
-        try self.load_commands.append(self.base.allocator, .{
-            .Dysymtab = .{
-                .cmd = macho.LC_DYSYMTAB,
-                .cmdsize = @sizeOf(macho.dysymtab_command),
-                .ilocalsym = 0,
-                .nlocalsym = 0,
-                .iextdefsym = 0,
-                .nextdefsym = 0,
-                .iundefsym = 0,
-                .nundefsym = 0,
-                .tocoff = 0,
-                .ntoc = 0,
-                .modtaboff = 0,
-                .nmodtab = 0,
-                .extrefsymoff = 0,
-                .nextrefsyms = 0,
-                .indirectsymoff = @intCast(u32, indsymtab_off),
-                .nindirectsyms = @intCast(u32, self.base.options.symbol_count_hint),
-                .extreloff = 0,
-                .nextrel = 0,
-                .locreloff = 0,
-                .nlocrel = 0,
-            },
-        });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
-    }
-    if (self.dylinker_cmd_index == null) {
-        self.dylinker_cmd_index = @intCast(u16, self.load_commands.items.len);
-        const cmdsize = @intCast(u32, mem.alignForwardGeneric(
-            u64,
-            @sizeOf(macho.dylinker_command) + mem.lenZ(DEFAULT_DYLD_PATH),
-            @sizeOf(u64),
-        ));
-        var dylinker_cmd = emptyGenericCommandWithData(macho.dylinker_command{
-            .cmd = macho.LC_LOAD_DYLINKER,
-            .cmdsize = cmdsize,
-            .name = @sizeOf(macho.dylinker_command),
-        });
-        dylinker_cmd.data = try self.base.allocator.alloc(u8, cmdsize - dylinker_cmd.inner.name);
-        mem.set(u8, dylinker_cmd.data, 0);
-        mem.copy(u8, dylinker_cmd.data, mem.spanZ(DEFAULT_DYLD_PATH));
-        try self.load_commands.append(self.base.allocator, .{ .Dylinker = dylinker_cmd });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
-    }
-    if (self.libsystem_cmd_index == null) {
-        self.libsystem_cmd_index = @intCast(u16, self.load_commands.items.len);
-        const cmdsize = @intCast(u32, mem.alignForwardGeneric(
-            u64,
-            @sizeOf(macho.dylib_command) + mem.lenZ(LIB_SYSTEM_PATH),
-            @sizeOf(u64),
-        ));
-        // TODO Find a way to work out runtime version from the OS version triple stored in std.Target.
-        // In the meantime, we're gonna hardcode to the minimum compatibility version of 0.0.0.
-        const min_version = 0x0;
-        var dylib_cmd = emptyGenericCommandWithData(macho.dylib_command{
-            .cmd = macho.LC_LOAD_DYLIB,
-            .cmdsize = cmdsize,
-            .dylib = .{
-                .name = @sizeOf(macho.dylib_command),
-                .timestamp = 2, // not sure why not simply 0; this is reverse engineered from Mach-O files
-                .current_version = min_version,
-                .compatibility_version = min_version,
-            },
-        });
-        dylib_cmd.data = try self.base.allocator.alloc(u8, cmdsize - dylib_cmd.inner.dylib.name);
-        mem.set(u8, dylib_cmd.data, 0);
-        mem.copy(u8, dylib_cmd.data, mem.spanZ(LIB_SYSTEM_PATH));
-        try self.load_commands.append(self.base.allocator, .{ .Dylib = dylib_cmd });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
-    }
-    if (self.main_cmd_index == null) {
-        self.main_cmd_index = @intCast(u16, self.load_commands.items.len);
-        try self.load_commands.append(self.base.allocator, .{
-            .Main = .{
-                .cmd = macho.LC_MAIN,
-                .cmdsize = @sizeOf(macho.entry_point_command),
-                .entryoff = 0x0,
-                .stacksize = 0,
-            },
-        });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
-    }
-    if (self.version_min_cmd_index == null) {
-        self.version_min_cmd_index = @intCast(u16, self.load_commands.items.len);
-        const cmd: u32 = switch (self.base.options.target.os.tag) {
-            .macos => macho.LC_VERSION_MIN_MACOSX,
-            .ios => macho.LC_VERSION_MIN_IPHONEOS,
-            .tvos => macho.LC_VERSION_MIN_TVOS,
-            .watchos => macho.LC_VERSION_MIN_WATCHOS,
-            else => unreachable, // wrong OS
-        };
-        const ver = self.base.options.target.os.version_range.semver.min;
-        const version = ver.major << 16 | ver.minor << 8 | ver.patch;
-        try self.load_commands.append(self.base.allocator, .{
-            .VersionMin = .{
-                .cmd = cmd,
-                .cmdsize = @sizeOf(macho.version_min_command),
-                .version = version,
-                .sdk = version,
-            },
-        });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
-    }
-    if (self.source_version_cmd_index == null) {
-        self.source_version_cmd_index = @intCast(u16, self.load_commands.items.len);
-        try self.load_commands.append(self.base.allocator, .{
-            .SourceVersion = .{
-                .cmd = macho.LC_SOURCE_VERSION,
-                .cmdsize = @sizeOf(macho.source_version_command),
-                .version = 0x0,
-            },
-        });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
-    }
-    if (self.uuid_cmd_index == null) {
-        self.uuid_cmd_index = @intCast(u16, self.load_commands.items.len);
-        var uuid_cmd: macho.uuid_command = .{
-            .cmd = macho.LC_UUID,
-            .cmdsize = @sizeOf(macho.uuid_command),
-            .uuid = undefined,
-        };
-        std.crypto.random.bytes(&uuid_cmd.uuid);
-        try self.load_commands.append(self.base.allocator, .{ .Uuid = uuid_cmd });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
-    }
-    if (self.code_signature_cmd_index == null) {
-        self.code_signature_cmd_index = @intCast(u16, self.load_commands.items.len);
-        try self.load_commands.append(self.base.allocator, .{
-            .LinkeditData = .{
-                .cmd = macho.LC_CODE_SIGNATURE,
-                .cmdsize = @sizeOf(macho.linkedit_data_command),
-                .dataoff = 0,
-                .datasize = 0,
-            },
-        });
-        self.header_dirty = true;
-        self.load_commands_dirty = true;
-    }
-    if (!self.nonlazy_imports.contains("dyld_stub_binder")) {
-        const index = @intCast(u32, self.nonlazy_imports.items().len);
-        const name = try self.base.allocator.dupe(u8, "dyld_stub_binder");
-        const offset = try self.makeString("dyld_stub_binder");
-        try self.nonlazy_imports.putNoClobber(self.base.allocator, name, .{
-            .symbol = .{
-                .n_strx = offset,
-                .n_type = std.macho.N_UNDF | std.macho.N_EXT,
-                .n_sect = 0,
-                .n_desc = std.macho.REFERENCE_FLAG_UNDEFINED_NON_LAZY | std.macho.N_SYMBOL_RESOLVER,
-                .n_value = 0,
-            },
-            .dylib_ordinal = 1, // TODO this is currently hardcoded.
-            .index = index,
-        });
-        const off_index = @intCast(u32, self.offset_table.items.len);
-        try self.offset_table.append(self.base.allocator, .{
-            .kind = .Extern,
-            .symbol = index,
-            .index = off_index,
-        });
-        try self.writeOffsetTableEntry(off_index);
-        self.binding_info_dirty = true;
-    }
-    if (self.stub_helper_stubs_start_off == null) {
-        try self.writeStubHelperPreamble();
     }
 }
 
-fn allocateTextBlock(self: *MachO, text_block: *TextBlock, new_block_size: u64, alignment: u64) !u64 {
-    const text_segment = &self.load_commands.items[self.text_segment_cmd_index.?].Segment;
-    const text_section = &text_segment.sections.items[self.text_section_index.?];
-    const new_block_ideal_capacity = padToIdeal(new_block_size);
+fn calcPagezeroSize(self: *MachO) u64 {
+    const pagezero_vmsize = self.base.options.pagezero_size orelse default_pagezero_vmsize;
+    const page_size = getPageSize(self.base.options.target.cpu.arch);
+    const aligned_pagezero_vmsize = mem.alignBackward(u64, pagezero_vmsize, page_size);
+    if (self.base.options.output_mode == .Lib) return 0;
+    if (aligned_pagezero_vmsize == 0) return 0;
+    if (aligned_pagezero_vmsize != pagezero_vmsize) {
+        log.warn("requested __PAGEZERO size (0x{x}) is not page aligned", .{pagezero_vmsize});
+        log.warn("  rounding down to 0x{x}", .{aligned_pagezero_vmsize});
+    }
+    return aligned_pagezero_vmsize;
+}
 
-    // We use these to indicate our intention to update metadata, placing the new block,
+const InitSectionOpts = struct {
+    flags: u32 = macho.S_REGULAR,
+    reserved1: u32 = 0,
+    reserved2: u32 = 0,
+};
+
+pub fn initSection(self: *MachO, segname: []const u8, sectname: []const u8, opts: InitSectionOpts) !u8 {
+    log.debug("creating section '{s},{s}'", .{ segname, sectname });
+    const index = @as(u8, @intCast(self.sections.slice().len));
+    try self.sections.append(self.base.allocator, .{
+        .segment_index = undefined, // Segments will be created automatically later down the pipeline
+        .header = .{
+            .sectname = makeStaticString(sectname),
+            .segname = makeStaticString(segname),
+            .flags = opts.flags,
+            .reserved1 = opts.reserved1,
+            .reserved2 = opts.reserved2,
+        },
+    });
+    return index;
+}
+
+fn allocateSection(self: *MachO, segname: []const u8, sectname: []const u8, opts: struct {
+    size: u64 = 0,
+    alignment: u32 = 0,
+    prot: macho.vm_prot_t = macho.PROT.NONE,
+    flags: u32 = macho.S_REGULAR,
+    reserved2: u32 = 0,
+}) !u8 {
+    const gpa = self.base.allocator;
+    const page_size = getPageSize(self.base.options.target.cpu.arch);
+    // In incremental context, we create one section per segment pairing. This way,
+    // we can move the segment in raw file as we please.
+    const segment_id = @as(u8, @intCast(self.segments.items.len));
+    const vmaddr = blk: {
+        const prev_segment = self.segments.items[segment_id - 1];
+        break :blk mem.alignForward(u64, prev_segment.vmaddr + prev_segment.vmsize, page_size);
+    };
+    // We commit more memory than needed upfront so that we don't have to reallocate too soon.
+    const vmsize = mem.alignForward(u64, opts.size, page_size);
+    const off = self.findFreeSpace(opts.size, page_size);
+
+    log.debug("found {s},{s} free space 0x{x} to 0x{x} (0x{x} - 0x{x})", .{
+        segname,
+        sectname,
+        off,
+        off + opts.size,
+        vmaddr,
+        vmaddr + vmsize,
+    });
+
+    const seg = try self.segments.addOne(gpa);
+    seg.* = .{
+        .segname = makeStaticString(segname),
+        .vmaddr = vmaddr,
+        .vmsize = vmsize,
+        .fileoff = off,
+        .filesize = vmsize,
+        .maxprot = opts.prot,
+        .initprot = opts.prot,
+        .nsects = 1,
+        .cmdsize = @sizeOf(macho.segment_command_64) + @sizeOf(macho.section_64),
+    };
+
+    const sect_id = try self.initSection(segname, sectname, .{
+        .flags = opts.flags,
+        .reserved2 = opts.reserved2,
+    });
+    const section = &self.sections.items(.header)[sect_id];
+    section.addr = mem.alignForward(u64, vmaddr, opts.alignment);
+    section.offset = mem.alignForward(u32, @as(u32, @intCast(off)), opts.alignment);
+    section.size = opts.size;
+    section.@"align" = math.log2(opts.alignment);
+    self.sections.items(.segment_index)[sect_id] = segment_id;
+    assert(!section.isZerofill()); // TODO zerofill sections
+
+    return sect_id;
+}
+
+fn growSection(self: *MachO, sect_id: u8, needed_size: u64) !void {
+    const header = &self.sections.items(.header)[sect_id];
+    const segment_index = self.sections.items(.segment_index)[sect_id];
+    const segment = &self.segments.items[segment_index];
+    const maybe_last_atom_index = self.sections.items(.last_atom_index)[sect_id];
+    const sect_capacity = self.allocatedSize(header.offset);
+    const page_size = getPageSize(self.base.options.target.cpu.arch);
+
+    if (needed_size > sect_capacity) {
+        const new_offset = self.findFreeSpace(needed_size, page_size);
+        const current_size = if (maybe_last_atom_index) |last_atom_index| blk: {
+            const last_atom = self.getAtom(last_atom_index);
+            const sym = last_atom.getSymbol(self);
+            break :blk (sym.n_value + last_atom.size) - segment.vmaddr;
+        } else header.size;
+
+        log.debug("moving {s},{s} from 0x{x} to 0x{x}", .{
+            header.segName(),
+            header.sectName(),
+            header.offset,
+            new_offset,
+        });
+
+        const amt = try self.base.file.?.copyRangeAll(
+            header.offset,
+            self.base.file.?,
+            new_offset,
+            current_size,
+        );
+        if (amt != current_size) return error.InputOutput;
+        header.offset = @as(u32, @intCast(new_offset));
+        segment.fileoff = new_offset;
+    }
+
+    const sect_vm_capacity = self.allocatedVirtualSize(segment.vmaddr);
+    if (needed_size > sect_vm_capacity) {
+        self.markRelocsDirtyByAddress(segment.vmaddr + segment.vmsize);
+        try self.growSectionVirtualMemory(sect_id, needed_size);
+    }
+
+    header.size = needed_size;
+    segment.filesize = mem.alignForward(u64, needed_size, page_size);
+    segment.vmsize = mem.alignForward(u64, needed_size, page_size);
+}
+
+fn growSectionVirtualMemory(self: *MachO, sect_id: u8, needed_size: u64) !void {
+    const page_size = getPageSize(self.base.options.target.cpu.arch);
+    const header = &self.sections.items(.header)[sect_id];
+    const segment = self.getSegmentPtr(sect_id);
+    const increased_size = padToIdeal(needed_size);
+    const old_aligned_end = segment.vmaddr + segment.vmsize;
+    const new_aligned_end = segment.vmaddr + mem.alignForward(u64, increased_size, page_size);
+    const diff = new_aligned_end - old_aligned_end;
+    log.debug("shifting every segment after {s},{s} in virtual memory by {x}", .{
+        header.segName(),
+        header.sectName(),
+        diff,
+    });
+
+    // TODO: enforce order by increasing VM addresses in self.sections container.
+    for (self.sections.items(.header)[sect_id + 1 ..], 0..) |*next_header, next_sect_id| {
+        const index = @as(u8, @intCast(sect_id + 1 + next_sect_id));
+        const next_segment = self.getSegmentPtr(index);
+        next_header.addr += diff;
+        next_segment.vmaddr += diff;
+
+        const maybe_last_atom_index = &self.sections.items(.last_atom_index)[index];
+        if (maybe_last_atom_index.*) |last_atom_index| {
+            var atom_index = last_atom_index;
+            while (true) {
+                const atom = self.getAtom(atom_index);
+                const sym = atom.getSymbolPtr(self);
+                sym.n_value += diff;
+
+                if (atom.prev_index) |prev_index| {
+                    atom_index = prev_index;
+                } else break;
+            }
+        }
+    }
+}
+
+pub fn addAtomToSection(self: *MachO, atom_index: Atom.Index) void {
+    assert(self.mode == .zld);
+    const atom = self.getAtomPtr(atom_index);
+    const sym = self.getSymbol(atom.getSymbolWithLoc());
+    var section = self.sections.get(sym.n_sect - 1);
+    if (section.header.size > 0) {
+        const last_atom = self.getAtomPtr(section.last_atom_index.?);
+        last_atom.next_index = atom_index;
+        atom.prev_index = section.last_atom_index;
+    } else {
+        section.first_atom_index = atom_index;
+    }
+    section.last_atom_index = atom_index;
+    section.header.size += atom.size;
+    self.sections.set(sym.n_sect - 1, section);
+}
+
+fn allocateAtom(self: *MachO, atom_index: Atom.Index, new_atom_size: u64, alignment: Alignment) !u64 {
+    const tracy = trace(@src());
+    defer tracy.end();
+
+    assert(self.mode == .incremental);
+
+    const atom = self.getAtom(atom_index);
+    const sect_id = atom.getSymbol(self).n_sect - 1;
+    const segment = self.getSegmentPtr(sect_id);
+    const header = &self.sections.items(.header)[sect_id];
+    const free_list = &self.sections.items(.free_list)[sect_id];
+    const maybe_last_atom_index = &self.sections.items(.last_atom_index)[sect_id];
+    const requires_padding = blk: {
+        if (!header.isCode()) break :blk false;
+        if (header.isSymbolStubs()) break :blk false;
+        if (mem.eql(u8, "__stub_helper", header.sectName())) break :blk false;
+        break :blk true;
+    };
+    const new_atom_ideal_capacity = if (requires_padding) padToIdeal(new_atom_size) else new_atom_size;
+
+    // We use these to indicate our intention to update metadata, placing the new atom,
     // and possibly removing a free list node.
     // It would be simpler to do it inside the for loop below, but that would cause a
     // problem if an error was returned later in the function. So this action
     // is actually carried out at the end of the function, when errors are no longer possible.
-    var block_placement: ?*TextBlock = null;
+    var atom_placement: ?Atom.Index = null;
     var free_list_removal: ?usize = null;
 
     // First we look for an appropriately sized free list node.
     // The list is unordered. We'll just take the first thing that works.
-    const vaddr = blk: {
+    var vaddr = blk: {
         var i: usize = 0;
-        while (i < self.text_block_free_list.items.len) {
-            const big_block = self.text_block_free_list.items[i];
-            // We now have a pointer to a live text block that has too much capacity.
-            // Is it enough that we could fit this new text block?
-            const sym = self.locals.items[big_block.local_sym_index];
-            const capacity = big_block.capacity(self.*);
-            const ideal_capacity = padToIdeal(capacity);
-            const ideal_capacity_end_vaddr = sym.n_value + ideal_capacity;
+        while (i < free_list.items.len) {
+            const big_atom_index = free_list.items[i];
+            const big_atom = self.getAtom(big_atom_index);
+            // We now have a pointer to a live atom that has too much capacity.
+            // Is it enough that we could fit this new atom?
+            const sym = big_atom.getSymbol(self);
+            const capacity = big_atom.capacity(self);
+            const ideal_capacity = if (requires_padding) padToIdeal(capacity) else capacity;
+            const ideal_capacity_end_vaddr = math.add(u64, sym.n_value, ideal_capacity) catch ideal_capacity;
             const capacity_end_vaddr = sym.n_value + capacity;
-            const new_start_vaddr_unaligned = capacity_end_vaddr - new_block_ideal_capacity;
-            const new_start_vaddr = mem.alignBackwardGeneric(u64, new_start_vaddr_unaligned, alignment);
+            const new_start_vaddr_unaligned = capacity_end_vaddr - new_atom_ideal_capacity;
+            const new_start_vaddr = alignment.backward(new_start_vaddr_unaligned);
             if (new_start_vaddr < ideal_capacity_end_vaddr) {
                 // Additional bookkeeping here to notice if this free list node
-                // should be deleted because the block that it points to has grown to take up
+                // should be deleted because the atom that it points to has grown to take up
                 // more of the extra capacity.
-                if (!big_block.freeListEligible(self.*)) {
-                    _ = self.text_block_free_list.swapRemove(i);
+                if (!big_atom.freeListEligible(self)) {
+                    _ = free_list.swapRemove(i);
                 } else {
                     i += 1;
                 }
                 continue;
             }
-            // At this point we know that we will place the new block here. But the
+            // At this point we know that we will place the new atom here. But the
             // remaining question is whether there is still yet enough capacity left
             // over for there to still be a free list node.
             const remaining_capacity = new_start_vaddr - ideal_capacity_end_vaddr;
             const keep_free_list_node = remaining_capacity >= min_text_capacity;
 
             // Set up the metadata to be updated, after errors are no longer possible.
-            block_placement = big_block;
+            atom_placement = big_atom_index;
             if (!keep_free_list_node) {
                 free_list_removal = i;
             }
             break :blk new_start_vaddr;
-        } else if (self.last_text_block) |last| {
-            const last_symbol = self.locals.items[last.local_sym_index];
-            // TODO We should pad out the excess capacity with NOPs. For executables,
-            // no padding seems to be OK, but it will probably not be for objects.
-            const ideal_capacity = padToIdeal(last.size);
+        } else if (maybe_last_atom_index.*) |last_index| {
+            const last = self.getAtom(last_index);
+            const last_symbol = last.getSymbol(self);
+            const ideal_capacity = if (requires_padding) padToIdeal(last.size) else last.size;
             const ideal_capacity_end_vaddr = last_symbol.n_value + ideal_capacity;
-            const new_start_vaddr = mem.alignForwardGeneric(u64, ideal_capacity_end_vaddr, alignment);
-            block_placement = last;
+            const new_start_vaddr = alignment.forward(ideal_capacity_end_vaddr);
+            atom_placement = last_index;
             break :blk new_start_vaddr;
         } else {
-            break :blk text_section.addr;
+            break :blk alignment.forward(segment.vmaddr);
         }
     };
 
-    const expand_text_section = block_placement == null or block_placement.?.next == null;
-    if (expand_text_section) {
-        const needed_size = (vaddr + new_block_size) - text_section.addr;
-        assert(needed_size <= text_segment.inner.filesize); // TODO must move the entire text section.
-
-        self.last_text_block = text_block;
-        text_section.size = needed_size;
-        self.load_commands_dirty = true; // TODO Make more granular.
-
-        if (self.d_sym) |*ds| {
-            const debug_text_seg = &ds.load_commands.items[ds.text_segment_cmd_index.?].Segment;
-            const debug_text_sect = &debug_text_seg.sections.items[ds.text_section_index.?];
-            debug_text_sect.size = needed_size;
-            ds.load_commands_dirty = true;
-        }
-    }
-    text_block.size = new_block_size;
-
-    if (text_block.prev) |prev| {
-        prev.next = text_block.next;
-    }
-    if (text_block.next) |next| {
-        next.prev = text_block.prev;
+    const expand_section = if (atom_placement) |placement_index|
+        self.getAtom(placement_index).next_index == null
+    else
+        true;
+    if (expand_section) {
+        const needed_size = (vaddr + new_atom_size) - segment.vmaddr;
+        try self.growSection(sect_id, needed_size);
+        maybe_last_atom_index.* = atom_index;
+        self.segment_table_dirty = true;
     }
 
-    if (block_placement) |big_block| {
-        text_block.prev = big_block;
-        text_block.next = big_block.next;
-        big_block.next = text_block;
+    assert(alignment != .none);
+    header.@"align" = @min(header.@"align", @intFromEnum(alignment));
+    self.getAtomPtr(atom_index).size = new_atom_size;
+
+    if (atom.prev_index) |prev_index| {
+        const prev = self.getAtomPtr(prev_index);
+        prev.next_index = atom.next_index;
+    }
+    if (atom.next_index) |next_index| {
+        const next = self.getAtomPtr(next_index);
+        next.prev_index = atom.prev_index;
+    }
+
+    if (atom_placement) |big_atom_index| {
+        const big_atom = self.getAtomPtr(big_atom_index);
+        const atom_ptr = self.getAtomPtr(atom_index);
+        atom_ptr.prev_index = big_atom_index;
+        atom_ptr.next_index = big_atom.next_index;
+        big_atom.next_index = atom_index;
     } else {
-        text_block.prev = null;
-        text_block.next = null;
+        const atom_ptr = self.getAtomPtr(atom_index);
+        atom_ptr.prev_index = null;
+        atom_ptr.next_index = null;
     }
     if (free_list_removal) |i| {
-        _ = self.text_block_free_list.swapRemove(i);
+        _ = free_list.swapRemove(i);
     }
 
     return vaddr;
 }
 
-pub fn makeStaticString(comptime bytes: []const u8) [16]u8 {
-    var buf = [_]u8{0} ** 16;
-    if (bytes.len > buf.len) @compileError("string too long; max 16 bytes");
-    mem.copy(u8, &buf, bytes);
-    return buf;
+pub fn getGlobalSymbol(self: *MachO, name: []const u8, lib_name: ?[]const u8) !u32 {
+    _ = lib_name;
+    const gpa = self.base.allocator;
+    const sym_name = try std.fmt.allocPrint(gpa, "_{s}", .{name});
+    defer gpa.free(sym_name);
+    return self.addUndefined(sym_name, .{ .add_stub = true });
 }
 
-fn makeString(self: *MachO, bytes: []const u8) !u32 {
-    if (self.string_table_directory.get(bytes)) |offset| {
-        log.debug("reusing '{s}' from string table at offset 0x{x}", .{ bytes, offset });
-        return offset;
-    }
+pub fn writeSegmentHeaders(self: *MachO, writer: anytype) !void {
+    for (self.segments.items, 0..) |seg, i| {
+        const indexes = self.getSectionIndexes(@intCast(i));
+        var out_seg = seg;
+        out_seg.cmdsize = @sizeOf(macho.segment_command_64);
+        out_seg.nsects = 0;
 
-    try self.string_table.ensureCapacity(self.base.allocator, self.string_table.items.len + bytes.len + 1);
-    const offset = @intCast(u32, self.string_table.items.len);
-    log.debug("writing new string '{s}' into string table at offset 0x{x}", .{ bytes, offset });
-    self.string_table.appendSliceAssumeCapacity(bytes);
-    self.string_table.appendAssumeCapacity(0);
-    try self.string_table_directory.putNoClobber(
-        self.base.allocator,
-        try self.base.allocator.dupe(u8, bytes),
-        offset,
-    );
+        // Update section headers count; any section with size of 0 is excluded
+        // since it doesn't have any data in the final binary file.
+        for (self.sections.items(.header)[indexes.start..indexes.end]) |header| {
+            if (header.size == 0) continue;
+            out_seg.cmdsize += @sizeOf(macho.section_64);
+            out_seg.nsects += 1;
+        }
 
-    self.string_table_dirty = true;
-    if (self.d_sym) |*ds|
-        ds.string_table_dirty = true;
+        if (out_seg.nsects == 0 and
+            (mem.eql(u8, out_seg.segName(), "__DATA_CONST") or
+            mem.eql(u8, out_seg.segName(), "__DATA"))) continue;
 
-    return offset;
-}
-
-fn getString(self: *MachO, str_off: u32) []const u8 {
-    assert(str_off < self.string_table.items.len);
-    return mem.spanZ(@ptrCast([*:0]const u8, self.string_table.items.ptr + str_off));
-}
-
-fn updateString(self: *MachO, old_str_off: u32, new_name: []const u8) !u32 {
-    const existing_name = self.getString(old_str_off);
-    if (mem.eql(u8, existing_name, new_name)) {
-        return old_str_off;
-    }
-    return self.makeString(new_name);
-}
-
-pub fn addExternSymbol(self: *MachO, name: []const u8) !u32 {
-    const index = @intCast(u32, self.lazy_imports.items().len);
-    const offset = try self.makeString(name);
-    const sym_name = try self.base.allocator.dupe(u8, name);
-    const dylib_ordinal = 1; // TODO this is now hardcoded, since we only support libSystem.
-    try self.lazy_imports.putNoClobber(self.base.allocator, sym_name, .{
-        .symbol = .{
-            .n_strx = offset,
-            .n_type = macho.N_UNDF | macho.N_EXT,
-            .n_sect = 0,
-            .n_desc = macho.REFERENCE_FLAG_UNDEFINED_NON_LAZY | macho.N_SYMBOL_RESOLVER,
-            .n_value = 0,
-        },
-        .dylib_ordinal = dylib_ordinal,
-        .index = index,
-    });
-    log.debug("adding new extern symbol '{s}' with dylib ordinal '{}'", .{ name, dylib_ordinal });
-    return index;
-}
-
-const NextSegmentAddressAndOffset = struct {
-    address: u64,
-    offset: u64,
-};
-
-fn nextSegmentAddressAndOffset(self: *MachO) NextSegmentAddressAndOffset {
-    var prev_segment_idx: ?usize = null; // We use optional here for safety.
-    for (self.load_commands.items) |cmd, i| {
-        if (cmd == .Segment) {
-            prev_segment_idx = i;
+        try writer.writeStruct(out_seg);
+        for (self.sections.items(.header)[indexes.start..indexes.end]) |header| {
+            if (header.size == 0) continue;
+            try writer.writeStruct(header);
         }
     }
-    const prev_segment = self.load_commands.items[prev_segment_idx.?].Segment;
-    const address = prev_segment.inner.vmaddr + prev_segment.inner.vmsize;
-    const offset = prev_segment.inner.fileoff + prev_segment.inner.filesize;
-    return .{
-        .address = address,
-        .offset = offset,
-    };
 }
 
-fn allocatedSizeLinkedit(self: *MachO, start: u64) u64 {
-    assert(start > 0);
-    var min_pos: u64 = std.math.maxInt(u64);
+pub fn writeLinkeditSegmentData(self: *MachO) !void {
+    const page_size = getPageSize(self.base.options.target.cpu.arch);
+    const seg = self.getLinkeditSegmentPtr();
+    seg.filesize = 0;
+    seg.vmsize = 0;
 
-    // __LINKEDIT is a weird segment where sections get their own load commands so we
-    // special-case it.
-    if (self.dyld_info_cmd_index) |idx| {
-        const dyld_info = self.load_commands.items[idx].DyldInfoOnly;
-        if (dyld_info.rebase_off > start and dyld_info.rebase_off < min_pos) min_pos = dyld_info.rebase_off;
-        if (dyld_info.bind_off > start and dyld_info.bind_off < min_pos) min_pos = dyld_info.bind_off;
-        if (dyld_info.weak_bind_off > start and dyld_info.weak_bind_off < min_pos) min_pos = dyld_info.weak_bind_off;
-        if (dyld_info.lazy_bind_off > start and dyld_info.lazy_bind_off < min_pos) min_pos = dyld_info.lazy_bind_off;
-        if (dyld_info.export_off > start and dyld_info.export_off < min_pos) min_pos = dyld_info.export_off;
-    }
-
-    if (self.function_starts_cmd_index) |idx| {
-        const fstart = self.load_commands.items[idx].LinkeditData;
-        if (fstart.dataoff > start and fstart.dataoff < min_pos) min_pos = fstart.dataoff;
-    }
-
-    if (self.data_in_code_cmd_index) |idx| {
-        const dic = self.load_commands.items[idx].LinkeditData;
-        if (dic.dataoff > start and dic.dataoff < min_pos) min_pos = dic.dataoff;
-    }
-
-    if (self.dysymtab_cmd_index) |idx| {
-        const dysymtab = self.load_commands.items[idx].Dysymtab;
-        if (dysymtab.indirectsymoff > start and dysymtab.indirectsymoff < min_pos) min_pos = dysymtab.indirectsymoff;
-        // TODO Handle more dynamic symbol table sections.
-    }
-
-    if (self.symtab_cmd_index) |idx| {
-        const symtab = self.load_commands.items[idx].Symtab;
-        if (symtab.symoff > start and symtab.symoff < min_pos) min_pos = symtab.symoff;
-        if (symtab.stroff > start and symtab.stroff < min_pos) min_pos = symtab.stroff;
-    }
-
-    return min_pos - start;
-}
-
-fn checkForCollision(start: u64, end: u64, off: u64, size: u64) callconv(.Inline) ?u64 {
-    const increased_size = padToIdeal(size);
-    const test_end = off + increased_size;
-    if (end > off and start < test_end) {
-        return test_end;
-    }
-    return null;
-}
-
-fn detectAllocCollisionLinkedit(self: *MachO, start: u64, size: u64) ?u64 {
-    const end = start + padToIdeal(size);
-
-    // __LINKEDIT is a weird segment where sections get their own load commands so we
-    // special-case it.
-    if (self.dyld_info_cmd_index) |idx| outer: {
-        if (self.load_commands.items.len == idx) break :outer;
-        const dyld_info = self.load_commands.items[idx].DyldInfoOnly;
-        if (checkForCollision(start, end, dyld_info.rebase_off, dyld_info.rebase_size)) |pos| {
-            return pos;
+    for (self.segments.items, 0..) |segment, id| {
+        if (self.linkedit_segment_cmd_index.? == @as(u8, @intCast(id))) continue;
+        if (seg.vmaddr < segment.vmaddr + segment.vmsize) {
+            seg.vmaddr = mem.alignForward(u64, segment.vmaddr + segment.vmsize, page_size);
         }
-        // Binding info
-        if (checkForCollision(start, end, dyld_info.bind_off, dyld_info.bind_size)) |pos| {
-            return pos;
-        }
-        // Weak binding info
-        if (checkForCollision(start, end, dyld_info.weak_bind_off, dyld_info.weak_bind_size)) |pos| {
-            return pos;
-        }
-        // Lazy binding info
-        if (checkForCollision(start, end, dyld_info.lazy_bind_off, dyld_info.lazy_bind_size)) |pos| {
-            return pos;
-        }
-        // Export info
-        if (checkForCollision(start, end, dyld_info.export_off, dyld_info.export_size)) |pos| {
-            return pos;
+        if (seg.fileoff < segment.fileoff + segment.filesize) {
+            seg.fileoff = mem.alignForward(u64, segment.fileoff + segment.filesize, page_size);
         }
     }
 
-    if (self.function_starts_cmd_index) |idx| outer: {
-        if (self.load_commands.items.len == idx) break :outer;
-        const fstart = self.load_commands.items[idx].LinkeditData;
-        if (checkForCollision(start, end, fstart.dataoff, fstart.datasize)) |pos| {
-            return pos;
-        }
+    try self.writeDyldInfoData();
+    // TODO handle this better
+    if (self.mode == .zld) {
+        try self.writeFunctionStarts();
+        try self.writeDataInCode();
     }
+    try self.writeSymtabs();
 
-    if (self.data_in_code_cmd_index) |idx| outer: {
-        if (self.load_commands.items.len == idx) break :outer;
-        const dic = self.load_commands.items[idx].LinkeditData;
-        if (checkForCollision(start, end, dic.dataoff, dic.datasize)) |pos| {
-            return pos;
-        }
-    }
-
-    if (self.dysymtab_cmd_index) |idx| outer: {
-        if (self.load_commands.items.len == idx) break :outer;
-        const dysymtab = self.load_commands.items[idx].Dysymtab;
-        // Indirect symbol table
-        const nindirectsize = dysymtab.nindirectsyms * @sizeOf(u32);
-        if (checkForCollision(start, end, dysymtab.indirectsymoff, nindirectsize)) |pos| {
-            return pos;
-        }
-        // TODO Handle more dynamic symbol table sections.
-    }
-
-    if (self.symtab_cmd_index) |idx| outer: {
-        if (self.load_commands.items.len == idx) break :outer;
-        const symtab = self.load_commands.items[idx].Symtab;
-        // Symbol table
-        const symsize = symtab.nsyms * @sizeOf(macho.nlist_64);
-        if (checkForCollision(start, end, symtab.symoff, symsize)) |pos| {
-            return pos;
-        }
-        // String table
-        if (checkForCollision(start, end, symtab.stroff, symtab.strsize)) |pos| {
-            return pos;
-        }
-    }
-
-    return null;
+    seg.vmsize = mem.alignForward(u64, seg.filesize, page_size);
 }
 
-fn findFreeSpaceLinkedit(self: *MachO, object_size: u64, min_alignment: u16, start: ?u64) u64 {
-    const linkedit = self.load_commands.items[self.linkedit_segment_cmd_index.?].Segment;
-    var st: u64 = start orelse linkedit.inner.fileoff;
-    while (self.detectAllocCollisionLinkedit(st, object_size)) |item_end| {
-        st = mem.alignForwardGeneric(u64, item_end, min_alignment);
+fn collectRebaseDataFromTableSection(self: *MachO, sect_id: u8, rebase: *Rebase, table: anytype) !void {
+    const gpa = self.base.allocator;
+    const header = self.sections.items(.header)[sect_id];
+    const segment_index = self.sections.items(.segment_index)[sect_id];
+    const segment = self.segments.items[segment_index];
+    const base_offset = header.addr - segment.vmaddr;
+    const is_got = if (self.got_section_index) |index| index == sect_id else false;
+
+    try rebase.entries.ensureUnusedCapacity(gpa, table.entries.items.len);
+
+    for (table.entries.items, 0..) |entry, i| {
+        if (!table.lookup.contains(entry)) continue;
+        const sym = self.getSymbol(entry);
+        if (is_got and sym.undf()) continue;
+        const offset = i * @sizeOf(u64);
+        log.debug("    | rebase at {x}", .{base_offset + offset});
+        rebase.entries.appendAssumeCapacity(.{
+            .offset = base_offset + offset,
+            .segment_id = segment_index,
+        });
     }
-    return st;
 }
 
-fn writeOffsetTableEntry(self: *MachO, index: usize) !void {
-    const seg = &self.load_commands.items[self.data_const_segment_cmd_index.?].Segment;
-    const sect = &seg.sections.items[self.got_section_index.?];
-    const off = sect.offset + @sizeOf(u64) * index;
+fn collectRebaseData(self: *MachO, rebase: *Rebase) !void {
+    const gpa = self.base.allocator;
+    const slice = self.sections.slice();
 
-    if (self.offset_table_count_dirty) {
-        // TODO relocate.
-        self.offset_table_count_dirty = false;
-    }
+    for (self.rebases.keys(), 0..) |atom_index, i| {
+        const atom = self.getAtom(atom_index);
+        log.debug("  ATOM(%{?d}, '{s}')", .{ atom.getSymbolIndex(), atom.getName(self) });
 
-    const got_entry = self.offset_table.items[index];
-    const sym = blk: {
-        switch (got_entry.kind) {
-            .Local => {
-                break :blk self.locals.items[got_entry.symbol];
-            },
-            .Extern => {
-                break :blk self.nonlazy_imports.items()[got_entry.symbol].value.symbol;
-            },
+        const sym = atom.getSymbol(self);
+        const segment_index = slice.items(.segment_index)[sym.n_sect - 1];
+        const seg = self.getSegment(sym.n_sect - 1);
+
+        const base_offset = sym.n_value - seg.vmaddr;
+
+        const rebases = self.rebases.values()[i];
+        try rebase.entries.ensureUnusedCapacity(gpa, rebases.items.len);
+
+        for (rebases.items) |offset| {
+            log.debug("    | rebase at {x}", .{base_offset + offset});
+
+            rebase.entries.appendAssumeCapacity(.{
+                .offset = base_offset + offset,
+                .segment_id = segment_index,
+            });
         }
-    };
-    const sym_name = self.getString(sym.n_strx);
-    log.debug("writing offset table entry [ 0x{x} => 0x{x} ({s}) ]", .{ off, sym.n_value, sym_name });
-    try self.base.file.?.pwriteAll(mem.asBytes(&sym.n_value), off);
-}
+    }
 
-fn writeLazySymbolPointer(self: *MachO, index: u32) !void {
-    const text_segment = self.load_commands.items[self.text_segment_cmd_index.?].Segment;
-    const stub_helper = text_segment.sections.items[self.stub_helper_section_index.?];
-    const data_segment = self.load_commands.items[self.data_segment_cmd_index.?].Segment;
-    const la_symbol_ptr = data_segment.sections.items[self.la_symbol_ptr_section_index.?];
+    // Unpack GOT entries
+    if (self.got_section_index) |sect_id| {
+        try self.collectRebaseDataFromTableSection(sect_id, rebase, self.got_table);
+    }
 
-    const stub_size: u4 = switch (self.base.options.target.cpu.arch) {
-        .x86_64 => 10,
-        .aarch64 => 3 * @sizeOf(u32),
-        else => unreachable,
-    };
-    const stub_off = self.stub_helper_stubs_start_off.? + index * stub_size;
-    const end = stub_helper.addr + stub_off - stub_helper.offset;
-    var buf: [@sizeOf(u64)]u8 = undefined;
-    mem.writeIntLittle(u64, &buf, end);
-    const off = la_symbol_ptr.offset + index * @sizeOf(u64);
-    log.debug("writing lazy symbol pointer entry 0x{x} at 0x{x}", .{ end, off });
-    try self.base.file.?.pwriteAll(&buf, off);
-}
+    // Next, unpack __la_symbol_ptr entries
+    if (self.la_symbol_ptr_section_index) |sect_id| {
+        try self.collectRebaseDataFromTableSection(sect_id, rebase, self.stub_table);
+    }
 
-fn writeStubHelperPreamble(self: *MachO) !void {
-    const text_segment = &self.load_commands.items[self.text_segment_cmd_index.?].Segment;
-    const stub_helper = &text_segment.sections.items[self.stub_helper_section_index.?];
-    const data_const_segment = &self.load_commands.items[self.data_const_segment_cmd_index.?].Segment;
-    const got = &data_const_segment.sections.items[self.got_section_index.?];
-    const data_segment = &self.load_commands.items[self.data_segment_cmd_index.?].Segment;
-    const data = &data_segment.sections.items[self.data_section_index.?];
+    // Finally, unpack the rest.
+    const cpu_arch = self.base.options.target.cpu.arch;
+    for (self.objects.items) |*object| {
+        for (object.atoms.items) |atom_index| {
+            const atom = self.getAtom(atom_index);
+            const sym = self.getSymbol(atom.getSymbolWithLoc());
+            if (sym.n_desc == N_DEAD) continue;
+            if (sym.n_desc == N_BOUNDARY) continue;
 
-    switch (self.base.options.target.cpu.arch) {
-        .x86_64 => {
-            const code_size = 15;
-            var code: [code_size]u8 = undefined;
-            // lea %r11, [rip + disp]
-            code[0] = 0x4c;
-            code[1] = 0x8d;
-            code[2] = 0x1d;
-            {
-                const target_addr = data.addr;
-                const displacement = try math.cast(u32, target_addr - stub_helper.addr - 7);
-                mem.writeIntLittle(u32, code[3..7], displacement);
-            }
-            // push %r11
-            code[7] = 0x41;
-            code[8] = 0x53;
-            // jmp [rip + disp]
-            code[9] = 0xff;
-            code[10] = 0x25;
-            {
-                const displacement = try math.cast(u32, got.addr - stub_helper.addr - code_size);
-                mem.writeIntLittle(u32, code[11..], displacement);
-            }
-            try self.base.file.?.pwriteAll(&code, stub_helper.offset);
-            self.stub_helper_stubs_start_off = stub_helper.offset + code_size;
-        },
-        .aarch64 => {
-            var code: [6 * @sizeOf(u32)]u8 = undefined;
-
-            data_blk_outer: {
-                const this_addr = stub_helper.addr;
-                const target_addr = data.addr;
-                data_blk: {
-                    const displacement = math.cast(i21, target_addr - this_addr) catch |_| break :data_blk;
-                    // adr x17, disp
-                    mem.writeIntLittle(u32, code[0..4], aarch64.Instruction.adr(.x17, displacement).toU32());
-                    // nop
-                    mem.writeIntLittle(u32, code[4..8], aarch64.Instruction.nop().toU32());
-                    break :data_blk_outer;
-                }
-                data_blk: {
-                    const new_this_addr = this_addr + @sizeOf(u32);
-                    const displacement = math.cast(i21, target_addr - new_this_addr) catch |_| break :data_blk;
-                    // nop
-                    mem.writeIntLittle(u32, code[0..4], aarch64.Instruction.nop().toU32());
-                    // adr x17, disp
-                    mem.writeIntLittle(u32, code[4..8], aarch64.Instruction.adr(.x17, displacement).toU32());
-                    break :data_blk_outer;
-                }
-                // Jump is too big, replace adr with adrp and add.
-                const this_page = @intCast(i32, this_addr >> 12);
-                const target_page = @intCast(i32, target_addr >> 12);
-                const pages = @intCast(i21, target_page - this_page);
-                // adrp x17, pages
-                mem.writeIntLittle(u32, code[0..4], aarch64.Instruction.adrp(.x17, pages).toU32());
-                const narrowed = @truncate(u12, target_addr);
-                mem.writeIntLittle(u32, code[4..8], aarch64.Instruction.add(.x17, .x17, narrowed, false).toU32());
+            const sect_id = sym.n_sect - 1;
+            const section = self.sections.items(.header)[sect_id];
+            const segment_id = self.sections.items(.segment_index)[sect_id];
+            const segment = self.segments.items[segment_id];
+            if (segment.maxprot & macho.PROT.WRITE == 0) continue;
+            switch (section.type()) {
+                macho.S_LITERAL_POINTERS,
+                macho.S_REGULAR,
+                macho.S_MOD_INIT_FUNC_POINTERS,
+                macho.S_MOD_TERM_FUNC_POINTERS,
+                => {},
+                else => continue,
             }
 
-            // stp x16, x17, [sp, #-16]!
-            mem.writeIntLittle(u32, code[8..12], aarch64.Instruction.stp(
-                .x16,
-                .x17,
-                aarch64.Register.sp,
-                aarch64.Instruction.LoadStorePairOffset.pre_index(-16),
-            ).toU32());
-
-            binder_blk_outer: {
-                const this_addr = stub_helper.addr + 3 * @sizeOf(u32);
-                const target_addr = got.addr;
-                binder_blk: {
-                    const displacement = math.divExact(u64, target_addr - this_addr, 4) catch |_| break :binder_blk;
-                    const literal = math.cast(u18, displacement) catch |_| break :binder_blk;
-                    // ldr x16, label
-                    mem.writeIntLittle(u32, code[12..16], aarch64.Instruction.ldr(.x16, .{
-                        .literal = literal,
-                    }).toU32());
-                    // nop
-                    mem.writeIntLittle(u32, code[16..20], aarch64.Instruction.nop().toU32());
-                    break :binder_blk_outer;
-                }
-                binder_blk: {
-                    const new_this_addr = this_addr + @sizeOf(u32);
-                    const displacement = math.divExact(u64, target_addr - new_this_addr, 4) catch |_| break :binder_blk;
-                    const literal = math.cast(u18, displacement) catch |_| break :binder_blk;
-                    // nop
-                    mem.writeIntLittle(u32, code[12..16], aarch64.Instruction.nop().toU32());
-                    // ldr x16, label
-                    mem.writeIntLittle(u32, code[16..20], aarch64.Instruction.ldr(.x16, .{
-                        .literal = literal,
-                    }).toU32());
-                    break :binder_blk_outer;
-                }
-                // Jump is too big, replace ldr with adrp and ldr(register).
-                const this_page = @intCast(i32, this_addr >> 12);
-                const target_page = @intCast(i32, target_addr >> 12);
-                const pages = @intCast(i21, target_page - this_page);
-                // adrp x16, pages
-                mem.writeIntLittle(u32, code[12..16], aarch64.Instruction.adrp(.x16, pages).toU32());
-                const narrowed = @truncate(u12, target_addr);
-                const offset = try math.divExact(u12, narrowed, 8);
-                // ldr x16, x16, offset
-                mem.writeIntLittle(u32, code[16..20], aarch64.Instruction.ldr(.x16, .{
-                    .register = .{
-                        .rn = .x16,
-                        .offset = aarch64.Instruction.LoadStoreOffset.imm(offset),
-                    },
-                }).toU32());
-            }
-
-            // br x16
-            mem.writeIntLittle(u32, code[20..24], aarch64.Instruction.br(.x16).toU32());
-            try self.base.file.?.pwriteAll(&code, stub_helper.offset);
-            self.stub_helper_stubs_start_off = stub_helper.offset + code.len;
-        },
-        else => unreachable,
-    }
-}
-
-fn writeStub(self: *MachO, index: u32) !void {
-    const text_segment = self.load_commands.items[self.text_segment_cmd_index.?].Segment;
-    const stubs = text_segment.sections.items[self.stubs_section_index.?];
-    const data_segment = self.load_commands.items[self.data_segment_cmd_index.?].Segment;
-    const la_symbol_ptr = data_segment.sections.items[self.la_symbol_ptr_section_index.?];
-
-    const stub_off = stubs.offset + index * stubs.reserved2;
-    const stub_addr = stubs.addr + index * stubs.reserved2;
-    const la_ptr_addr = la_symbol_ptr.addr + index * @sizeOf(u64);
-
-    log.debug("writing stub at 0x{x}", .{stub_off});
-
-    var code = try self.base.allocator.alloc(u8, stubs.reserved2);
-    defer self.base.allocator.free(code);
-
-    switch (self.base.options.target.cpu.arch) {
-        .x86_64 => {
-            assert(la_ptr_addr >= stub_addr + stubs.reserved2);
-            const displacement = try math.cast(u32, la_ptr_addr - stub_addr - stubs.reserved2);
-            // jmp
-            code[0] = 0xff;
-            code[1] = 0x25;
-            mem.writeIntLittle(u32, code[2..][0..4], displacement);
-        },
-        .aarch64 => {
-            assert(la_ptr_addr >= stub_addr);
-            outer: {
-                const this_addr = stub_addr;
-                const target_addr = la_ptr_addr;
-                inner: {
-                    const displacement = math.divExact(u64, target_addr - this_addr, 4) catch |_| break :inner;
-                    const literal = math.cast(u18, displacement) catch |_| break :inner;
-                    // ldr x16, literal
-                    mem.writeIntLittle(u32, code[0..4], aarch64.Instruction.ldr(.x16, .{
-                        .literal = literal,
-                    }).toU32());
-                    // nop
-                    mem.writeIntLittle(u32, code[4..8], aarch64.Instruction.nop().toU32());
-                    break :outer;
-                }
-                inner: {
-                    const new_this_addr = this_addr + @sizeOf(u32);
-                    const displacement = math.divExact(u64, target_addr - new_this_addr, 4) catch |_| break :inner;
-                    const literal = math.cast(u18, displacement) catch |_| break :inner;
-                    // nop
-                    mem.writeIntLittle(u32, code[0..4], aarch64.Instruction.nop().toU32());
-                    // ldr x16, literal
-                    mem.writeIntLittle(u32, code[4..8], aarch64.Instruction.ldr(.x16, .{
-                        .literal = literal,
-                    }).toU32());
-                    break :outer;
-                }
-                // Use adrp followed by ldr(register).
-                const this_page = @intCast(i32, this_addr >> 12);
-                const target_page = @intCast(i32, target_addr >> 12);
-                const pages = @intCast(i21, target_page - this_page);
-                // adrp x16, pages
-                mem.writeIntLittle(u32, code[0..4], aarch64.Instruction.adrp(.x16, pages).toU32());
-                const narrowed = @truncate(u12, target_addr);
-                const offset = try math.divExact(u12, narrowed, 8);
-                // ldr x16, x16, offset
-                mem.writeIntLittle(u32, code[4..8], aarch64.Instruction.ldr(.x16, .{
-                    .register = .{
-                        .rn = .x16,
-                        .offset = aarch64.Instruction.LoadStoreOffset.imm(offset),
-                    },
-                }).toU32());
-            }
-            // br x16
-            mem.writeIntLittle(u32, code[8..12], aarch64.Instruction.br(.x16).toU32());
-        },
-        else => unreachable,
-    }
-    try self.base.file.?.pwriteAll(code, stub_off);
-}
-
-fn writeStubInStubHelper(self: *MachO, index: u32) !void {
-    const text_segment = self.load_commands.items[self.text_segment_cmd_index.?].Segment;
-    const stub_helper = text_segment.sections.items[self.stub_helper_section_index.?];
-
-    const stub_size: u4 = switch (self.base.options.target.cpu.arch) {
-        .x86_64 => 10,
-        .aarch64 => 3 * @sizeOf(u32),
-        else => unreachable,
-    };
-    const stub_off = self.stub_helper_stubs_start_off.? + index * stub_size;
-
-    var code = try self.base.allocator.alloc(u8, stub_size);
-    defer self.base.allocator.free(code);
-
-    switch (self.base.options.target.cpu.arch) {
-        .x86_64 => {
-            const displacement = try math.cast(
-                i32,
-                @intCast(i64, stub_helper.offset) - @intCast(i64, stub_off) - stub_size,
-            );
-            // pushq
-            code[0] = 0x68;
-            mem.writeIntLittle(u32, code[1..][0..4], 0x0); // Just a placeholder populated in `populateLazyBindOffsetsInStubHelper`.
-            // jmpq
-            code[5] = 0xe9;
-            mem.writeIntLittle(u32, code[6..][0..4], @bitCast(u32, displacement));
-        },
-        .aarch64 => {
-            const literal = blk: {
-                const div_res = try math.divExact(u64, stub_size - @sizeOf(u32), 4);
-                break :blk try math.cast(u18, div_res);
-            };
-            // ldr w16, literal
-            mem.writeIntLittle(u32, code[0..4], aarch64.Instruction.ldr(.w16, .{
-                .literal = literal,
-            }).toU32());
-            const displacement = try math.cast(i28, @intCast(i64, stub_helper.offset) - @intCast(i64, stub_off) - 4);
-            // b disp
-            mem.writeIntLittle(u32, code[4..8], aarch64.Instruction.b(displacement).toU32());
-            // Just a placeholder populated in `populateLazyBindOffsetsInStubHelper`.
-            mem.writeIntLittle(u32, code[8..12], 0x0);
-        },
-        else => unreachable,
-    }
-    try self.base.file.?.pwriteAll(code, stub_off);
-}
-
-fn relocateSymbolTable(self: *MachO) !void {
-    const symtab = &self.load_commands.items[self.symtab_cmd_index.?].Symtab;
-    const nlocals = self.locals.items.len;
-    const nglobals = self.globals.items.len;
-    const nundefs = self.lazy_imports.items().len + self.nonlazy_imports.items().len;
-    const nsyms = nlocals + nglobals + nundefs;
-
-    if (symtab.nsyms < nsyms) {
-        const linkedit_segment = self.load_commands.items[self.linkedit_segment_cmd_index.?].Segment;
-        const needed_size = nsyms * @sizeOf(macho.nlist_64);
-        if (needed_size > self.allocatedSizeLinkedit(symtab.symoff)) {
-            // Move the entire symbol table to a new location
-            const new_symoff = self.findFreeSpaceLinkedit(needed_size, @alignOf(macho.nlist_64), null);
-            const existing_size = symtab.nsyms * @sizeOf(macho.nlist_64);
-
-            log.debug("relocating symbol table from 0x{x}-0x{x} to 0x{x}-0x{x}", .{
-                symtab.symoff,
-                symtab.symoff + existing_size,
-                new_symoff,
-                new_symoff + existing_size,
+            log.debug("  ATOM({d}, %{d}, '{s}')", .{
+                atom_index,
+                atom.sym_index,
+                self.getSymbolName(atom.getSymbolWithLoc()),
             });
 
-            const amt = try self.base.file.?.copyRangeAll(symtab.symoff, self.base.file.?, new_symoff, existing_size);
-            if (amt != existing_size) return error.InputOutput;
-            symtab.symoff = @intCast(u32, new_symoff);
-            self.string_table_needs_relocation = true;
-        }
-        symtab.nsyms = @intCast(u32, nsyms);
-        self.load_commands_dirty = true;
-    }
-}
+            const code = Atom.getAtomCode(self, atom_index);
+            const relocs = Atom.getAtomRelocs(self, atom_index);
+            const ctx = Atom.getRelocContext(self, atom_index);
 
-fn writeLocalSymbol(self: *MachO, index: usize) !void {
-    const tracy = trace(@src());
-    defer tracy.end();
-    try self.relocateSymbolTable();
-    const symtab = &self.load_commands.items[self.symtab_cmd_index.?].Symtab;
-    const off = symtab.symoff + @sizeOf(macho.nlist_64) * index;
-    log.debug("writing local symbol {} at 0x{x}", .{ index, off });
-    try self.base.file.?.pwriteAll(mem.asBytes(&self.locals.items[index]), off);
-}
+            for (relocs) |rel| {
+                switch (cpu_arch) {
+                    .aarch64 => {
+                        const rel_type = @as(macho.reloc_type_arm64, @enumFromInt(rel.r_type));
+                        if (rel_type != .ARM64_RELOC_UNSIGNED) continue;
+                        if (rel.r_length != 3) continue;
+                    },
+                    .x86_64 => {
+                        const rel_type = @as(macho.reloc_type_x86_64, @enumFromInt(rel.r_type));
+                        if (rel_type != .X86_64_RELOC_UNSIGNED) continue;
+                        if (rel.r_length != 3) continue;
+                    },
+                    else => unreachable,
+                }
+                const target = Atom.parseRelocTarget(self, .{
+                    .object_id = atom.getFile().?,
+                    .rel = rel,
+                    .code = code,
+                    .base_offset = ctx.base_offset,
+                    .base_addr = ctx.base_addr,
+                });
+                const target_sym = self.getSymbol(target);
+                if (target_sym.undf()) continue;
 
-fn writeAllGlobalAndUndefSymbols(self: *MachO) !void {
-    const tracy = trace(@src());
-    defer tracy.end();
+                const base_offset = @as(i32, @intCast(sym.n_value - segment.vmaddr));
+                const rel_offset = rel.r_address - ctx.base_offset;
+                const offset = @as(u64, @intCast(base_offset + rel_offset));
+                log.debug("    | rebase at {x}", .{offset});
 
-    try self.relocateSymbolTable();
-    const symtab = &self.load_commands.items[self.symtab_cmd_index.?].Symtab;
-    const nlocals = self.locals.items.len;
-    const nglobals = self.globals.items.len;
-
-    const nundefs = self.lazy_imports.items().len + self.nonlazy_imports.items().len;
-    var undefs = std.ArrayList(macho.nlist_64).init(self.base.allocator);
-    defer undefs.deinit();
-    try undefs.ensureCapacity(nundefs);
-    for (self.lazy_imports.items()) |entry| {
-        undefs.appendAssumeCapacity(entry.value.symbol);
-    }
-    for (self.nonlazy_imports.items()) |entry| {
-        undefs.appendAssumeCapacity(entry.value.symbol);
-    }
-
-    const locals_off = symtab.symoff;
-    const locals_size = nlocals * @sizeOf(macho.nlist_64);
-
-    const globals_off = locals_off + locals_size;
-    const globals_size = nglobals * @sizeOf(macho.nlist_64);
-    log.debug("writing global symbols from 0x{x} to 0x{x}", .{ globals_off, globals_size + globals_off });
-    try self.base.file.?.pwriteAll(mem.sliceAsBytes(self.globals.items), globals_off);
-
-    const undefs_off = globals_off + globals_size;
-    const undefs_size = nundefs * @sizeOf(macho.nlist_64);
-    log.debug("writing extern symbols from 0x{x} to 0x{x}", .{ undefs_off, undefs_size + undefs_off });
-    try self.base.file.?.pwriteAll(mem.sliceAsBytes(undefs.items), undefs_off);
-
-    // Update dynamic symbol table.
-    const dysymtab = &self.load_commands.items[self.dysymtab_cmd_index.?].Dysymtab;
-    dysymtab.nlocalsym = @intCast(u32, nlocals);
-    dysymtab.iextdefsym = @intCast(u32, nlocals);
-    dysymtab.nextdefsym = @intCast(u32, nglobals);
-    dysymtab.iundefsym = @intCast(u32, nlocals + nglobals);
-    dysymtab.nundefsym = @intCast(u32, nundefs);
-    self.load_commands_dirty = true;
-}
-
-fn writeIndirectSymbolTable(self: *MachO) !void {
-    // TODO figure out a way not to rewrite the table every time if
-    // no new undefs are not added.
-    const tracy = trace(@src());
-    defer tracy.end();
-
-    const text_segment = &self.load_commands.items[self.text_segment_cmd_index.?].Segment;
-    const stubs = &text_segment.sections.items[self.stubs_section_index.?];
-    const data_const_seg = &self.load_commands.items[self.data_const_segment_cmd_index.?].Segment;
-    const got = &data_const_seg.sections.items[self.got_section_index.?];
-    const data_segment = &self.load_commands.items[self.data_segment_cmd_index.?].Segment;
-    const la_symbol_ptr = &data_segment.sections.items[self.la_symbol_ptr_section_index.?];
-    const dysymtab = &self.load_commands.items[self.dysymtab_cmd_index.?].Dysymtab;
-
-    const lazy = self.lazy_imports.items();
-    const got_entries = self.offset_table.items;
-    const allocated_size = self.allocatedSizeLinkedit(dysymtab.indirectsymoff);
-    const nindirectsyms = @intCast(u32, lazy.len * 2 + got_entries.len);
-    const needed_size = @intCast(u32, nindirectsyms * @sizeOf(u32));
-
-    if (needed_size > allocated_size) {
-        dysymtab.nindirectsyms = 0;
-        dysymtab.indirectsymoff = @intCast(u32, self.findFreeSpaceLinkedit(needed_size, @sizeOf(u32), null));
-    }
-    dysymtab.nindirectsyms = nindirectsyms;
-    log.debug("writing indirect symbol table from 0x{x} to 0x{x}", .{
-        dysymtab.indirectsymoff,
-        dysymtab.indirectsymoff + needed_size,
-    });
-
-    var buf = try self.base.allocator.alloc(u8, needed_size);
-    defer self.base.allocator.free(buf);
-    var stream = std.io.fixedBufferStream(buf);
-    var writer = stream.writer();
-
-    stubs.reserved1 = 0;
-    for (lazy) |_, i| {
-        const symtab_idx = @intCast(u32, dysymtab.iundefsym + i);
-        try writer.writeIntLittle(u32, symtab_idx);
-    }
-
-    const base_id = @intCast(u32, lazy.len);
-    got.reserved1 = base_id;
-    for (got_entries) |entry| {
-        switch (entry.kind) {
-            .Local => {
-                try writer.writeIntLittle(u32, macho.INDIRECT_SYMBOL_LOCAL);
-            },
-            .Extern => {
-                const symtab_idx = @intCast(u32, dysymtab.iundefsym + entry.index + base_id);
-                try writer.writeIntLittle(u32, symtab_idx);
-            },
+                try rebase.entries.append(gpa, .{
+                    .offset = offset,
+                    .segment_id = segment_id,
+                });
+            }
         }
     }
 
-    la_symbol_ptr.reserved1 = got.reserved1 + @intCast(u32, got_entries.len);
-    for (lazy) |_, i| {
-        const symtab_idx = @intCast(u32, dysymtab.iundefsym + i);
-        try writer.writeIntLittle(u32, symtab_idx);
+    try rebase.finalize(gpa);
+}
+
+fn collectBindDataFromTableSection(self: *MachO, sect_id: u8, bind: anytype, table: anytype) !void {
+    const gpa = self.base.allocator;
+    const header = self.sections.items(.header)[sect_id];
+    const segment_index = self.sections.items(.segment_index)[sect_id];
+    const segment = self.segments.items[segment_index];
+    const base_offset = header.addr - segment.vmaddr;
+
+    try bind.entries.ensureUnusedCapacity(gpa, table.entries.items.len);
+
+    for (table.entries.items, 0..) |entry, i| {
+        if (!table.lookup.contains(entry)) continue;
+        const bind_sym = self.getSymbol(entry);
+        if (!bind_sym.undf()) continue;
+        const offset = i * @sizeOf(u64);
+        log.debug("    | bind at {x}, import('{s}') in dylib({d})", .{
+            base_offset + offset,
+            self.getSymbolName(entry),
+            @divTrunc(@as(i16, @bitCast(bind_sym.n_desc)), macho.N_SYMBOL_RESOLVER),
+        });
+        if (bind_sym.weakRef()) {
+            log.debug("    | marking as weak ref ", .{});
+        }
+        bind.entries.appendAssumeCapacity(.{
+            .target = entry,
+            .offset = base_offset + offset,
+            .segment_id = segment_index,
+            .addend = 0,
+        });
+    }
+}
+
+fn collectBindData(self: *MachO, bind: anytype, raw_bindings: anytype) !void {
+    const gpa = self.base.allocator;
+    const slice = self.sections.slice();
+
+    for (raw_bindings.keys(), 0..) |atom_index, i| {
+        const atom = self.getAtom(atom_index);
+        log.debug("  ATOM(%{?d}, '{s}')", .{ atom.getSymbolIndex(), atom.getName(self) });
+
+        const sym = atom.getSymbol(self);
+        const segment_index = slice.items(.segment_index)[sym.n_sect - 1];
+        const seg = self.getSegment(sym.n_sect - 1);
+
+        const base_offset = sym.n_value - seg.vmaddr;
+
+        const bindings = raw_bindings.values()[i];
+        try bind.entries.ensureUnusedCapacity(gpa, bindings.items.len);
+
+        for (bindings.items) |binding| {
+            const bind_sym = self.getSymbol(binding.target);
+            const bind_sym_name = self.getSymbolName(binding.target);
+            const dylib_ordinal = @divTrunc(
+                @as(i16, @bitCast(bind_sym.n_desc)),
+                macho.N_SYMBOL_RESOLVER,
+            );
+            log.debug("    | bind at {x}, import('{s}') in dylib({d})", .{
+                binding.offset + base_offset,
+                bind_sym_name,
+                dylib_ordinal,
+            });
+            if (bind_sym.weakRef()) {
+                log.debug("    | marking as weak ref ", .{});
+            }
+            bind.entries.appendAssumeCapacity(.{
+                .target = binding.target,
+                .offset = binding.offset + base_offset,
+                .segment_id = segment_index,
+                .addend = 0,
+            });
+        }
     }
 
-    try self.base.file.?.pwriteAll(buf, dysymtab.indirectsymoff);
-    self.load_commands_dirty = true;
-}
-
-fn writeCodeSignaturePadding(self: *MachO) !void {
-    // TODO figure out how not to rewrite padding every single time.
-    const tracy = trace(@src());
-    defer tracy.end();
-
-    const linkedit_segment = &self.load_commands.items[self.linkedit_segment_cmd_index.?].Segment;
-    const code_sig_cmd = &self.load_commands.items[self.code_signature_cmd_index.?].LinkeditData;
-    const fileoff = linkedit_segment.inner.fileoff + linkedit_segment.inner.filesize;
-    const needed_size = CodeSignature.calcCodeSignaturePaddingSize(
-        self.base.options.emit.?.sub_path,
-        fileoff,
-        self.page_size,
-    );
-    code_sig_cmd.dataoff = @intCast(u32, fileoff);
-    code_sig_cmd.datasize = needed_size;
-
-    // Advance size of __LINKEDIT segment
-    linkedit_segment.inner.filesize += needed_size;
-    if (linkedit_segment.inner.vmsize < linkedit_segment.inner.filesize) {
-        linkedit_segment.inner.vmsize = mem.alignForwardGeneric(u64, linkedit_segment.inner.filesize, self.page_size);
+    // Unpack GOT pointers
+    if (self.got_section_index) |sect_id| {
+        try self.collectBindDataFromTableSection(sect_id, bind, self.got_table);
     }
-    log.debug("writing code signature padding from 0x{x} to 0x{x}", .{ fileoff, fileoff + needed_size });
-    // Pad out the space. We need to do this to calculate valid hashes for everything in the file
-    // except for code signature data.
-    try self.base.file.?.pwriteAll(&[_]u8{0}, fileoff + needed_size - 1);
-    self.load_commands_dirty = true;
+
+    // Next, unpack TLV pointers section
+    if (self.tlv_ptr_section_index) |sect_id| {
+        try self.collectBindDataFromTableSection(sect_id, bind, self.tlv_ptr_table);
+    }
+
+    // Finally, unpack the rest.
+    const cpu_arch = self.base.options.target.cpu.arch;
+    for (self.objects.items) |*object| {
+        for (object.atoms.items) |atom_index| {
+            const atom = self.getAtom(atom_index);
+            const sym = self.getSymbol(atom.getSymbolWithLoc());
+            if (sym.n_desc == N_DEAD) continue;
+            if (sym.n_desc == N_BOUNDARY) continue;
+
+            const sect_id = sym.n_sect - 1;
+            const section = self.sections.items(.header)[sect_id];
+            const segment_id = self.sections.items(.segment_index)[sect_id];
+            const segment = self.segments.items[segment_id];
+            if (segment.maxprot & macho.PROT.WRITE == 0) continue;
+            switch (section.type()) {
+                macho.S_LITERAL_POINTERS,
+                macho.S_REGULAR,
+                macho.S_MOD_INIT_FUNC_POINTERS,
+                macho.S_MOD_TERM_FUNC_POINTERS,
+                => {},
+                else => continue,
+            }
+
+            log.debug("  ATOM({d}, %{d}, '{s}')", .{
+                atom_index,
+                atom.sym_index,
+                self.getSymbolName(atom.getSymbolWithLoc()),
+            });
+
+            const code = Atom.getAtomCode(self, atom_index);
+            const relocs = Atom.getAtomRelocs(self, atom_index);
+            const ctx = Atom.getRelocContext(self, atom_index);
+
+            for (relocs) |rel| {
+                switch (cpu_arch) {
+                    .aarch64 => {
+                        const rel_type = @as(macho.reloc_type_arm64, @enumFromInt(rel.r_type));
+                        if (rel_type != .ARM64_RELOC_UNSIGNED) continue;
+                        if (rel.r_length != 3) continue;
+                    },
+                    .x86_64 => {
+                        const rel_type = @as(macho.reloc_type_x86_64, @enumFromInt(rel.r_type));
+                        if (rel_type != .X86_64_RELOC_UNSIGNED) continue;
+                        if (rel.r_length != 3) continue;
+                    },
+                    else => unreachable,
+                }
+
+                const global = Atom.parseRelocTarget(self, .{
+                    .object_id = atom.getFile().?,
+                    .rel = rel,
+                    .code = code,
+                    .base_offset = ctx.base_offset,
+                    .base_addr = ctx.base_addr,
+                });
+                const bind_sym_name = self.getSymbolName(global);
+                const bind_sym = self.getSymbol(global);
+                if (!bind_sym.undf()) continue;
+
+                const base_offset = sym.n_value - segment.vmaddr;
+                const rel_offset = @as(u32, @intCast(rel.r_address - ctx.base_offset));
+                const offset = @as(u64, @intCast(base_offset + rel_offset));
+                const addend = mem.readInt(i64, code[rel_offset..][0..8], .little);
+
+                const dylib_ordinal = @divTrunc(@as(i16, @bitCast(bind_sym.n_desc)), macho.N_SYMBOL_RESOLVER);
+                log.debug("    | bind at {x}, import('{s}') in dylib({d})", .{
+                    base_offset,
+                    bind_sym_name,
+                    dylib_ordinal,
+                });
+                log.debug("    | with addend {x}", .{addend});
+                if (bind_sym.weakRef()) {
+                    log.debug("    | marking as weak ref ", .{});
+                }
+                try bind.entries.append(gpa, .{
+                    .target = global,
+                    .offset = offset,
+                    .segment_id = segment_id,
+                    .addend = addend,
+                });
+            }
+        }
+    }
+
+    try bind.finalize(gpa, self);
 }
 
-fn writeCodeSignature(self: *MachO) !void {
-    const tracy = trace(@src());
-    defer tracy.end();
-
-    const text_segment = self.load_commands.items[self.text_segment_cmd_index.?].Segment;
-    const code_sig_cmd = self.load_commands.items[self.code_signature_cmd_index.?].LinkeditData;
-
-    var code_sig = CodeSignature.init(self.base.allocator, self.page_size);
-    defer code_sig.deinit();
-    try code_sig.calcAdhocSignature(
-        self.base.file.?,
-        self.base.options.emit.?.sub_path,
-        text_segment.inner,
-        code_sig_cmd,
-        self.base.options.output_mode,
-    );
-
-    var buffer = try self.base.allocator.alloc(u8, code_sig.size());
-    defer self.base.allocator.free(buffer);
-    var stream = std.io.fixedBufferStream(buffer);
-    try code_sig.write(stream.writer());
-
-    log.debug("writing code signature from 0x{x} to 0x{x}", .{ code_sig_cmd.dataoff, code_sig_cmd.dataoff + buffer.len });
-
-    try self.base.file.?.pwriteAll(buffer, code_sig_cmd.dataoff);
+fn collectLazyBindData(self: *MachO, bind: anytype) !void {
+    const sect_id = self.la_symbol_ptr_section_index orelse return;
+    try self.collectBindDataFromTableSection(sect_id, bind, self.stub_table);
+    try bind.finalize(self.base.allocator, self);
 }
 
-fn writeExportTrie(self: *MachO) !void {
-    if (!self.export_info_dirty) return;
-    if (self.globals.items.len == 0) return;
+fn collectExportData(self: *MachO, trie: *Trie) !void {
+    const gpa = self.base.allocator;
 
-    const tracy = trace(@src());
-    defer tracy.end();
+    // TODO handle macho.EXPORT_SYMBOL_FLAGS_REEXPORT and macho.EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER.
+    log.debug("generating export trie", .{});
 
-    var trie = Trie.init(self.base.allocator);
-    defer trie.deinit();
+    const exec_segment = self.segments.items[self.header_segment_cmd_index.?];
+    const base_address = exec_segment.vmaddr;
 
-    const text_segment = self.load_commands.items[self.text_segment_cmd_index.?].Segment;
-    for (self.globals.items) |symbol| {
-        // TODO figure out if we should put all global symbols into the export trie
-        const name = self.getString(symbol.n_strx);
-        assert(symbol.n_value >= text_segment.inner.vmaddr);
-        try trie.put(.{
-            .name = name,
-            .vmaddr_offset = symbol.n_value - text_segment.inner.vmaddr,
+    for (self.globals.items) |global| {
+        const sym = self.getSymbol(global);
+
+        if (sym.undf()) continue;
+        assert(sym.ext());
+        if (sym.n_desc == N_DEAD) continue;
+        if (sym.n_desc == N_BOUNDARY) continue;
+
+        const sym_name = self.getSymbolName(global);
+        log.debug("  (putting '{s}' defined at 0x{x})", .{ sym_name, sym.n_value });
+        try trie.put(gpa, .{
+            .name = sym_name,
+            .vmaddr_offset = sym.n_value - base_address,
             .export_flags = macho.EXPORT_SYMBOL_FLAGS_KIND_REGULAR,
         });
     }
 
-    try trie.finalize();
-    var buffer = try self.base.allocator.alloc(u8, @intCast(usize, trie.size));
-    defer self.base.allocator.free(buffer);
-    var stream = std.io.fixedBufferStream(buffer);
-    const nwritten = try trie.write(stream.writer());
-    assert(nwritten == trie.size);
-
-    const linkedit_segment = self.load_commands.items[self.linkedit_segment_cmd_index.?].Segment;
-    const dyld_info = &self.load_commands.items[self.dyld_info_cmd_index.?].DyldInfoOnly;
-    const allocated_size = self.allocatedSizeLinkedit(dyld_info.export_off);
-    const needed_size = mem.alignForwardGeneric(u64, buffer.len, @alignOf(u64));
-
-    if (needed_size > allocated_size) {
-        dyld_info.export_off = 0;
-        dyld_info.export_off = @intCast(u32, self.findFreeSpaceLinkedit(needed_size, 1, null));
-        // TODO this might require relocating all following LC_DYLD_INFO_ONLY sections too.
-    }
-    dyld_info.export_size = @intCast(u32, needed_size);
-    log.debug("writing export info from 0x{x} to 0x{x}", .{ dyld_info.export_off, dyld_info.export_off + dyld_info.export_size });
-
-    try self.base.file.?.pwriteAll(buffer, dyld_info.export_off);
-    self.load_commands_dirty = true;
-    self.export_info_dirty = false;
+    try trie.finalize(gpa);
 }
 
-fn writeRebaseInfoTable(self: *MachO) !void {
-    if (!self.rebase_info_dirty) return;
-
+fn writeDyldInfoData(self: *MachO) !void {
     const tracy = trace(@src());
     defer tracy.end();
 
-    var pointers = std.ArrayList(bind.Pointer).init(self.base.allocator);
-    defer pointers.deinit();
+    const gpa = self.base.allocator;
 
-    if (self.got_section_index) |idx| {
-        const seg = self.load_commands.items[self.data_const_segment_cmd_index.?].Segment;
-        const sect = seg.sections.items[idx];
-        const base_offset = sect.addr - seg.inner.vmaddr;
-        const segment_id = self.data_const_segment_cmd_index.?;
+    var rebase = Rebase{};
+    defer rebase.deinit(gpa);
+    try self.collectRebaseData(&rebase);
 
-        for (self.offset_table.items) |entry| {
-            if (entry.kind == .Extern) continue;
-            try pointers.append(.{
-                .offset = base_offset + entry.index * @sizeOf(u64),
-                .segment_id = segment_id,
-            });
-        }
-    }
+    var bind = Bind{};
+    defer bind.deinit(gpa);
+    try self.collectBindData(&bind, self.bindings);
 
-    if (self.la_symbol_ptr_section_index) |idx| {
-        try pointers.ensureCapacity(pointers.items.len + self.lazy_imports.items().len);
-        const seg = self.load_commands.items[self.data_segment_cmd_index.?].Segment;
-        const sect = seg.sections.items[idx];
-        const base_offset = sect.addr - seg.inner.vmaddr;
-        const segment_id = self.data_segment_cmd_index.?;
+    var lazy_bind = LazyBind{};
+    defer lazy_bind.deinit(gpa);
+    try self.collectLazyBindData(&lazy_bind);
 
-        for (self.lazy_imports.items()) |entry| {
-            pointers.appendAssumeCapacity(.{
-                .offset = base_offset + entry.value.index * @sizeOf(u64),
-                .segment_id = segment_id,
-            });
-        }
-    }
+    var trie: Trie = .{};
+    defer trie.deinit(gpa);
+    try trie.init(gpa);
+    try self.collectExportData(&trie);
 
-    std.sort.sort(bind.Pointer, pointers.items, {}, bind.pointerCmp);
+    const link_seg = self.getLinkeditSegmentPtr();
+    assert(mem.isAlignedGeneric(u64, link_seg.fileoff, @alignOf(u64)));
+    const rebase_off = link_seg.fileoff;
+    const rebase_size = rebase.size();
+    const rebase_size_aligned = mem.alignForward(u64, rebase_size, @alignOf(u64));
+    log.debug("writing rebase info from 0x{x} to 0x{x}", .{ rebase_off, rebase_off + rebase_size_aligned });
 
-    const size = try bind.rebaseInfoSize(pointers.items);
-    var buffer = try self.base.allocator.alloc(u8, @intCast(usize, size));
-    defer self.base.allocator.free(buffer);
+    const bind_off = rebase_off + rebase_size_aligned;
+    const bind_size = bind.size();
+    const bind_size_aligned = mem.alignForward(u64, bind_size, @alignOf(u64));
+    log.debug("writing bind info from 0x{x} to 0x{x}", .{ bind_off, bind_off + bind_size_aligned });
+
+    const lazy_bind_off = bind_off + bind_size_aligned;
+    const lazy_bind_size = lazy_bind.size();
+    const lazy_bind_size_aligned = mem.alignForward(u64, lazy_bind_size, @alignOf(u64));
+    log.debug("writing lazy bind info from 0x{x} to 0x{x}", .{
+        lazy_bind_off,
+        lazy_bind_off + lazy_bind_size_aligned,
+    });
+
+    const export_off = lazy_bind_off + lazy_bind_size_aligned;
+    const export_size = trie.size;
+    const export_size_aligned = mem.alignForward(u64, export_size, @alignOf(u64));
+    log.debug("writing export trie from 0x{x} to 0x{x}", .{ export_off, export_off + export_size_aligned });
+
+    const needed_size = math.cast(usize, export_off + export_size_aligned - rebase_off) orelse
+        return error.Overflow;
+    link_seg.filesize = needed_size;
+    assert(mem.isAlignedGeneric(u64, link_seg.fileoff + link_seg.filesize, @alignOf(u64)));
+
+    var buffer = try gpa.alloc(u8, needed_size);
+    defer gpa.free(buffer);
+    @memset(buffer, 0);
 
     var stream = std.io.fixedBufferStream(buffer);
-    try bind.writeRebaseInfo(pointers.items, stream.writer());
+    const writer = stream.writer();
 
-    const dyld_info = &self.load_commands.items[self.dyld_info_cmd_index.?].DyldInfoOnly;
-    const allocated_size = self.allocatedSizeLinkedit(dyld_info.rebase_off);
-    const needed_size = mem.alignForwardGeneric(u64, buffer.len, @alignOf(u64));
+    try rebase.write(writer);
+    try stream.seekTo(bind_off - rebase_off);
 
-    if (needed_size > allocated_size) {
-        dyld_info.rebase_off = 0;
-        dyld_info.rebase_off = @intCast(u32, self.findFreeSpaceLinkedit(needed_size, 1, null));
-        // TODO this might require relocating all following LC_DYLD_INFO_ONLY sections too.
-    }
+    try bind.write(writer);
+    try stream.seekTo(lazy_bind_off - rebase_off);
 
-    dyld_info.rebase_size = @intCast(u32, needed_size);
-    log.debug("writing rebase info from 0x{x} to 0x{x}", .{ dyld_info.rebase_off, dyld_info.rebase_off + dyld_info.rebase_size });
+    try lazy_bind.write(writer);
+    try stream.seekTo(export_off - rebase_off);
 
-    try self.base.file.?.pwriteAll(buffer, dyld_info.rebase_off);
-    self.load_commands_dirty = true;
-    self.rebase_info_dirty = false;
+    _ = try trie.write(writer);
+
+    log.debug("writing dyld info from 0x{x} to 0x{x}", .{
+        rebase_off,
+        rebase_off + needed_size,
+    });
+
+    try self.base.file.?.pwriteAll(buffer, rebase_off);
+    try self.populateLazyBindOffsetsInStubHelper(lazy_bind);
+
+    self.dyld_info_cmd.rebase_off = @as(u32, @intCast(rebase_off));
+    self.dyld_info_cmd.rebase_size = @as(u32, @intCast(rebase_size_aligned));
+    self.dyld_info_cmd.bind_off = @as(u32, @intCast(bind_off));
+    self.dyld_info_cmd.bind_size = @as(u32, @intCast(bind_size_aligned));
+    self.dyld_info_cmd.lazy_bind_off = @as(u32, @intCast(lazy_bind_off));
+    self.dyld_info_cmd.lazy_bind_size = @as(u32, @intCast(lazy_bind_size_aligned));
+    self.dyld_info_cmd.export_off = @as(u32, @intCast(export_off));
+    self.dyld_info_cmd.export_size = @as(u32, @intCast(export_size_aligned));
 }
 
-fn writeBindingInfoTable(self: *MachO) !void {
-    if (!self.binding_info_dirty) return;
+fn populateLazyBindOffsetsInStubHelper(self: *MachO, lazy_bind: anytype) !void {
+    if (lazy_bind.size() == 0) return;
 
-    const tracy = trace(@src());
-    defer tracy.end();
+    const stub_helper_section_index = self.stub_helper_section_index.?;
+    // assert(ctx.stub_helper_preamble_allocated);
 
-    var pointers = std.ArrayList(bind.Pointer).init(self.base.allocator);
-    defer pointers.deinit();
+    const header = self.sections.items(.header)[stub_helper_section_index];
 
-    if (self.got_section_index) |idx| {
-        const seg = self.load_commands.items[self.data_const_segment_cmd_index.?].Segment;
-        const sect = seg.sections.items[idx];
-        const base_offset = sect.addr - seg.inner.vmaddr;
-        const segment_id = @intCast(u16, self.data_const_segment_cmd_index.?);
+    const cpu_arch = self.base.options.target.cpu.arch;
+    const preamble_size = stubs.stubHelperPreambleSize(cpu_arch);
+    const stub_size = stubs.stubHelperSize(cpu_arch);
+    const stub_offset = stubs.stubOffsetInStubHelper(cpu_arch);
+    const base_offset = header.offset + preamble_size;
 
-        for (self.offset_table.items) |entry| {
-            if (entry.kind == .Local) continue;
-            const import = self.nonlazy_imports.items()[entry.symbol];
-            try pointers.append(.{
-                .offset = base_offset + entry.index * @sizeOf(u64),
-                .segment_id = segment_id,
-                .dylib_ordinal = import.value.dylib_ordinal,
-                .name = import.key,
-            });
+    for (lazy_bind.offsets.items, 0..) |bind_offset, index| {
+        const file_offset = base_offset + index * stub_size + stub_offset;
+
+        log.debug("writing lazy bind offset 0x{x} ({s}) in stub helper at 0x{x}", .{
+            bind_offset,
+            self.getSymbolName(lazy_bind.entries.items[index].target),
+            file_offset,
+        });
+
+        try self.base.file.?.pwriteAll(mem.asBytes(&bind_offset), file_offset);
+    }
+}
+
+const asc_u64 = std.sort.asc(u64);
+
+fn addSymbolToFunctionStarts(self: *MachO, sym_loc: SymbolWithLoc, addresses: *std.ArrayList(u64)) !void {
+    const sym = self.getSymbol(sym_loc);
+    if (sym.n_strx == 0) return;
+    if (sym.n_desc == N_DEAD) return;
+    if (sym.n_desc == N_BOUNDARY) return;
+    if (self.symbolIsTemp(sym_loc)) return;
+    try addresses.append(sym.n_value);
+}
+
+fn writeFunctionStarts(self: *MachO) !void {
+    const gpa = self.base.allocator;
+    const seg = self.segments.items[self.header_segment_cmd_index.?];
+
+    // We need to sort by address first
+    var addresses = std.ArrayList(u64).init(gpa);
+    defer addresses.deinit();
+
+    for (self.objects.items) |object| {
+        for (object.exec_atoms.items) |atom_index| {
+            const atom = self.getAtom(atom_index);
+            const sym_loc = atom.getSymbolWithLoc();
+            try self.addSymbolToFunctionStarts(sym_loc, &addresses);
+
+            var it = Atom.getInnerSymbolsIterator(self, atom_index);
+            while (it.next()) |inner_sym_loc| {
+                try self.addSymbolToFunctionStarts(inner_sym_loc, &addresses);
+            }
         }
     }
 
-    const size = try bind.bindInfoSize(pointers.items);
-    var buffer = try self.base.allocator.alloc(u8, @intCast(usize, size));
-    defer self.base.allocator.free(buffer);
+    mem.sort(u64, addresses.items, {}, asc_u64);
 
-    var stream = std.io.fixedBufferStream(buffer);
-    try bind.writeBindInfo(pointers.items, stream.writer());
-
-    const dyld_info = &self.load_commands.items[self.dyld_info_cmd_index.?].DyldInfoOnly;
-    const allocated_size = self.allocatedSizeLinkedit(dyld_info.bind_off);
-    const needed_size = mem.alignForwardGeneric(u64, buffer.len, @alignOf(u64));
-
-    if (needed_size > allocated_size) {
-        dyld_info.bind_off = 0;
-        dyld_info.bind_off = @intCast(u32, self.findFreeSpaceLinkedit(needed_size, 1, null));
-        // TODO this might require relocating all following LC_DYLD_INFO_ONLY sections too.
-    }
-
-    dyld_info.bind_size = @intCast(u32, needed_size);
-    log.debug("writing binding info from 0x{x} to 0x{x}", .{ dyld_info.bind_off, dyld_info.bind_off + dyld_info.bind_size });
-
-    try self.base.file.?.pwriteAll(buffer, dyld_info.bind_off);
-    self.load_commands_dirty = true;
-    self.binding_info_dirty = false;
-}
-
-fn writeLazyBindingInfoTable(self: *MachO) !void {
-    if (!self.lazy_binding_info_dirty) return;
-
-    const tracy = trace(@src());
-    defer tracy.end();
-
-    var pointers = std.ArrayList(bind.Pointer).init(self.base.allocator);
-    defer pointers.deinit();
-
-    if (self.la_symbol_ptr_section_index) |idx| {
-        try pointers.ensureCapacity(self.lazy_imports.items().len);
-        const seg = self.load_commands.items[self.data_segment_cmd_index.?].Segment;
-        const sect = seg.sections.items[idx];
-        const base_offset = sect.addr - seg.inner.vmaddr;
-        const segment_id = @intCast(u16, self.data_segment_cmd_index.?);
-
-        for (self.lazy_imports.items()) |entry| {
-            pointers.appendAssumeCapacity(.{
-                .offset = base_offset + entry.value.index * @sizeOf(u64),
-                .segment_id = segment_id,
-                .dylib_ordinal = entry.value.dylib_ordinal,
-                .name = entry.key,
-            });
-        }
-    }
-
-    const size = try bind.lazyBindInfoSize(pointers.items);
-    var buffer = try self.base.allocator.alloc(u8, @intCast(usize, size));
-    defer self.base.allocator.free(buffer);
-
-    var stream = std.io.fixedBufferStream(buffer);
-    try bind.writeLazyBindInfo(pointers.items, stream.writer());
-
-    const dyld_info = &self.load_commands.items[self.dyld_info_cmd_index.?].DyldInfoOnly;
-    const allocated_size = self.allocatedSizeLinkedit(dyld_info.lazy_bind_off);
-    const needed_size = mem.alignForwardGeneric(u64, buffer.len, @alignOf(u64));
-
-    if (needed_size > allocated_size) {
-        dyld_info.lazy_bind_off = 0;
-        dyld_info.lazy_bind_off = @intCast(u32, self.findFreeSpaceLinkedit(needed_size, 1, null));
-        // TODO this might require relocating all following LC_DYLD_INFO_ONLY sections too.
-    }
-
-    dyld_info.lazy_bind_size = @intCast(u32, needed_size);
-    log.debug("writing lazy binding info from 0x{x} to 0x{x}", .{ dyld_info.lazy_bind_off, dyld_info.lazy_bind_off + dyld_info.lazy_bind_size });
-
-    try self.base.file.?.pwriteAll(buffer, dyld_info.lazy_bind_off);
-    try self.populateLazyBindOffsetsInStubHelper(buffer);
-    self.load_commands_dirty = true;
-    self.lazy_binding_info_dirty = false;
-}
-
-fn populateLazyBindOffsetsInStubHelper(self: *MachO, buffer: []const u8) !void {
-    if (self.lazy_imports.items().len == 0) return;
-
-    var stream = std.io.fixedBufferStream(buffer);
-    var reader = stream.reader();
-    var offsets = std.ArrayList(u32).init(self.base.allocator);
-    try offsets.append(0);
+    var offsets = std.ArrayList(u32).init(gpa);
     defer offsets.deinit();
-    var valid_block = false;
+    try offsets.ensureTotalCapacityPrecise(addresses.items.len);
 
-    while (true) {
-        const inst = reader.readByte() catch |err| switch (err) {
-            error.EndOfStream => break,
-            else => return err,
-        };
-        const imm: u8 = inst & macho.BIND_IMMEDIATE_MASK;
-        const opcode: u8 = inst & macho.BIND_OPCODE_MASK;
+    var last_off: u32 = 0;
+    for (addresses.items) |addr| {
+        const offset = @as(u32, @intCast(addr - seg.vmaddr));
+        const diff = offset - last_off;
 
-        switch (opcode) {
-            macho.BIND_OPCODE_DO_BIND => {
-                valid_block = true;
-            },
-            macho.BIND_OPCODE_DONE => {
-                if (valid_block) {
-                    const offset = try stream.getPos();
-                    try offsets.append(@intCast(u32, offset));
-                }
-                valid_block = false;
-            },
-            macho.BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM => {
-                var next = try reader.readByte();
-                while (next != @as(u8, 0)) {
-                    next = try reader.readByte();
-                }
-            },
-            macho.BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB => {
-                _ = try std.leb.readULEB128(u64, reader);
-            },
-            macho.BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB => {
-                _ = try std.leb.readULEB128(u64, reader);
-            },
-            macho.BIND_OPCODE_SET_ADDEND_SLEB => {
-                _ = try std.leb.readILEB128(i64, reader);
-            },
-            else => {},
+        if (diff == 0) continue;
+
+        offsets.appendAssumeCapacity(diff);
+        last_off = offset;
+    }
+
+    var buffer = std.ArrayList(u8).init(gpa);
+    defer buffer.deinit();
+
+    const max_size = @as(usize, @intCast(offsets.items.len * @sizeOf(u64)));
+    try buffer.ensureTotalCapacity(max_size);
+
+    for (offsets.items) |offset| {
+        try std.leb.writeULEB128(buffer.writer(), offset);
+    }
+
+    const link_seg = self.getLinkeditSegmentPtr();
+    const offset = link_seg.fileoff + link_seg.filesize;
+    assert(mem.isAlignedGeneric(u64, offset, @alignOf(u64)));
+    const needed_size = buffer.items.len;
+    const needed_size_aligned = mem.alignForward(u64, needed_size, @alignOf(u64));
+    const padding = math.cast(usize, needed_size_aligned - needed_size) orelse return error.Overflow;
+    if (padding > 0) {
+        try buffer.ensureUnusedCapacity(padding);
+        buffer.appendNTimesAssumeCapacity(0, padding);
+    }
+    link_seg.filesize = offset + needed_size_aligned - link_seg.fileoff;
+
+    log.debug("writing function starts info from 0x{x} to 0x{x}", .{ offset, offset + needed_size_aligned });
+
+    try self.base.file.?.pwriteAll(buffer.items, offset);
+
+    self.function_starts_cmd.dataoff = @as(u32, @intCast(offset));
+    self.function_starts_cmd.datasize = @as(u32, @intCast(needed_size_aligned));
+}
+
+fn filterDataInCode(
+    dices: []const macho.data_in_code_entry,
+    start_addr: u64,
+    end_addr: u64,
+) []const macho.data_in_code_entry {
+    const Predicate = struct {
+        addr: u64,
+
+        pub fn predicate(self: @This(), dice: macho.data_in_code_entry) bool {
+            return dice.offset >= self.addr;
+        }
+    };
+
+    const start = MachO.lsearch(macho.data_in_code_entry, dices, Predicate{ .addr = start_addr });
+    const end = MachO.lsearch(macho.data_in_code_entry, dices[start..], Predicate{ .addr = end_addr }) + start;
+
+    return dices[start..end];
+}
+
+pub fn writeDataInCode(self: *MachO) !void {
+    const gpa = self.base.allocator;
+    var out_dice = std.ArrayList(macho.data_in_code_entry).init(gpa);
+    defer out_dice.deinit();
+
+    const text_sect_id = self.text_section_index orelse return;
+    const text_sect_header = self.sections.items(.header)[text_sect_id];
+
+    for (self.objects.items) |object| {
+        if (!object.hasDataInCode()) continue;
+        const dice = object.data_in_code.items;
+        try out_dice.ensureUnusedCapacity(dice.len);
+
+        for (object.exec_atoms.items) |atom_index| {
+            const atom = self.getAtom(atom_index);
+            const sym = self.getSymbol(atom.getSymbolWithLoc());
+            if (sym.n_desc == N_DEAD) continue;
+            if (sym.n_desc == N_BOUNDARY) return;
+
+            const source_addr = if (object.getSourceSymbol(atom.sym_index)) |source_sym|
+                source_sym.n_value
+            else blk: {
+                const nbase = @as(u32, @intCast(object.in_symtab.?.len));
+                const source_sect_id = @as(u8, @intCast(atom.sym_index - nbase));
+                break :blk object.getSourceSection(source_sect_id).addr;
+            };
+            const filtered_dice = filterDataInCode(dice, source_addr, source_addr + atom.size);
+            const base = math.cast(u32, sym.n_value - text_sect_header.addr + text_sect_header.offset) orelse
+                return error.Overflow;
+
+            for (filtered_dice) |single| {
+                const offset = math.cast(u32, single.offset - source_addr + base) orelse
+                    return error.Overflow;
+                out_dice.appendAssumeCapacity(.{
+                    .offset = offset,
+                    .length = single.length,
+                    .kind = single.kind,
+                });
+            }
         }
     }
-    assert(self.lazy_imports.items().len <= offsets.items.len);
 
-    const stub_size: u4 = switch (self.base.options.target.cpu.arch) {
-        .x86_64 => 10,
-        .aarch64 => 3 * @sizeOf(u32),
-        else => unreachable,
+    const seg = self.getLinkeditSegmentPtr();
+    const offset = seg.fileoff + seg.filesize;
+    assert(mem.isAlignedGeneric(u64, offset, @alignOf(u64)));
+    const needed_size = out_dice.items.len * @sizeOf(macho.data_in_code_entry);
+    const needed_size_aligned = mem.alignForward(u64, needed_size, @alignOf(u64));
+    seg.filesize = offset + needed_size_aligned - seg.fileoff;
+
+    const buffer = try gpa.alloc(u8, math.cast(usize, needed_size_aligned) orelse return error.Overflow);
+    defer gpa.free(buffer);
+    {
+        const src = mem.sliceAsBytes(out_dice.items);
+        @memcpy(buffer[0..src.len], src);
+        @memset(buffer[src.len..], 0);
+    }
+
+    log.debug("writing data-in-code from 0x{x} to 0x{x}", .{ offset, offset + needed_size_aligned });
+
+    try self.base.file.?.pwriteAll(buffer, offset);
+
+    self.data_in_code_cmd.dataoff = @as(u32, @intCast(offset));
+    self.data_in_code_cmd.datasize = @as(u32, @intCast(needed_size_aligned));
+}
+
+fn writeSymtabs(self: *MachO) !void {
+    var ctx = try self.writeSymtab();
+    defer ctx.imports_table.deinit();
+    try self.writeDysymtab(ctx);
+    try self.writeStrtab();
+}
+
+fn addLocalToSymtab(self: *MachO, sym_loc: SymbolWithLoc, locals: *std.ArrayList(macho.nlist_64)) !void {
+    const sym = self.getSymbol(sym_loc);
+    if (sym.n_strx == 0) return; // no name, skip
+    if (sym.n_desc == N_DEAD) return; // garbage-collected, skip
+    if (sym.n_desc == N_BOUNDARY) return; // boundary symbol, skip
+    if (sym.ext()) return; // an export lands in its own symtab section, skip
+    if (self.symbolIsTemp(sym_loc)) return; // local temp symbol, skip
+    var out_sym = sym;
+    out_sym.n_strx = try self.strtab.insert(self.base.allocator, self.getSymbolName(sym_loc));
+    try locals.append(out_sym);
+}
+
+fn writeSymtab(self: *MachO) !SymtabCtx {
+    const gpa = self.base.allocator;
+
+    var locals = std.ArrayList(macho.nlist_64).init(gpa);
+    defer locals.deinit();
+
+    for (0..self.locals.items.len) |sym_id| {
+        try self.addLocalToSymtab(.{ .sym_index = @intCast(sym_id) }, &locals);
+    }
+
+    for (self.objects.items) |object| {
+        for (object.atoms.items) |atom_index| {
+            const atom = self.getAtom(atom_index);
+            const sym_loc = atom.getSymbolWithLoc();
+            try self.addLocalToSymtab(sym_loc, &locals);
+
+            var it = Atom.getInnerSymbolsIterator(self, atom_index);
+            while (it.next()) |inner_sym_loc| {
+                try self.addLocalToSymtab(inner_sym_loc, &locals);
+            }
+        }
+    }
+
+    var exports = std.ArrayList(macho.nlist_64).init(gpa);
+    defer exports.deinit();
+
+    for (self.globals.items) |global| {
+        const sym = self.getSymbol(global);
+        if (sym.undf()) continue; // import, skip
+        if (sym.n_desc == N_DEAD) continue;
+        if (sym.n_desc == N_BOUNDARY) continue;
+        var out_sym = sym;
+        out_sym.n_strx = try self.strtab.insert(gpa, self.getSymbolName(global));
+        try exports.append(out_sym);
+    }
+
+    var imports = std.ArrayList(macho.nlist_64).init(gpa);
+    defer imports.deinit();
+
+    var imports_table = std.AutoHashMap(SymbolWithLoc, u32).init(gpa);
+
+    for (self.globals.items) |global| {
+        const sym = self.getSymbol(global);
+        if (sym.n_strx == 0) continue; // no name, skip
+        if (!sym.undf()) continue; // not an import, skip
+        if (sym.n_desc == N_DEAD) continue;
+        if (sym.n_desc == N_BOUNDARY) continue;
+        const new_index = @as(u32, @intCast(imports.items.len));
+        var out_sym = sym;
+        out_sym.n_strx = try self.strtab.insert(gpa, self.getSymbolName(global));
+        try imports.append(out_sym);
+        try imports_table.putNoClobber(global, new_index);
+    }
+
+    // We generate stabs last in order to ensure that the strtab always has debug info
+    // strings trailing
+    if (!self.base.options.strip) {
+        for (self.objects.items) |object| {
+            assert(self.d_sym == null); // TODO
+            try self.generateSymbolStabs(object, &locals);
+        }
+    }
+
+    const nlocals = @as(u32, @intCast(locals.items.len));
+    const nexports = @as(u32, @intCast(exports.items.len));
+    const nimports = @as(u32, @intCast(imports.items.len));
+    const nsyms = nlocals + nexports + nimports;
+
+    const seg = self.getLinkeditSegmentPtr();
+    const offset = seg.fileoff + seg.filesize;
+    assert(mem.isAlignedGeneric(u64, offset, @alignOf(u64)));
+    const needed_size = nsyms * @sizeOf(macho.nlist_64);
+    seg.filesize = offset + needed_size - seg.fileoff;
+    assert(mem.isAlignedGeneric(u64, seg.fileoff + seg.filesize, @alignOf(u64)));
+
+    var buffer = std.ArrayList(u8).init(gpa);
+    defer buffer.deinit();
+    try buffer.ensureTotalCapacityPrecise(needed_size);
+    buffer.appendSliceAssumeCapacity(mem.sliceAsBytes(locals.items));
+    buffer.appendSliceAssumeCapacity(mem.sliceAsBytes(exports.items));
+    buffer.appendSliceAssumeCapacity(mem.sliceAsBytes(imports.items));
+
+    log.debug("writing symtab from 0x{x} to 0x{x}", .{ offset, offset + needed_size });
+    try self.base.file.?.pwriteAll(buffer.items, offset);
+
+    self.symtab_cmd.symoff = @as(u32, @intCast(offset));
+    self.symtab_cmd.nsyms = nsyms;
+
+    return SymtabCtx{
+        .nlocalsym = nlocals,
+        .nextdefsym = nexports,
+        .nundefsym = nimports,
+        .imports_table = imports_table,
     };
-    const off: u4 = switch (self.base.options.target.cpu.arch) {
-        .x86_64 => 1,
-        .aarch64 => 2 * @sizeOf(u32),
-        else => unreachable,
+}
+
+// TODO this function currently skips generating symbol stabs in case errors are encountered in DWARF data.
+// I think we should actually report those errors to the user and let them decide if they want to strip debug info
+// in that case or not.
+fn generateSymbolStabs(
+    self: *MachO,
+    object: Object,
+    locals: *std.ArrayList(macho.nlist_64),
+) !void {
+    log.debug("generating stabs for '{s}'", .{object.name});
+
+    const gpa = self.base.allocator;
+    var debug_info = object.parseDwarfInfo();
+
+    var lookup = DwarfInfo.AbbrevLookupTable.init(gpa);
+    defer lookup.deinit();
+    try lookup.ensureUnusedCapacity(std.math.maxInt(u8));
+
+    // We assume there is only one CU.
+    var cu_it = debug_info.getCompileUnitIterator();
+    const compile_unit = while (try cu_it.next()) |cu| {
+        const offset = math.cast(usize, cu.cuh.debug_abbrev_offset) orelse return error.Overflow;
+        try debug_info.genAbbrevLookupByKind(offset, &lookup);
+        break cu;
+    } else {
+        log.debug("no compile unit found in debug info in {s}; skipping", .{object.name});
+        return;
     };
-    var buf: [@sizeOf(u32)]u8 = undefined;
-    for (self.lazy_imports.items()) |_, i| {
-        const placeholder_off = self.stub_helper_stubs_start_off.? + i * stub_size + off;
-        mem.writeIntLittle(u32, &buf, offsets.items[i]);
-        try self.base.file.?.pwriteAll(&buf, placeholder_off);
+
+    var abbrev_it = compile_unit.getAbbrevEntryIterator(debug_info);
+    const maybe_cu_entry: ?DwarfInfo.AbbrevEntry = blk: {
+        while (abbrev_it.next(lookup) catch break :blk null) |entry| switch (entry.tag) {
+            dwarf.TAG.compile_unit => break :blk entry,
+            else => continue,
+        } else break :blk null;
+    };
+
+    const cu_entry = maybe_cu_entry orelse {
+        log.debug("missing DWARF_TAG_compile_unit tag in {s}; skipping", .{object.name});
+        return;
+    };
+
+    var maybe_tu_name: ?[]const u8 = null;
+    var maybe_tu_comp_dir: ?[]const u8 = null;
+    var attr_it = cu_entry.getAttributeIterator(debug_info, compile_unit.cuh);
+
+    blk: {
+        while (attr_it.next() catch break :blk) |attr| switch (attr.name) {
+            dwarf.AT.comp_dir => maybe_tu_comp_dir = attr.getString(debug_info, compile_unit.cuh) orelse continue,
+            dwarf.AT.name => maybe_tu_name = attr.getString(debug_info, compile_unit.cuh) orelse continue,
+            else => continue,
+        };
     }
+
+    if (maybe_tu_name == null or maybe_tu_comp_dir == null) {
+        log.debug("missing DWARF_AT_comp_dir and DWARF_AT_name attributes {s}; skipping", .{object.name});
+        return;
+    }
+
+    const tu_name = maybe_tu_name.?;
+    const tu_comp_dir = maybe_tu_comp_dir.?;
+
+    // Open scope
+    try locals.ensureUnusedCapacity(3);
+    locals.appendAssumeCapacity(.{
+        .n_strx = try self.strtab.insert(gpa, tu_comp_dir),
+        .n_type = macho.N_SO,
+        .n_sect = 0,
+        .n_desc = 0,
+        .n_value = 0,
+    });
+    locals.appendAssumeCapacity(.{
+        .n_strx = try self.strtab.insert(gpa, tu_name),
+        .n_type = macho.N_SO,
+        .n_sect = 0,
+        .n_desc = 0,
+        .n_value = 0,
+    });
+    locals.appendAssumeCapacity(.{
+        .n_strx = try self.strtab.insert(gpa, object.name),
+        .n_type = macho.N_OSO,
+        .n_sect = 0,
+        .n_desc = 1,
+        .n_value = object.mtime,
+    });
+
+    var stabs_buf: [4]macho.nlist_64 = undefined;
+
+    var name_lookup: ?DwarfInfo.SubprogramLookupByName = if (object.header.flags & macho.MH_SUBSECTIONS_VIA_SYMBOLS == 0) blk: {
+        var name_lookup = DwarfInfo.SubprogramLookupByName.init(gpa);
+        errdefer name_lookup.deinit();
+        try name_lookup.ensureUnusedCapacity(@as(u32, @intCast(object.atoms.items.len)));
+        debug_info.genSubprogramLookupByName(compile_unit, lookup, &name_lookup) catch |err| switch (err) {
+            error.UnhandledDwFormValue => {}, // TODO I don't like the fact we constantly re-iterate and hit this; we should validate once a priori
+            else => |e| return e,
+        };
+        break :blk name_lookup;
+    } else null;
+    defer if (name_lookup) |*nl| nl.deinit();
+
+    for (object.atoms.items) |atom_index| {
+        const atom = self.getAtom(atom_index);
+        const stabs = try self.generateSymbolStabsForSymbol(
+            atom_index,
+            atom.getSymbolWithLoc(),
+            name_lookup,
+            &stabs_buf,
+        );
+        try locals.appendSlice(stabs);
+
+        var it = Atom.getInnerSymbolsIterator(self, atom_index);
+        while (it.next()) |sym_loc| {
+            const contained_stabs = try self.generateSymbolStabsForSymbol(
+                atom_index,
+                sym_loc,
+                name_lookup,
+                &stabs_buf,
+            );
+            try locals.appendSlice(contained_stabs);
+        }
+    }
+
+    // Close scope
+    try locals.append(.{
+        .n_strx = 0,
+        .n_type = macho.N_SO,
+        .n_sect = 0,
+        .n_desc = 0,
+        .n_value = 0,
+    });
 }
 
-fn writeStringTable(self: *MachO) !void {
-    if (!self.string_table_dirty) return;
+fn generateSymbolStabsForSymbol(
+    self: *MachO,
+    atom_index: Atom.Index,
+    sym_loc: SymbolWithLoc,
+    lookup: ?DwarfInfo.SubprogramLookupByName,
+    buf: *[4]macho.nlist_64,
+) ![]const macho.nlist_64 {
+    const gpa = self.base.allocator;
+    const object = self.objects.items[sym_loc.getFile().?];
+    const sym = self.getSymbol(sym_loc);
+    const sym_name = self.getSymbolName(sym_loc);
+    const header = self.sections.items(.header)[sym.n_sect - 1];
 
-    const tracy = trace(@src());
-    defer tracy.end();
+    if (sym.n_strx == 0) return buf[0..0];
+    if (self.symbolIsTemp(sym_loc)) return buf[0..0];
 
-    const symtab = &self.load_commands.items[self.symtab_cmd_index.?].Symtab;
-    const allocated_size = self.allocatedSizeLinkedit(symtab.stroff);
-    const needed_size = mem.alignForwardGeneric(u64, self.string_table.items.len, @alignOf(u64));
-
-    if (needed_size > allocated_size or self.string_table_needs_relocation) {
-        symtab.strsize = 0;
-        symtab.stroff = @intCast(u32, self.findFreeSpaceLinkedit(needed_size, 1, symtab.symoff));
-        self.string_table_needs_relocation = false;
+    if (!header.isCode()) {
+        // Since we are not dealing with machine code, it's either a global or a static depending
+        // on the linkage scope.
+        if (sym.sect() and sym.ext()) {
+            // Global gets an N_GSYM stab type.
+            buf[0] = .{
+                .n_strx = try self.strtab.insert(gpa, sym_name),
+                .n_type = macho.N_GSYM,
+                .n_sect = sym.n_sect,
+                .n_desc = 0,
+                .n_value = 0,
+            };
+        } else {
+            // Local static gets an N_STSYM stab type.
+            buf[0] = .{
+                .n_strx = try self.strtab.insert(gpa, sym_name),
+                .n_type = macho.N_STSYM,
+                .n_sect = sym.n_sect,
+                .n_desc = 0,
+                .n_value = sym.n_value,
+            };
+        }
+        return buf[0..1];
     }
-    symtab.strsize = @intCast(u32, needed_size);
-    log.debug("writing string table from 0x{x} to 0x{x}", .{ symtab.stroff, symtab.stroff + symtab.strsize });
 
-    try self.base.file.?.pwriteAll(self.string_table.items, symtab.stroff);
-    self.load_commands_dirty = true;
-    self.string_table_dirty = false;
+    const size: u64 = size: {
+        if (object.header.flags & macho.MH_SUBSECTIONS_VIA_SYMBOLS != 0) {
+            break :size self.getAtom(atom_index).size;
+        }
+
+        // Since we don't have subsections to work with, we need to infer the size of each function
+        // the slow way by scanning the debug info for matching symbol names and extracting
+        // the symbol's DWARF_AT_low_pc and DWARF_AT_high_pc values.
+        const source_sym = object.getSourceSymbol(sym_loc.sym_index) orelse return buf[0..0];
+        const subprogram = lookup.?.get(sym_name[1..]) orelse return buf[0..0];
+
+        if (subprogram.addr <= source_sym.n_value and source_sym.n_value < subprogram.addr + subprogram.size) {
+            break :size subprogram.size;
+        } else {
+            log.debug("no stab found for {s}", .{sym_name});
+            return buf[0..0];
+        }
+    };
+
+    buf[0] = .{
+        .n_strx = 0,
+        .n_type = macho.N_BNSYM,
+        .n_sect = sym.n_sect,
+        .n_desc = 0,
+        .n_value = sym.n_value,
+    };
+    buf[1] = .{
+        .n_strx = try self.strtab.insert(gpa, sym_name),
+        .n_type = macho.N_FUN,
+        .n_sect = sym.n_sect,
+        .n_desc = 0,
+        .n_value = sym.n_value,
+    };
+    buf[2] = .{
+        .n_strx = 0,
+        .n_type = macho.N_FUN,
+        .n_sect = 0,
+        .n_desc = 0,
+        .n_value = size,
+    };
+    buf[3] = .{
+        .n_strx = 0,
+        .n_type = macho.N_ENSYM,
+        .n_sect = sym.n_sect,
+        .n_desc = 0,
+        .n_value = size,
+    };
+
+    return buf;
 }
 
-fn updateLinkeditSegmentSizes(self: *MachO) !void {
-    if (!self.load_commands_dirty) return;
+pub fn writeStrtab(self: *MachO) !void {
+    const gpa = self.base.allocator;
+    const seg = self.getLinkeditSegmentPtr();
+    const offset = seg.fileoff + seg.filesize;
+    assert(mem.isAlignedGeneric(u64, offset, @alignOf(u64)));
+    const needed_size = self.strtab.buffer.items.len;
+    const needed_size_aligned = mem.alignForward(u64, needed_size, @alignOf(u64));
+    seg.filesize = offset + needed_size_aligned - seg.fileoff;
 
-    const tracy = trace(@src());
-    defer tracy.end();
+    log.debug("writing string table from 0x{x} to 0x{x}", .{ offset, offset + needed_size_aligned });
 
-    // Now, we are in position to update __LINKEDIT segment sizes.
-    // TODO Add checkpointing so that we don't have to do this every single time.
-    const linkedit_segment = &self.load_commands.items[self.linkedit_segment_cmd_index.?].Segment;
-    var final_offset = linkedit_segment.inner.fileoff;
+    const buffer = try gpa.alloc(u8, math.cast(usize, needed_size_aligned) orelse return error.Overflow);
+    defer gpa.free(buffer);
+    @memcpy(buffer[0..self.strtab.buffer.items.len], self.strtab.buffer.items);
+    @memset(buffer[self.strtab.buffer.items.len..], 0);
 
-    if (self.dyld_info_cmd_index) |idx| {
-        const dyld_info = self.load_commands.items[idx].DyldInfoOnly;
-        final_offset = std.math.max(final_offset, dyld_info.rebase_off + dyld_info.rebase_size);
-        final_offset = std.math.max(final_offset, dyld_info.bind_off + dyld_info.bind_size);
-        final_offset = std.math.max(final_offset, dyld_info.weak_bind_off + dyld_info.weak_bind_size);
-        final_offset = std.math.max(final_offset, dyld_info.lazy_bind_off + dyld_info.lazy_bind_size);
-        final_offset = std.math.max(final_offset, dyld_info.export_off + dyld_info.export_size);
-    }
-    if (self.function_starts_cmd_index) |idx| {
-        const fstart = self.load_commands.items[idx].LinkeditData;
-        final_offset = std.math.max(final_offset, fstart.dataoff + fstart.datasize);
-    }
-    if (self.data_in_code_cmd_index) |idx| {
-        const dic = self.load_commands.items[idx].LinkeditData;
-        final_offset = std.math.max(final_offset, dic.dataoff + dic.datasize);
-    }
-    if (self.dysymtab_cmd_index) |idx| {
-        const dysymtab = self.load_commands.items[idx].Dysymtab;
-        const nindirectsize = dysymtab.nindirectsyms * @sizeOf(u32);
-        final_offset = std.math.max(final_offset, dysymtab.indirectsymoff + nindirectsize);
-        // TODO Handle more dynamic symbol table sections.
-    }
-    if (self.symtab_cmd_index) |idx| {
-        const symtab = self.load_commands.items[idx].Symtab;
-        const symsize = symtab.nsyms * @sizeOf(macho.nlist_64);
-        final_offset = std.math.max(final_offset, symtab.symoff + symsize);
-        final_offset = std.math.max(final_offset, symtab.stroff + symtab.strsize);
-    }
+    try self.base.file.?.pwriteAll(buffer, offset);
 
-    const filesize = final_offset - linkedit_segment.inner.fileoff;
-    linkedit_segment.inner.filesize = filesize;
-    linkedit_segment.inner.vmsize = mem.alignForwardGeneric(u64, filesize, self.page_size);
-    try self.base.file.?.pwriteAll(&[_]u8{0}, final_offset);
-    self.load_commands_dirty = true;
+    self.symtab_cmd.stroff = @as(u32, @intCast(offset));
+    self.symtab_cmd.strsize = @as(u32, @intCast(needed_size_aligned));
 }
 
-/// Writes all load commands and section headers.
-fn writeLoadCommands(self: *MachO) !void {
-    if (!self.load_commands_dirty) return;
+const SymtabCtx = struct {
+    nlocalsym: u32,
+    nextdefsym: u32,
+    nundefsym: u32,
+    imports_table: std.AutoHashMap(SymbolWithLoc, u32),
+};
 
-    var sizeofcmds: u32 = 0;
-    for (self.load_commands.items) |lc| {
-        sizeofcmds += lc.cmdsize();
+pub fn writeDysymtab(self: *MachO, ctx: SymtabCtx) !void {
+    const gpa = self.base.allocator;
+    const nstubs = @as(u32, @intCast(self.stub_table.lookup.count()));
+    const ngot_entries = @as(u32, @intCast(self.got_table.lookup.count()));
+    const nindirectsyms = nstubs * 2 + ngot_entries;
+    const iextdefsym = ctx.nlocalsym;
+    const iundefsym = iextdefsym + ctx.nextdefsym;
+
+    const seg = self.getLinkeditSegmentPtr();
+    const offset = seg.fileoff + seg.filesize;
+    assert(mem.isAlignedGeneric(u64, offset, @alignOf(u64)));
+    const needed_size = nindirectsyms * @sizeOf(u32);
+    const needed_size_aligned = mem.alignForward(u64, needed_size, @alignOf(u64));
+    seg.filesize = offset + needed_size_aligned - seg.fileoff;
+
+    log.debug("writing indirect symbol table from 0x{x} to 0x{x}", .{ offset, offset + needed_size_aligned });
+
+    var buf = std.ArrayList(u8).init(gpa);
+    defer buf.deinit();
+    try buf.ensureTotalCapacity(math.cast(usize, needed_size_aligned) orelse return error.Overflow);
+    const writer = buf.writer();
+
+    if (self.stubs_section_index) |sect_id| {
+        const stubs_header = &self.sections.items(.header)[sect_id];
+        stubs_header.reserved1 = 0;
+        for (self.stub_table.entries.items) |entry| {
+            if (!self.stub_table.lookup.contains(entry)) continue;
+            const target_sym = self.getSymbol(entry);
+            assert(target_sym.undf());
+            try writer.writeInt(u32, iundefsym + ctx.imports_table.get(entry).?, .little);
+        }
     }
 
-    var buffer = try self.base.allocator.alloc(u8, sizeofcmds);
-    defer self.base.allocator.free(buffer);
-    var writer = std.io.fixedBufferStream(buffer).writer();
-    for (self.load_commands.items) |lc| {
-        try lc.write(writer);
+    if (self.got_section_index) |sect_id| {
+        const got = &self.sections.items(.header)[sect_id];
+        got.reserved1 = nstubs;
+        for (self.got_table.entries.items) |entry| {
+            if (!self.got_table.lookup.contains(entry)) continue;
+            const target_sym = self.getSymbol(entry);
+            if (target_sym.undf()) {
+                try writer.writeInt(u32, iundefsym + ctx.imports_table.get(entry).?, .little);
+            } else {
+                try writer.writeInt(u32, macho.INDIRECT_SYMBOL_LOCAL, .little);
+            }
+        }
     }
 
-    const off = @sizeOf(macho.mach_header_64);
-    log.debug("writing {} load commands from 0x{x} to 0x{x}", .{ self.load_commands.items.len, off, off + sizeofcmds });
-    try self.base.file.?.pwriteAll(buffer, off);
-    self.load_commands_dirty = false;
+    if (self.la_symbol_ptr_section_index) |sect_id| {
+        const la_symbol_ptr = &self.sections.items(.header)[sect_id];
+        la_symbol_ptr.reserved1 = nstubs + ngot_entries;
+        for (self.stub_table.entries.items) |entry| {
+            if (!self.stub_table.lookup.contains(entry)) continue;
+            const target_sym = self.getSymbol(entry);
+            assert(target_sym.undf());
+            try writer.writeInt(u32, iundefsym + ctx.imports_table.get(entry).?, .little);
+        }
+    }
+
+    const padding = math.cast(usize, needed_size_aligned - needed_size) orelse return error.Overflow;
+    if (padding > 0) {
+        buf.appendNTimesAssumeCapacity(0, padding);
+    }
+
+    assert(buf.items.len == needed_size_aligned);
+    try self.base.file.?.pwriteAll(buf.items, offset);
+
+    self.dysymtab_cmd.nlocalsym = ctx.nlocalsym;
+    self.dysymtab_cmd.iextdefsym = iextdefsym;
+    self.dysymtab_cmd.nextdefsym = ctx.nextdefsym;
+    self.dysymtab_cmd.iundefsym = iundefsym;
+    self.dysymtab_cmd.nundefsym = ctx.nundefsym;
+    self.dysymtab_cmd.indirectsymoff = @as(u32, @intCast(offset));
+    self.dysymtab_cmd.nindirectsyms = nindirectsyms;
+}
+
+pub fn writeUuid(self: *MachO, comp: *const Compilation, uuid_cmd_offset: u32, has_codesig: bool) !void {
+    const file_size = if (!has_codesig) blk: {
+        const seg = self.getLinkeditSegmentPtr();
+        break :blk seg.fileoff + seg.filesize;
+    } else self.codesig_cmd.dataoff;
+    try calcUuid(comp, self.base.file.?, file_size, &self.uuid_cmd.uuid);
+    const offset = uuid_cmd_offset + @sizeOf(macho.load_command);
+    try self.base.file.?.pwriteAll(&self.uuid_cmd.uuid, offset);
+}
+
+pub fn writeCodeSignaturePadding(self: *MachO, code_sig: *CodeSignature) !void {
+    const seg = self.getLinkeditSegmentPtr();
+    // Code signature data has to be 16-bytes aligned for Apple tools to recognize the file
+    // https://github.com/opensource-apple/cctools/blob/fdb4825f303fd5c0751be524babd32958181b3ed/libstuff/checkout.c#L271
+    const offset = mem.alignForward(u64, seg.fileoff + seg.filesize, 16);
+    const needed_size = code_sig.estimateSize(offset);
+    seg.filesize = offset + needed_size - seg.fileoff;
+    seg.vmsize = mem.alignForward(u64, seg.filesize, getPageSize(self.base.options.target.cpu.arch));
+    log.debug("writing code signature padding from 0x{x} to 0x{x}", .{ offset, offset + needed_size });
+    // Pad out the space. We need to do this to calculate valid hashes for everything in the file
+    // except for code signature data.
+    try self.base.file.?.pwriteAll(&[_]u8{0}, offset + needed_size - 1);
+
+    self.codesig_cmd.dataoff = @as(u32, @intCast(offset));
+    self.codesig_cmd.datasize = @as(u32, @intCast(needed_size));
+}
+
+pub fn writeCodeSignature(self: *MachO, comp: *const Compilation, code_sig: *CodeSignature) !void {
+    const seg_id = self.header_segment_cmd_index.?;
+    const seg = self.segments.items[seg_id];
+    const offset = self.codesig_cmd.dataoff;
+
+    var buffer = std.ArrayList(u8).init(self.base.allocator);
+    defer buffer.deinit();
+    try buffer.ensureTotalCapacityPrecise(code_sig.size());
+    try code_sig.writeAdhocSignature(comp, .{
+        .file = self.base.file.?,
+        .exec_seg_base = seg.fileoff,
+        .exec_seg_limit = seg.filesize,
+        .file_size = offset,
+        .output_mode = self.base.options.output_mode,
+    }, buffer.writer());
+    assert(buffer.items.len == code_sig.size());
+
+    log.debug("writing code signature from 0x{x} to 0x{x}", .{
+        offset,
+        offset + buffer.items.len,
+    });
+
+    try self.base.file.?.pwriteAll(buffer.items, offset);
 }
 
 /// Writes Mach-O file header.
-fn writeHeader(self: *MachO) !void {
-    if (!self.header_dirty) return;
+pub fn writeHeader(self: *MachO, ncmds: u32, sizeofcmds: u32) !void {
+    var header: macho.mach_header_64 = .{};
+    header.flags = macho.MH_NOUNDEFS | macho.MH_DYLDLINK | macho.MH_PIE | macho.MH_TWOLEVEL;
 
-    self.header.?.ncmds = @intCast(u32, self.load_commands.items.len);
-    var sizeofcmds: u32 = 0;
-    for (self.load_commands.items) |cmd| {
-        sizeofcmds += cmd.cmdsize();
+    switch (self.base.options.target.cpu.arch) {
+        .aarch64 => {
+            header.cputype = macho.CPU_TYPE_ARM64;
+            header.cpusubtype = macho.CPU_SUBTYPE_ARM_ALL;
+        },
+        .x86_64 => {
+            header.cputype = macho.CPU_TYPE_X86_64;
+            header.cpusubtype = macho.CPU_SUBTYPE_X86_64_ALL;
+        },
+        else => unreachable,
     }
-    self.header.?.sizeofcmds = sizeofcmds;
-    log.debug("writing Mach-O header {}", .{self.header.?});
-    try self.base.file.?.pwriteAll(mem.asBytes(&self.header.?), 0);
-    self.header_dirty = false;
+
+    switch (self.base.options.output_mode) {
+        .Exe => {
+            header.filetype = macho.MH_EXECUTE;
+        },
+        .Lib => {
+            // By this point, it can only be a dylib.
+            header.filetype = macho.MH_DYLIB;
+            header.flags |= macho.MH_NO_REEXPORTED_DYLIBS;
+        },
+        else => unreachable,
+    }
+
+    if (self.thread_vars_section_index) |sect_id| {
+        header.flags |= macho.MH_HAS_TLV_DESCRIPTORS;
+        if (self.sections.items(.header)[sect_id].size > 0) {
+            header.flags |= macho.MH_HAS_TLV_DESCRIPTORS;
+        }
+    }
+
+    header.ncmds = ncmds;
+    header.sizeofcmds = sizeofcmds;
+
+    log.debug("writing Mach-O header {}", .{header});
+
+    try self.base.file.?.pwriteAll(mem.asBytes(&header), 0);
 }
 
 pub fn padToIdeal(actual_size: anytype) @TypeOf(actual_size) {
-    // TODO https://github.com/ziglang/zig/issues/1284
-    return std.math.add(@TypeOf(actual_size), actual_size, actual_size / ideal_factor) catch
-        std.math.maxInt(@TypeOf(actual_size));
+    return actual_size +| (actual_size / ideal_factor);
 }
+
+fn detectAllocCollision(self: *MachO, start: u64, size: u64) ?u64 {
+    // TODO: header and load commands have to be part of the __TEXT segment
+    const header_size = self.segments.items[self.header_segment_cmd_index.?].filesize;
+    if (start < header_size)
+        return header_size;
+
+    const end = start + padToIdeal(size);
+
+    for (self.sections.items(.header)) |header| {
+        const tight_size = header.size;
+        const increased_size = padToIdeal(tight_size);
+        const test_end = header.offset + increased_size;
+        if (end > header.offset and start < test_end) {
+            return test_end;
+        }
+    }
+
+    return null;
+}
+
+fn allocatedSize(self: *MachO, start: u64) u64 {
+    if (start == 0)
+        return 0;
+    var min_pos: u64 = std.math.maxInt(u64);
+    for (self.sections.items(.header)) |header| {
+        if (header.offset <= start) continue;
+        if (header.offset < min_pos) min_pos = header.offset;
+    }
+    return min_pos - start;
+}
+
+fn findFreeSpace(self: *MachO, object_size: u64, min_alignment: u32) u64 {
+    var start: u64 = 0;
+    while (self.detectAllocCollision(start, object_size)) |item_end| {
+        start = mem.alignForward(u64, item_end, min_alignment);
+    }
+    return start;
+}
+
+pub fn allocatedVirtualSize(self: *MachO, start: u64) u64 {
+    if (start == 0)
+        return 0;
+    var min_pos: u64 = std.math.maxInt(u64);
+    for (self.sections.items(.segment_index)) |seg_id| {
+        const segment = self.segments.items[seg_id];
+        if (segment.vmaddr <= start) continue;
+        if (segment.vmaddr < min_pos) min_pos = segment.vmaddr;
+    }
+    return min_pos - start;
+}
+
+pub fn ptraceAttach(self: *MachO, pid: std.os.pid_t) !void {
+    if (!is_hot_update_compatible) return;
+
+    const mach_task = try std.os.darwin.machTaskForPid(pid);
+    log.debug("Mach task for pid {d}: {any}", .{ pid, mach_task });
+    self.hot_state.mach_task = mach_task;
+
+    // TODO start exception handler in another thread
+
+    // TODO enable ones we register for exceptions
+    // try std.os.ptrace(std.os.darwin.PT.ATTACHEXC, pid, 0, 0);
+}
+
+pub fn ptraceDetach(self: *MachO, pid: std.os.pid_t) !void {
+    if (!is_hot_update_compatible) return;
+
+    _ = pid;
+
+    // TODO stop exception handler
+
+    // TODO see comment in ptraceAttach
+    // try std.os.ptrace(std.os.darwin.PT.DETACH, pid, 0, 0);
+
+    self.hot_state.mach_task = null;
+}
+
+pub fn addUndefined(self: *MachO, name: []const u8, flags: RelocFlags) !u32 {
+    const gpa = self.base.allocator;
+
+    const gop = try self.getOrPutGlobalPtr(name);
+    const global_index = self.getGlobalIndex(name).?;
+
+    if (gop.found_existing) {
+        try self.updateRelocActions(global_index, flags);
+        return global_index;
+    }
+
+    const sym_index = try self.allocateSymbol();
+    const sym_loc = SymbolWithLoc{ .sym_index = sym_index };
+    gop.value_ptr.* = sym_loc;
+
+    const sym = self.getSymbolPtr(sym_loc);
+    sym.n_strx = try self.strtab.insert(gpa, name);
+    sym.n_type = macho.N_EXT | macho.N_UNDF;
+
+    try self.unresolved.putNoClobber(gpa, global_index, {});
+    try self.updateRelocActions(global_index, flags);
+
+    return global_index;
+}
+
+fn updateRelocActions(self: *MachO, global_index: u32, flags: RelocFlags) !void {
+    const act_gop = try self.actions.getOrPut(self.base.allocator, global_index);
+    if (!act_gop.found_existing) {
+        act_gop.value_ptr.* = .{};
+    }
+    act_gop.value_ptr.add_got = act_gop.value_ptr.add_got or flags.add_got;
+    act_gop.value_ptr.add_stub = act_gop.value_ptr.add_stub or flags.add_stub;
+}
+
+pub fn makeStaticString(bytes: []const u8) [16]u8 {
+    var buf = [_]u8{0} ** 16;
+    @memcpy(buf[0..bytes.len], bytes);
+    return buf;
+}
+
+pub fn getSegmentByName(self: MachO, segname: []const u8) ?u8 {
+    for (self.segments.items, 0..) |seg, i| {
+        if (mem.eql(u8, segname, seg.segName())) return @as(u8, @intCast(i));
+    } else return null;
+}
+
+pub fn getSegment(self: MachO, sect_id: u8) macho.segment_command_64 {
+    const index = self.sections.items(.segment_index)[sect_id];
+    return self.segments.items[index];
+}
+
+pub fn getSegmentPtr(self: *MachO, sect_id: u8) *macho.segment_command_64 {
+    const index = self.sections.items(.segment_index)[sect_id];
+    return &self.segments.items[index];
+}
+
+pub fn getLinkeditSegmentPtr(self: *MachO) *macho.segment_command_64 {
+    const index = self.linkedit_segment_cmd_index.?;
+    return &self.segments.items[index];
+}
+
+pub fn getSectionByName(self: MachO, segname: []const u8, sectname: []const u8) ?u8 {
+    // TODO investigate caching with a hashmap
+    for (self.sections.items(.header), 0..) |header, i| {
+        if (mem.eql(u8, header.segName(), segname) and mem.eql(u8, header.sectName(), sectname))
+            return @as(u8, @intCast(i));
+    } else return null;
+}
+
+pub fn getSectionIndexes(self: MachO, segment_index: u8) struct { start: u8, end: u8 } {
+    var start: u8 = 0;
+    const nsects = for (self.segments.items, 0..) |seg, i| {
+        if (i == segment_index) break @as(u8, @intCast(seg.nsects));
+        start += @as(u8, @intCast(seg.nsects));
+    } else 0;
+    return .{ .start = start, .end = start + nsects };
+}
+
+pub fn symbolIsTemp(self: *MachO, sym_with_loc: SymbolWithLoc) bool {
+    const sym = self.getSymbol(sym_with_loc);
+    if (!sym.sect()) return false;
+    if (sym.ext()) return false;
+    const sym_name = self.getSymbolName(sym_with_loc);
+    return mem.startsWith(u8, sym_name, "l") or mem.startsWith(u8, sym_name, "L");
+}
+
+/// Returns pointer-to-symbol described by `sym_with_loc` descriptor.
+pub fn getSymbolPtr(self: *MachO, sym_with_loc: SymbolWithLoc) *macho.nlist_64 {
+    if (sym_with_loc.getFile()) |file| {
+        const object = &self.objects.items[file];
+        return &object.symtab[sym_with_loc.sym_index];
+    } else {
+        return &self.locals.items[sym_with_loc.sym_index];
+    }
+}
+
+/// Returns symbol described by `sym_with_loc` descriptor.
+pub fn getSymbol(self: *const MachO, sym_with_loc: SymbolWithLoc) macho.nlist_64 {
+    if (sym_with_loc.getFile()) |file| {
+        const object = &self.objects.items[file];
+        return object.symtab[sym_with_loc.sym_index];
+    } else {
+        return self.locals.items[sym_with_loc.sym_index];
+    }
+}
+
+/// Returns name of the symbol described by `sym_with_loc` descriptor.
+pub fn getSymbolName(self: *const MachO, sym_with_loc: SymbolWithLoc) []const u8 {
+    if (sym_with_loc.getFile()) |file| {
+        const object = self.objects.items[file];
+        return object.getSymbolName(sym_with_loc.sym_index);
+    } else {
+        const sym = self.locals.items[sym_with_loc.sym_index];
+        return self.strtab.get(sym.n_strx).?;
+    }
+}
+
+const BoundarySymbolKind = enum {
+    start,
+    stop,
+};
+
+const SectionBoundarySymbol = struct {
+    kind: BoundarySymbolKind,
+    segname: []const u8,
+    sectname: []const u8,
+};
+
+pub fn getSectionBoundarySymbol(self: *const MachO, sym_with_loc: SymbolWithLoc) ?SectionBoundarySymbol {
+    const sym_name = self.getSymbolName(sym_with_loc);
+    if (mem.startsWith(u8, sym_name, "section$")) {
+        const trailing = sym_name["section$".len..];
+        const kind: BoundarySymbolKind = kind: {
+            if (mem.startsWith(u8, trailing, "start$")) break :kind .start;
+            if (mem.startsWith(u8, trailing, "stop$")) break :kind .stop;
+            return null;
+        };
+        const names = trailing[@tagName(kind).len + 1 ..];
+        const sep_idx = mem.indexOf(u8, names, "$") orelse return null;
+        const segname = names[0..sep_idx];
+        const sectname = names[sep_idx + 1 ..];
+        return .{ .kind = kind, .segname = segname, .sectname = sectname };
+    }
+    return null;
+}
+
+const SegmentBoundarySymbol = struct {
+    kind: BoundarySymbolKind,
+    segname: []const u8,
+};
+
+pub fn getSegmentBoundarySymbol(self: *const MachO, sym_with_loc: SymbolWithLoc) ?SegmentBoundarySymbol {
+    const sym_name = self.getSymbolName(sym_with_loc);
+    if (mem.startsWith(u8, sym_name, "segment$")) {
+        const trailing = sym_name["segment$".len..];
+        const kind: BoundarySymbolKind = kind: {
+            if (mem.startsWith(u8, trailing, "start$")) break :kind .start;
+            if (mem.startsWith(u8, trailing, "stop$")) break :kind .stop;
+            return null;
+        };
+        const segname = trailing[@tagName(kind).len + 1 ..];
+        return .{ .kind = kind, .segname = segname };
+    }
+    return null;
+}
+
+/// Returns pointer to the global entry for `name` if one exists.
+pub fn getGlobalPtr(self: *MachO, name: []const u8) ?*SymbolWithLoc {
+    const global_index = self.resolver.get(name) orelse return null;
+    return &self.globals.items[global_index];
+}
+
+/// Returns the global entry for `name` if one exists.
+pub fn getGlobal(self: *const MachO, name: []const u8) ?SymbolWithLoc {
+    const global_index = self.resolver.get(name) orelse return null;
+    return self.globals.items[global_index];
+}
+
+/// Returns the index of the global entry for `name` if one exists.
+pub fn getGlobalIndex(self: *const MachO, name: []const u8) ?u32 {
+    return self.resolver.get(name);
+}
+
+/// Returns global entry at `index`.
+pub fn getGlobalByIndex(self: *const MachO, index: u32) SymbolWithLoc {
+    assert(index < self.globals.items.len);
+    return self.globals.items[index];
+}
+
+const GetOrPutGlobalPtrResult = struct {
+    found_existing: bool,
+    value_ptr: *SymbolWithLoc,
+};
+
+/// Used only for disambiguating local from global at relocation level.
+/// TODO this must go away.
+pub const global_symbol_bit: u32 = 0x80000000;
+pub const global_symbol_mask: u32 = 0x7fffffff;
+
+/// Return pointer to the global entry for `name` if one exists.
+/// Puts a new global entry for `name` if one doesn't exist, and
+/// returns a pointer to it.
+pub fn getOrPutGlobalPtr(self: *MachO, name: []const u8) !GetOrPutGlobalPtrResult {
+    if (self.getGlobalPtr(name)) |ptr| {
+        return GetOrPutGlobalPtrResult{ .found_existing = true, .value_ptr = ptr };
+    }
+    const gpa = self.base.allocator;
+    const global_index = try self.allocateGlobal();
+    const global_name = try gpa.dupe(u8, name);
+    _ = try self.resolver.put(gpa, global_name, global_index);
+    const ptr = &self.globals.items[global_index];
+    return GetOrPutGlobalPtrResult{ .found_existing = false, .value_ptr = ptr };
+}
+
+pub fn getAtom(self: *MachO, atom_index: Atom.Index) Atom {
+    assert(atom_index < self.atoms.items.len);
+    return self.atoms.items[atom_index];
+}
+
+pub fn getAtomPtr(self: *MachO, atom_index: Atom.Index) *Atom {
+    assert(atom_index < self.atoms.items.len);
+    return &self.atoms.items[atom_index];
+}
+
+/// Returns atom if there is an atom referenced by the symbol described by `sym_with_loc` descriptor.
+/// Returns null on failure.
+pub fn getAtomIndexForSymbol(self: *MachO, sym_with_loc: SymbolWithLoc) ?Atom.Index {
+    assert(sym_with_loc.getFile() == null);
+    return self.atom_by_index_table.get(sym_with_loc.sym_index);
+}
+
+pub fn getGotEntryAddress(self: *MachO, sym_with_loc: SymbolWithLoc) ?u64 {
+    const index = self.got_table.lookup.get(sym_with_loc) orelse return null;
+    const header = self.sections.items(.header)[self.got_section_index.?];
+    return header.addr + @sizeOf(u64) * index;
+}
+
+pub fn getTlvPtrEntryAddress(self: *MachO, sym_with_loc: SymbolWithLoc) ?u64 {
+    const index = self.tlv_ptr_table.lookup.get(sym_with_loc) orelse return null;
+    const header = self.sections.items(.header)[self.tlv_ptr_section_index.?];
+    return header.addr + @sizeOf(u64) * index;
+}
+
+pub fn getStubsEntryAddress(self: *MachO, sym_with_loc: SymbolWithLoc) ?u64 {
+    const index = self.stub_table.lookup.get(sym_with_loc) orelse return null;
+    const header = self.sections.items(.header)[self.stubs_section_index.?];
+    return header.addr + stubs.stubSize(self.base.options.target.cpu.arch) * index;
+}
+
+/// Returns symbol location corresponding to the set entrypoint if any.
+/// Asserts output mode is executable.
+pub fn getEntryPoint(self: MachO) ?SymbolWithLoc {
+    const entry_name = self.base.options.entry orelse load_commands.default_entry_point;
+    const global = self.getGlobal(entry_name) orelse return null;
+    return global;
+}
+
+pub fn getDebugSymbols(self: *MachO) ?*DebugSymbols {
+    if (self.d_sym == null) return null;
+    return &self.d_sym.?;
+}
+
+pub inline fn getPageSize(cpu_arch: std.Target.Cpu.Arch) u16 {
+    return switch (cpu_arch) {
+        .aarch64 => 0x4000,
+        .x86_64 => 0x1000,
+        else => unreachable,
+    };
+}
+
+pub fn requiresCodeSignature(options: *const link.Options) bool {
+    if (options.entitlements) |_| return true;
+    const cpu_arch = options.target.cpu.arch;
+    const os_tag = options.target.os.tag;
+    const abi = options.target.abi;
+    if (cpu_arch == .aarch64 and (os_tag == .macos or abi == .simulator)) return true;
+    return false;
+}
+
+pub fn getSegmentPrecedence(segname: []const u8) u4 {
+    if (mem.eql(u8, segname, "__PAGEZERO")) return 0x0;
+    if (mem.eql(u8, segname, "__TEXT")) return 0x1;
+    if (mem.eql(u8, segname, "__DATA_CONST")) return 0x2;
+    if (mem.eql(u8, segname, "__DATA")) return 0x3;
+    if (mem.eql(u8, segname, "__LINKEDIT")) return 0x5;
+    return 0x4;
+}
+
+pub fn getSegmentMemoryProtection(segname: []const u8) macho.vm_prot_t {
+    if (mem.eql(u8, segname, "__PAGEZERO")) return macho.PROT.NONE;
+    if (mem.eql(u8, segname, "__TEXT")) return macho.PROT.READ | macho.PROT.EXEC;
+    if (mem.eql(u8, segname, "__LINKEDIT")) return macho.PROT.READ;
+    return macho.PROT.READ | macho.PROT.WRITE;
+}
+
+pub fn getSectionPrecedence(header: macho.section_64) u8 {
+    const segment_precedence: u4 = getSegmentPrecedence(header.segName());
+    const section_precedence: u4 = blk: {
+        if (header.isCode()) {
+            if (mem.eql(u8, "__text", header.sectName())) break :blk 0x0;
+            if (header.type() == macho.S_SYMBOL_STUBS) break :blk 0x1;
+            break :blk 0x2;
+        }
+        switch (header.type()) {
+            macho.S_NON_LAZY_SYMBOL_POINTERS,
+            macho.S_LAZY_SYMBOL_POINTERS,
+            => break :blk 0x0,
+            macho.S_MOD_INIT_FUNC_POINTERS => break :blk 0x1,
+            macho.S_MOD_TERM_FUNC_POINTERS => break :blk 0x2,
+            macho.S_ZEROFILL => break :blk 0xf,
+            macho.S_THREAD_LOCAL_REGULAR => break :blk 0xd,
+            macho.S_THREAD_LOCAL_ZEROFILL => break :blk 0xe,
+            else => {
+                if (mem.eql(u8, "__unwind_info", header.sectName())) break :blk 0xe;
+                if (mem.eql(u8, "__eh_frame", header.sectName())) break :blk 0xf;
+                break :blk 0x3;
+            },
+        }
+    };
+    return (@as(u8, @intCast(segment_precedence)) << 4) + section_precedence;
+}
+
+pub const ParseErrorCtx = struct {
+    arena_allocator: std.heap.ArenaAllocator,
+    detected_dylib_id: struct {
+        parent: u16,
+        required_version: u32,
+        found_version: u32,
+    },
+    detected_targets: std.ArrayList([]const u8),
+
+    pub fn init(gpa: Allocator) ParseErrorCtx {
+        return .{
+            .arena_allocator = std.heap.ArenaAllocator.init(gpa),
+            .detected_dylib_id = undefined,
+            .detected_targets = std.ArrayList([]const u8).init(gpa),
+        };
+    }
+
+    pub fn deinit(ctx: *ParseErrorCtx) void {
+        ctx.arena_allocator.deinit();
+        ctx.detected_targets.deinit();
+    }
+
+    pub fn arena(ctx: *ParseErrorCtx) Allocator {
+        return ctx.arena_allocator.allocator();
+    }
+};
+
+pub fn handleAndReportParseError(
+    self: *MachO,
+    path: []const u8,
+    err: ParseError,
+    ctx: *const ParseErrorCtx,
+) error{OutOfMemory}!void {
+    const cpu_arch = self.base.options.target.cpu.arch;
+    switch (err) {
+        error.DylibAlreadyExists => {},
+        error.IncompatibleDylibVersion => {
+            const parent = &self.dylibs.items[ctx.detected_dylib_id.parent];
+            try self.reportDependencyError(
+                if (parent.id) |id| id.name else parent.path,
+                path,
+                "incompatible dylib version: expected at least '{}', but found '{}'",
+                .{
+                    load_commands.appleVersionToSemanticVersion(ctx.detected_dylib_id.required_version),
+                    load_commands.appleVersionToSemanticVersion(ctx.detected_dylib_id.found_version),
+                },
+            );
+        },
+        error.UnknownFileType => try self.reportParseError(path, "unknown file type", .{}),
+        error.InvalidTarget, error.InvalidTargetFatLibrary => {
+            var targets_string = std.ArrayList(u8).init(self.base.allocator);
+            defer targets_string.deinit();
+
+            if (ctx.detected_targets.items.len > 1) {
+                try targets_string.writer().writeAll("(");
+                for (ctx.detected_targets.items) |t| {
+                    try targets_string.writer().print("{s}, ", .{t});
+                }
+                try targets_string.resize(targets_string.items.len - 2);
+                try targets_string.writer().writeAll(")");
+            } else {
+                try targets_string.writer().writeAll(ctx.detected_targets.items[0]);
+            }
+
+            switch (err) {
+                error.InvalidTarget => try self.reportParseError(
+                    path,
+                    "invalid target: expected '{}', but found '{s}'",
+                    .{ Platform.fromTarget(self.base.options.target).fmtTarget(cpu_arch), targets_string.items },
+                ),
+                error.InvalidTargetFatLibrary => try self.reportParseError(
+                    path,
+                    "invalid architecture in universal library: expected '{s}', but found '{s}'",
+                    .{ @tagName(cpu_arch), targets_string.items },
+                ),
+                else => unreachable,
+            }
+        },
+        else => |e| try self.reportParseError(path, "{s}: parsing object failed", .{@errorName(e)}),
+    }
+}
+
+fn reportMissingLibraryError(
+    self: *MachO,
+    checked_paths: []const []const u8,
+    comptime format: []const u8,
+    args: anytype,
+) error{OutOfMemory}!void {
+    const gpa = self.base.allocator;
+    try self.misc_errors.ensureUnusedCapacity(gpa, 1);
+    var notes = try gpa.alloc(File.ErrorMsg, checked_paths.len);
+    errdefer gpa.free(notes);
+    for (checked_paths, notes) |path, *note| {
+        note.* = .{ .msg = try std.fmt.allocPrint(gpa, "tried {s}", .{path}) };
+    }
+    self.misc_errors.appendAssumeCapacity(.{
+        .msg = try std.fmt.allocPrint(gpa, format, args),
+        .notes = notes,
+    });
+}
+
+fn reportDependencyError(
+    self: *MachO,
+    parent: []const u8,
+    path: ?[]const u8,
+    comptime format: []const u8,
+    args: anytype,
+) error{OutOfMemory}!void {
+    const gpa = self.base.allocator;
+    try self.misc_errors.ensureUnusedCapacity(gpa, 1);
+    var notes = try std.ArrayList(File.ErrorMsg).initCapacity(gpa, 2);
+    defer notes.deinit();
+    if (path) |p| {
+        notes.appendAssumeCapacity(.{ .msg = try std.fmt.allocPrint(gpa, "while parsing {s}", .{p}) });
+    }
+    notes.appendAssumeCapacity(.{ .msg = try std.fmt.allocPrint(gpa, "a dependency of {s}", .{parent}) });
+    self.misc_errors.appendAssumeCapacity(.{
+        .msg = try std.fmt.allocPrint(gpa, format, args),
+        .notes = try notes.toOwnedSlice(),
+    });
+}
+
+pub fn reportParseError(
+    self: *MachO,
+    path: []const u8,
+    comptime format: []const u8,
+    args: anytype,
+) error{OutOfMemory}!void {
+    const gpa = self.base.allocator;
+    try self.misc_errors.ensureUnusedCapacity(gpa, 1);
+    var notes = try gpa.alloc(File.ErrorMsg, 1);
+    errdefer gpa.free(notes);
+    notes[0] = .{ .msg = try std.fmt.allocPrint(gpa, "while parsing {s}", .{path}) };
+    self.misc_errors.appendAssumeCapacity(.{
+        .msg = try std.fmt.allocPrint(gpa, format, args),
+        .notes = notes,
+    });
+}
+
+pub fn reportUnresolvedBoundarySymbol(
+    self: *MachO,
+    sym_name: []const u8,
+    comptime format: []const u8,
+    args: anytype,
+) error{OutOfMemory}!void {
+    const gpa = self.base.allocator;
+    try self.misc_errors.ensureUnusedCapacity(gpa, 1);
+    var notes = try gpa.alloc(File.ErrorMsg, 1);
+    errdefer gpa.free(notes);
+    notes[0] = .{ .msg = try std.fmt.allocPrint(gpa, "while resolving {s}", .{sym_name}) };
+    self.misc_errors.appendAssumeCapacity(.{
+        .msg = try std.fmt.allocPrint(gpa, format, args),
+        .notes = notes,
+    });
+}
+
+pub fn reportUndefined(self: *MachO) error{OutOfMemory}!void {
+    const gpa = self.base.allocator;
+    const count = self.unresolved.count();
+    try self.misc_errors.ensureUnusedCapacity(gpa, count);
+
+    for (self.unresolved.keys()) |global_index| {
+        const global = self.globals.items[global_index];
+        const sym_name = self.getSymbolName(global);
+
+        var notes = try std.ArrayList(File.ErrorMsg).initCapacity(gpa, 1);
+        defer notes.deinit();
+
+        if (global.getFile()) |file| {
+            const note = try std.fmt.allocPrint(gpa, "referenced in {s}", .{
+                self.objects.items[file].name,
+            });
+            notes.appendAssumeCapacity(.{ .msg = note });
+        }
+
+        var err_msg = File.ErrorMsg{
+            .msg = try std.fmt.allocPrint(gpa, "undefined reference to symbol {s}", .{sym_name}),
+        };
+        err_msg.notes = try notes.toOwnedSlice();
+
+        self.misc_errors.appendAssumeCapacity(err_msg);
+    }
+}
+
+fn reportSymbolCollision(
+    self: *MachO,
+    first: SymbolWithLoc,
+    other: SymbolWithLoc,
+) error{OutOfMemory}!void {
+    const gpa = self.base.allocator;
+    try self.misc_errors.ensureUnusedCapacity(gpa, 1);
+
+    var notes = try std.ArrayList(File.ErrorMsg).initCapacity(gpa, 2);
+    defer notes.deinit();
+
+    if (first.getFile()) |file| {
+        const note = try std.fmt.allocPrint(gpa, "first definition in {s}", .{
+            self.objects.items[file].name,
+        });
+        notes.appendAssumeCapacity(.{ .msg = note });
+    }
+    if (other.getFile()) |file| {
+        const note = try std.fmt.allocPrint(gpa, "next definition in {s}", .{
+            self.objects.items[file].name,
+        });
+        notes.appendAssumeCapacity(.{ .msg = note });
+    }
+
+    var err_msg = File.ErrorMsg{ .msg = try std.fmt.allocPrint(gpa, "symbol {s} defined multiple times", .{
+        self.getSymbolName(first),
+    }) };
+    err_msg.notes = try notes.toOwnedSlice();
+
+    self.misc_errors.appendAssumeCapacity(err_msg);
+}
+
+fn reportUnhandledSymbolType(self: *MachO, sym_with_loc: SymbolWithLoc) error{OutOfMemory}!void {
+    const gpa = self.base.allocator;
+    try self.misc_errors.ensureUnusedCapacity(gpa, 1);
+
+    const notes = try gpa.alloc(File.ErrorMsg, 1);
+    errdefer gpa.free(notes);
+
+    const file = sym_with_loc.getFile().?;
+    notes[0] = .{ .msg = try std.fmt.allocPrint(gpa, "defined in {s}", .{self.objects.items[file].name}) };
+
+    const sym = self.getSymbol(sym_with_loc);
+    const sym_type = if (sym.stab())
+        "stab"
+    else if (sym.indr())
+        "indirect"
+    else if (sym.abs())
+        "absolute"
+    else
+        unreachable;
+
+    self.misc_errors.appendAssumeCapacity(.{
+        .msg = try std.fmt.allocPrint(gpa, "unhandled symbol type: '{s}' has type {s}", .{
+            self.getSymbolName(sym_with_loc),
+            sym_type,
+        }),
+        .notes = notes,
+    });
+}
+
+/// Binary search
+pub fn bsearch(comptime T: type, haystack: []align(1) const T, predicate: anytype) usize {
+    if (!@hasDecl(@TypeOf(predicate), "predicate"))
+        @compileError("Predicate is required to define fn predicate(@This(), T) bool");
+
+    var min: usize = 0;
+    var max: usize = haystack.len;
+    while (min < max) {
+        const index = (min + max) / 2;
+        const curr = haystack[index];
+        if (predicate.predicate(curr)) {
+            min = index + 1;
+        } else {
+            max = index;
+        }
+    }
+    return min;
+}
+
+/// Linear search
+pub fn lsearch(comptime T: type, haystack: []align(1) const T, predicate: anytype) usize {
+    if (!@hasDecl(@TypeOf(predicate), "predicate"))
+        @compileError("Predicate is required to define fn predicate(@This(), T) bool");
+
+    var i: usize = 0;
+    while (i < haystack.len) : (i += 1) {
+        if (predicate.predicate(haystack[i])) break;
+    }
+    return i;
+}
+
+pub fn logSegments(self: *MachO) void {
+    log.debug("segments:", .{});
+    for (self.segments.items, 0..) |segment, i| {
+        log.debug("  segment({d}): {s} @{x} ({x}), sizeof({x})", .{
+            i,
+            segment.segName(),
+            segment.fileoff,
+            segment.vmaddr,
+            segment.vmsize,
+        });
+    }
+}
+
+pub fn logSections(self: *MachO) void {
+    log.debug("sections:", .{});
+    for (self.sections.items(.header), 0..) |header, i| {
+        log.debug("  sect({d}): {s},{s} @{x} ({x}), sizeof({x})", .{
+            i + 1,
+            header.segName(),
+            header.sectName(),
+            header.offset,
+            header.addr,
+            header.size,
+        });
+    }
+}
+
+fn logSymAttributes(sym: macho.nlist_64, buf: []u8) []const u8 {
+    if (sym.sect()) {
+        buf[0] = 's';
+    }
+    if (sym.ext()) {
+        if (sym.weakDef() or sym.pext()) {
+            buf[1] = 'w';
+        } else {
+            buf[1] = 'e';
+        }
+    }
+    if (sym.tentative()) {
+        buf[2] = 't';
+    }
+    if (sym.undf()) {
+        buf[3] = 'u';
+    }
+    return buf[0..];
+}
+
+pub fn logSymtab(self: *MachO) void {
+    var buf: [4]u8 = undefined;
+
+    const scoped_log = std.log.scoped(.symtab);
+
+    scoped_log.debug("locals:", .{});
+    for (self.objects.items, 0..) |object, id| {
+        scoped_log.debug("  object({d}): {s}", .{ id, object.name });
+        if (object.in_symtab == null) continue;
+        for (object.symtab, 0..) |sym, sym_id| {
+            @memset(&buf, '_');
+            scoped_log.debug("    %{d}: {s} @{x} in sect({d}), {s}", .{
+                sym_id,
+                object.getSymbolName(@as(u32, @intCast(sym_id))),
+                sym.n_value,
+                sym.n_sect,
+                logSymAttributes(sym, &buf),
+            });
+        }
+    }
+    scoped_log.debug("  object(-1)", .{});
+    for (self.locals.items, 0..) |sym, sym_id| {
+        if (sym.undf()) continue;
+        scoped_log.debug("    %{d}: {s} @{x} in sect({d}), {s}", .{
+            sym_id,
+            self.strtab.get(sym.n_strx).?,
+            sym.n_value,
+            sym.n_sect,
+            logSymAttributes(sym, &buf),
+        });
+    }
+
+    scoped_log.debug("exports:", .{});
+    for (self.globals.items, 0..) |global, i| {
+        const sym = self.getSymbol(global);
+        if (sym.undf()) continue;
+        if (sym.n_desc == N_DEAD) continue;
+        if (sym.n_desc == N_BOUNDARY) continue;
+        scoped_log.debug("    %{d}: {s} @{x} in sect({d}), {s} (def in object({?}))", .{
+            i,
+            self.getSymbolName(global),
+            sym.n_value,
+            sym.n_sect,
+            logSymAttributes(sym, &buf),
+            global.file,
+        });
+    }
+
+    scoped_log.debug("imports:", .{});
+    for (self.globals.items, 0..) |global, i| {
+        const sym = self.getSymbol(global);
+        if (!sym.undf()) continue;
+        if (sym.n_desc == N_DEAD) continue;
+        if (sym.n_desc == N_BOUNDARY) continue;
+        const ord = @divTrunc(sym.n_desc, macho.N_SYMBOL_RESOLVER);
+        scoped_log.debug("    %{d}: {s} @{x} in ord({d}), {s}", .{
+            i,
+            self.getSymbolName(global),
+            sym.n_value,
+            ord,
+            logSymAttributes(sym, &buf),
+        });
+    }
+
+    scoped_log.debug("GOT entries:", .{});
+    scoped_log.debug("{}", .{self.got_table});
+
+    scoped_log.debug("TLV pointers:", .{});
+    scoped_log.debug("{}", .{self.tlv_ptr_table});
+
+    scoped_log.debug("stubs entries:", .{});
+    scoped_log.debug("{}", .{self.stub_table});
+
+    scoped_log.debug("thunks:", .{});
+    for (self.thunks.items, 0..) |thunk, i| {
+        scoped_log.debug("  thunk({d})", .{i});
+        const slice = thunk.targets.slice();
+        for (slice.items(.tag), slice.items(.target), 0..) |tag, target, j| {
+            const atom_index = @as(u32, @intCast(thunk.getStartAtomIndex() + j));
+            const atom = self.getAtom(atom_index);
+            const atom_sym = self.getSymbol(atom.getSymbolWithLoc());
+            const target_addr = switch (tag) {
+                .stub => self.getStubsEntryAddress(target).?,
+                .atom => self.getSymbol(target).n_value,
+            };
+            scoped_log.debug("    {d}@{x} => {s}({s}@{x})", .{
+                j,
+                atom_sym.n_value,
+                @tagName(tag),
+                self.getSymbolName(target),
+                target_addr,
+            });
+        }
+    }
+}
+
+pub fn logAtoms(self: *MachO) void {
+    log.debug("atoms:", .{});
+    const slice = self.sections.slice();
+    for (slice.items(.first_atom_index), 0..) |first_atom_index, sect_id| {
+        var atom_index = first_atom_index orelse continue;
+        const header = slice.items(.header)[sect_id];
+
+        log.debug("{s},{s}", .{ header.segName(), header.sectName() });
+
+        while (true) {
+            const atom = self.getAtom(atom_index);
+            self.logAtom(atom_index, log);
+
+            if (atom.next_index) |next_index| {
+                atom_index = next_index;
+            } else break;
+        }
+    }
+}
+
+pub fn logAtom(self: *MachO, atom_index: Atom.Index, logger: anytype) void {
+    if (!build_options.enable_logging) return;
+
+    const atom = self.getAtom(atom_index);
+    const sym = self.getSymbol(atom.getSymbolWithLoc());
+    const sym_name = self.getSymbolName(atom.getSymbolWithLoc());
+    logger.debug("  ATOM({d}, %{d}, '{s}') @ {x} (sizeof({x}), alignof({x})) in object({?}) in sect({d})", .{
+        atom_index,
+        atom.sym_index,
+        sym_name,
+        sym.n_value,
+        atom.size,
+        atom.alignment,
+        atom.getFile(),
+        sym.n_sect,
+    });
+
+    if (atom.getFile() != null) {
+        var it = Atom.getInnerSymbolsIterator(self, atom_index);
+        while (it.next()) |sym_loc| {
+            const inner = self.getSymbol(sym_loc);
+            const inner_name = self.getSymbolName(sym_loc);
+            const offset = Atom.calcInnerSymbolOffset(self, atom_index, sym_loc.sym_index);
+
+            logger.debug("    (%{d}, '{s}') @ {x} ({x})", .{
+                sym_loc.sym_index,
+                inner_name,
+                inner.n_value,
+                offset,
+            });
+        }
+
+        if (Atom.getSectionAlias(self, atom_index)) |sym_loc| {
+            const alias = self.getSymbol(sym_loc);
+            const alias_name = self.getSymbolName(sym_loc);
+
+            logger.debug("    (%{d}, '{s}') @ {x} ({x})", .{
+                sym_loc.sym_index,
+                alias_name,
+                alias.n_value,
+                0,
+            });
+        }
+    }
+}
+
+pub const base_tag: File.Tag = File.Tag.macho;
+pub const N_DEAD: u16 = @as(u16, @bitCast(@as(i16, -1)));
+pub const N_BOUNDARY: u16 = @as(u16, @bitCast(@as(i16, -2)));
+
+/// Mode of operation of the linker.
+pub const Mode = enum {
+    /// Incremental mode will preallocate segments/sections and is compatible with
+    /// watch and HCS modes of operation.
+    incremental,
+    /// Zld mode will link relocatables in a traditional, one-shot
+    /// fashion (default for LLVM backend). It acts as a drop-in replacement for
+    /// LLD.
+    zld,
+};
+
+pub const Section = struct {
+    header: macho.section_64,
+    segment_index: u8,
+    first_atom_index: ?Atom.Index = null,
+    last_atom_index: ?Atom.Index = null,
+
+    /// A list of atoms that have surplus capacity. This list can have false
+    /// positives, as functions grow and shrink over time, only sometimes being added
+    /// or removed from the freelist.
+    ///
+    /// An atom has surplus capacity when its overcapacity value is greater than
+    /// padToIdeal(minimum_atom_size). That is, when it has so
+    /// much extra capacity, that we could fit a small new symbol in it, itself with
+    /// ideal_capacity or more.
+    ///
+    /// Ideal capacity is defined by size + (size / ideal_factor).
+    ///
+    /// Overcapacity is measured by actual_capacity - ideal_capacity. Note that
+    /// overcapacity can be negative. A simple way to have negative overcapacity is to
+    /// allocate a fresh atom, which will have ideal capacity, and then grow it
+    /// by 1 byte. It will then have -1 overcapacity.
+    free_list: std.ArrayListUnmanaged(Atom.Index) = .{},
+};
+
+const is_hot_update_compatible = switch (builtin.target.os.tag) {
+    .macos => true,
+    else => false,
+};
+
+const LazySymbolTable = std.AutoArrayHashMapUnmanaged(Module.Decl.OptionalIndex, LazySymbolMetadata);
+
+const LazySymbolMetadata = struct {
+    const State = enum { unused, pending_flush, flushed };
+    text_atom: Atom.Index = undefined,
+    data_const_atom: Atom.Index = undefined,
+    text_state: State = .unused,
+    data_const_state: State = .unused,
+};
+
+const TlvSymbolTable = std.AutoArrayHashMapUnmanaged(SymbolWithLoc, Atom.Index);
+
+const DeclMetadata = struct {
+    atom: Atom.Index,
+    section: u8,
+    /// A list of all exports aliases of this Decl.
+    /// TODO do we actually need this at all?
+    exports: std.ArrayListUnmanaged(u32) = .{},
+
+    fn getExport(m: DeclMetadata, macho_file: *const MachO, name: []const u8) ?u32 {
+        for (m.exports.items) |exp| {
+            if (mem.eql(u8, name, macho_file.getSymbolName(.{ .sym_index = exp }))) return exp;
+        }
+        return null;
+    }
+
+    fn getExportPtr(m: *DeclMetadata, macho_file: *MachO, name: []const u8) ?*u32 {
+        for (m.exports.items) |*exp| {
+            if (mem.eql(u8, name, macho_file.getSymbolName(.{ .sym_index = exp.* }))) return exp;
+        }
+        return null;
+    }
+};
+
+const DeclTable = std.AutoArrayHashMapUnmanaged(Module.Decl.Index, DeclMetadata);
+const AnonDeclTable = std.AutoHashMapUnmanaged(InternPool.Index, DeclMetadata);
+const BindingTable = std.AutoArrayHashMapUnmanaged(Atom.Index, std.ArrayListUnmanaged(Atom.Binding));
+const UnnamedConstTable = std.AutoArrayHashMapUnmanaged(Module.Decl.Index, std.ArrayListUnmanaged(Atom.Index));
+const RebaseTable = std.AutoArrayHashMapUnmanaged(Atom.Index, std.ArrayListUnmanaged(u32));
+const RelocationTable = std.AutoArrayHashMapUnmanaged(Atom.Index, std.ArrayListUnmanaged(Relocation));
+const ActionTable = std.AutoHashMapUnmanaged(u32, RelocFlags);
+
+pub const RelocFlags = packed struct {
+    add_got: bool = false,
+    add_stub: bool = false,
+};
+
+pub const SymbolWithLoc = extern struct {
+    // Index into the respective symbol table.
+    sym_index: u32,
+
+    // 0 means it's a synthetic global.
+    file: u32 = 0,
+
+    pub fn getFile(self: SymbolWithLoc) ?u32 {
+        if (self.file == 0) return null;
+        return self.file - 1;
+    }
+
+    pub fn eql(self: SymbolWithLoc, other: SymbolWithLoc) bool {
+        return self.file == other.file and self.sym_index == other.sym_index;
+    }
+};
+
+const HotUpdateState = struct {
+    mach_task: ?std.os.darwin.MachTask = null,
+};
+
+/// When allocating, the ideal_capacity is calculated by
+/// actual_capacity + (actual_capacity / ideal_factor)
+const ideal_factor = 3;
+
+/// In order for a slice of bytes to be considered eligible to keep metadata pointing at
+/// it as a possible place to put new symbols, it must have enough room for this many bytes
+/// (plus extra for reserved capacity).
+const minimum_text_block_size = 64;
+pub const min_text_capacity = padToIdeal(minimum_text_block_size);
+
+/// Default virtual memory offset corresponds to the size of __PAGEZERO segment and
+/// start of __TEXT segment.
+pub const default_pagezero_vmsize: u64 = 0x100000000;
+
+/// We commit 0x1000 = 4096 bytes of space to the header and
+/// the table of load commands. This should be plenty for any
+/// potential future extensions.
+pub const default_headerpad_size: u32 = 0x1000;
+
+const MachO = @This();
+
+const std = @import("std");
+const build_options = @import("build_options");
+const builtin = @import("builtin");
+const assert = std.debug.assert;
+const dwarf = std.dwarf;
+const fs = std.fs;
+const log = std.log.scoped(.link);
+const macho = std.macho;
+const math = std.math;
+const mem = std.mem;
+const meta = std.meta;
+
+const aarch64 = @import("../arch/aarch64/bits.zig");
+const calcUuid = @import("MachO/uuid.zig").calcUuid;
+const codegen = @import("../codegen.zig");
+const dead_strip = @import("MachO/dead_strip.zig");
+const fat = @import("MachO/fat.zig");
+const link = @import("../link.zig");
+const llvm_backend = @import("../codegen/llvm.zig");
+const load_commands = @import("MachO/load_commands.zig");
+const stubs = @import("MachO/stubs.zig");
+const tapi = @import("tapi.zig");
+const target_util = @import("../target.zig");
+const thunks = @import("MachO/thunks.zig");
+const trace = @import("../tracy.zig").trace;
+const zld = @import("MachO/zld.zig");
+
+const Air = @import("../Air.zig");
+const Allocator = mem.Allocator;
+const Archive = @import("MachO/Archive.zig");
+pub const Atom = @import("MachO/Atom.zig");
+const Cache = std.Build.Cache;
+const CodeSignature = @import("MachO/CodeSignature.zig");
+const Compilation = @import("../Compilation.zig");
+const Dwarf = File.Dwarf;
+const DwarfInfo = @import("MachO/DwarfInfo.zig");
+const Dylib = @import("MachO/Dylib.zig");
+const File = link.File;
+const Object = @import("MachO/Object.zig");
+const LibStub = tapi.LibStub;
+const Liveness = @import("../Liveness.zig");
+const LlvmObject = @import("../codegen/llvm.zig").Object;
+const Md5 = std.crypto.hash.Md5;
+const Module = @import("../Module.zig");
+const InternPool = @import("../InternPool.zig");
+const Platform = load_commands.Platform;
+const Relocation = @import("MachO/Relocation.zig");
+const StringTable = @import("StringTable.zig");
+const TableSection = @import("table_section.zig").TableSection;
+const Trie = @import("MachO/Trie.zig");
+const Type = @import("../type.zig").Type;
+const TypedValue = @import("../TypedValue.zig");
+const Value = @import("../value.zig").Value;
+const Alignment = Atom.Alignment;
+
+pub const DebugSymbols = @import("MachO/DebugSymbols.zig");
+pub const Bind = @import("MachO/dyld_info/bind.zig").Bind(*const MachO, SymbolWithLoc);
+pub const LazyBind = @import("MachO/dyld_info/bind.zig").LazyBind(*const MachO, SymbolWithLoc);
+pub const Rebase = @import("MachO/dyld_info/Rebase.zig");

@@ -1,7 +1,5 @@
-/* Copyright (C) 1999-2020 Free Software Foundation, Inc.
+/* Copyright (C) 1999-2023 Free Software Foundation, Inc.
    This file is part of the GNU C Library.
-   Written by Jes Sorensen, <Jes.Sorensen@cern.ch>, April 1999.
-   Based on code originally written by David Mosberger-Tang
 
    The GNU C Library is free software; you can redistribute it and/or
    modify it under the terms of the GNU Lesser General Public
@@ -46,18 +44,15 @@
 #undef SYS_ify
 #define SYS_ify(syscall_name)	__NR_##syscall_name
 
-/* This is to help the old kernel headers where __NR_semtimedop is not
-   available.  */
-#ifndef __NR_semtimedop
-# define __NR_semtimedop 1247
+#ifndef IA64_USE_NEW_STUB
+# if defined USE_DL_SYSINFO && IS_IN (libc)
+#  define IA64_USE_NEW_STUB 1
+# else
+#  define IA64_USE_NEW_STUB 0
+# endif
 #endif
-
-#if defined USE_DL_SYSINFO \
-	&& (IS_IN (libc) \
-	    || IS_IN (libpthread) || IS_IN (librt))
-# define IA64_USE_NEW_STUB
-#else
-# undef IA64_USE_NEW_STUB
+#if IA64_USE_NEW_STUB && !USE_DL_SYSINFO
+# error IA64_USE_NEW_STUB needs USE_DL_SYSINFO
 #endif
 
 #ifdef __ASSEMBLER__
@@ -91,10 +86,11 @@
    a large offset.  Therefore we must not anymore test for < 0, but test
    for a real error by making sure the value in %d0 is a real error
    number.  Linus said he will make sure the no syscall returns a value
-   in -1 .. -4095 as a valid result so we can savely test with -4095.  */
+   in -1 .. -4095 as a valid result so we can safely test with -4095.  */
 
 /* We don't want the label for the error handler to be visible in the symbol
    table when we define it here.  */
+#undef SYSCALL_ERROR_LABEL
 #define SYSCALL_ERROR_LABEL __syscall_error
 
 #undef PSEUDO
@@ -108,7 +104,7 @@
 	mov r15=num;				\
 	break __IA64_BREAK_SYSCALL
 
-#ifdef IA64_USE_NEW_STUB
+#if IA64_USE_NEW_STUB
 # ifdef SHARED
 #  define DO_CALL(num)				\
 	.prologue;				\
@@ -177,6 +173,9 @@
 
 #else /* not __ASSEMBLER__ */
 
+#undef HAVE_INTERNAL_BRK_ADDR_SYMBOL
+#define HAVE_INTERNAL_BRK_ADDR_SYMBOL 1
+
 #define BREAK_INSN_1(num) "break " #num ";;\n\t"
 #define BREAK_INSN(num) BREAK_INSN_1(num)
 
@@ -189,15 +188,15 @@
    (non-negative) errno on error or the return value on success.
  */
 
-#ifdef IA64_USE_NEW_STUB
+#if IA64_USE_NEW_STUB
 
-# define DO_INLINE_SYSCALL_NCS(name, nr, args...)			      \
+# define INTERNAL_SYSCALL_NCS(name, nr, args...)			      \
+({									      \
     LOAD_ARGS_##nr (args)						      \
     register long _r8 __asm ("r8");					      \
     register long _r10 __asm ("r10");					      \
     register long _r15 __asm ("r15") = name;				      \
     register void *_b7 __asm ("b7") = ((tcbhead_t *)__thread_self)->__private;\
-    long _retval;							      \
     LOAD_REGS_##nr							      \
     /*									      \
      * Don't specify any unwind info here.  We mark ar.pfs as		      \
@@ -209,60 +208,30 @@
 			ASM_OUTARGS_##nr				      \
 		      : "0" (_b7), "3" (_r15) ASM_ARGS_##nr		      \
 		      : "memory", "ar.pfs" ASM_CLOBBERS_##nr);		      \
-    _retval = _r8;
+    _r10 == -1 ? -_r8 : _r8;						      \
+})
 
 #else /* !IA64_USE_NEW_STUB */
 
-# define DO_INLINE_SYSCALL_NCS(name, nr, args...)		\
+# define INTERNAL_SYSCALL_NCS(name, nr, args...)		\
+({								\
     LOAD_ARGS_##nr (args)					\
     register long _r8 asm ("r8");				\
     register long _r10 asm ("r10");				\
     register long _r15 asm ("r15") = name;			\
-    long _retval;						\
     LOAD_REGS_##nr						\
     __asm __volatile (BREAK_INSN (__IA64_BREAK_SYSCALL)		\
 		      : "=r" (_r8), "=r" (_r10), "=r" (_r15)	\
 			ASM_OUTARGS_##nr			\
 		      : "2" (_r15) ASM_ARGS_##nr		\
 		      : "memory" ASM_CLOBBERS_##nr);		\
-    _retval = _r8;
+    _r10 == -1 ? -_r8 : _r8;					\
+})
 
 #endif /* !IA64_USE_NEW_STUB */
 
-#define DO_INLINE_SYSCALL(name, nr, args...)	\
-  DO_INLINE_SYSCALL_NCS (__NR_##name, nr, ##args)
-
-#undef INLINE_SYSCALL
-#define INLINE_SYSCALL(name, nr, args...)		\
-  ({							\
-    DO_INLINE_SYSCALL_NCS (__NR_##name, nr, args)	\
-    if (_r10 == -1)					\
-      {							\
-	__set_errno (_retval);				\
-	_retval = -1;					\
-      }							\
-    _retval; })
-
-#undef INTERNAL_SYSCALL_DECL
-#define INTERNAL_SYSCALL_DECL(err) long int err __attribute__ ((unused))
-
-#undef INTERNAL_SYSCALL
-#define INTERNAL_SYSCALL_NCS(name, err, nr, args...)	\
-  ({							\
-    DO_INLINE_SYSCALL_NCS (name, nr, args)		\
-    err = _r10;						\
-    _retval; })
-#define INTERNAL_SYSCALL(name, err, nr, args...)	\
-  INTERNAL_SYSCALL_NCS (__NR_##name, err, nr, ##args)
-
-#undef INTERNAL_SYSCALL_ERROR_P
-#define INTERNAL_SYSCALL_ERROR_P(val, err)		\
-  ({ (void) (val);					\
-     (err == -1);					\
-  })
-
-#undef INTERNAL_SYSCALL_ERRNO
-#define INTERNAL_SYSCALL_ERRNO(val, err)	(val)
+#define INTERNAL_SYSCALL(name, nr, args...)	\
+  INTERNAL_SYSCALL_NCS (__NR_##name, nr, ##args)
 
 #define LOAD_ARGS_0()
 #define LOAD_REGS_0
@@ -311,7 +280,7 @@
 #define ASM_OUTARGS_5	ASM_OUTARGS_4, "=r" (_out4)
 #define ASM_OUTARGS_6	ASM_OUTARGS_5, "=r" (_out5)
 
-#ifdef IA64_USE_NEW_STUB
+#if IA64_USE_NEW_STUB
 #define ASM_ARGS_0
 #define ASM_ARGS_1	ASM_ARGS_0, "4" (_out0)
 #define ASM_ARGS_2	ASM_ARGS_1, "5" (_out1)
@@ -347,32 +316,12 @@
   /* Branch registers.  */						\
   "b6"
 
-#ifdef IA64_USE_NEW_STUB
+#if IA64_USE_NEW_STUB
 # define ASM_CLOBBERS_6	ASM_CLOBBERS_6_COMMON
 #else
 # define ASM_CLOBBERS_6	ASM_CLOBBERS_6_COMMON , "b7"
 #endif
 
 #endif /* not __ASSEMBLER__ */
-
-/* Pointer mangling support.  */
-#if IS_IN (rtld)
-/* We cannot use the thread descriptor because in ld.so we use setjmp
-   earlier than the descriptor is initialized.  */
-#else
-# ifdef __ASSEMBLER__
-#  define PTR_MANGLE(reg, tmpreg) \
-        add	tmpreg=-16,r13		\
-        ;;				\
-        ld8	tmpreg=[tmpreg]		\
-        ;;				\
-        xor	reg=reg, tmpreg
-#  define PTR_DEMANGLE(reg, tmpreg) PTR_MANGLE (reg, tmpreg)
-# else
-#  define PTR_MANGLE(var) \
-  (var) = (void *) ((uintptr_t) (var) ^ THREAD_GET_POINTER_GUARD ())
-#  define PTR_DEMANGLE(var)	PTR_MANGLE (var)
-# endif
-#endif
 
 #endif /* linux/ia64/sysdep.h */

@@ -1,15 +1,8 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
-
 const std = @import("../../std.zig");
+const builtin = @import("builtin");
 const mem = std.mem;
 const debug = std.debug;
-const Vector = std.meta.Vector;
-
-const BlockVec = Vector(2, u64);
+const BlockVec = @Vector(2, u64);
 
 /// A single AES block.
 pub const Block = struct {
@@ -19,82 +12,82 @@ pub const Block = struct {
     repr: BlockVec,
 
     /// Convert a byte sequence into an internal representation.
-    pub fn fromBytes(bytes: *const [16]u8) callconv(.Inline) Block {
+    pub inline fn fromBytes(bytes: *const [16]u8) Block {
         const repr = mem.bytesToValue(BlockVec, bytes);
         return Block{ .repr = repr };
     }
 
     /// Convert the internal representation of a block into a byte sequence.
-    pub fn toBytes(block: Block) callconv(.Inline) [16]u8 {
+    pub inline fn toBytes(block: Block) [16]u8 {
         return mem.toBytes(block.repr);
     }
 
     /// XOR the block with a byte sequence.
-    pub fn xorBytes(block: Block, bytes: *const [16]u8) callconv(.Inline) [16]u8 {
+    pub inline fn xorBytes(block: Block, bytes: *const [16]u8) [16]u8 {
         const x = block.repr ^ fromBytes(bytes).repr;
         return mem.toBytes(x);
     }
 
     /// Encrypt a block with a round key.
-    pub fn encrypt(block: Block, round_key: Block) callconv(.Inline) Block {
+    pub inline fn encrypt(block: Block, round_key: Block) Block {
         return Block{
             .repr = asm (
                 \\ vaesenc %[rk], %[in], %[out]
-                : [out] "=x" (-> BlockVec)
+                : [out] "=x" (-> BlockVec),
                 : [in] "x" (block.repr),
-                  [rk] "x" (round_key.repr)
+                  [rk] "x" (round_key.repr),
             ),
         };
     }
 
     /// Encrypt a block with the last round key.
-    pub fn encryptLast(block: Block, round_key: Block) callconv(.Inline) Block {
+    pub inline fn encryptLast(block: Block, round_key: Block) Block {
         return Block{
             .repr = asm (
                 \\ vaesenclast %[rk], %[in], %[out]
-                : [out] "=x" (-> BlockVec)
+                : [out] "=x" (-> BlockVec),
                 : [in] "x" (block.repr),
-                  [rk] "x" (round_key.repr)
+                  [rk] "x" (round_key.repr),
             ),
         };
     }
 
     /// Decrypt a block with a round key.
-    pub fn decrypt(block: Block, inv_round_key: Block) callconv(.Inline) Block {
+    pub inline fn decrypt(block: Block, inv_round_key: Block) Block {
         return Block{
             .repr = asm (
                 \\ vaesdec %[rk], %[in], %[out]
-                : [out] "=x" (-> BlockVec)
+                : [out] "=x" (-> BlockVec),
                 : [in] "x" (block.repr),
-                  [rk] "x" (inv_round_key.repr)
+                  [rk] "x" (inv_round_key.repr),
             ),
         };
     }
 
     /// Decrypt a block with the last round key.
-    pub fn decryptLast(block: Block, inv_round_key: Block) callconv(.Inline) Block {
+    pub inline fn decryptLast(block: Block, inv_round_key: Block) Block {
         return Block{
             .repr = asm (
                 \\ vaesdeclast %[rk], %[in], %[out]
-                : [out] "=x" (-> BlockVec)
+                : [out] "=x" (-> BlockVec),
                 : [in] "x" (block.repr),
-                  [rk] "x" (inv_round_key.repr)
+                  [rk] "x" (inv_round_key.repr),
             ),
         };
     }
 
     /// Apply the bitwise XOR operation to the content of two blocks.
-    pub fn xorBlocks(block1: Block, block2: Block) callconv(.Inline) Block {
+    pub inline fn xorBlocks(block1: Block, block2: Block) Block {
         return Block{ .repr = block1.repr ^ block2.repr };
     }
 
     /// Apply the bitwise AND operation to the content of two blocks.
-    pub fn andBlocks(block1: Block, block2: Block) callconv(.Inline) Block {
+    pub inline fn andBlocks(block1: Block, block2: Block) Block {
         return Block{ .repr = block1.repr & block2.repr };
     }
 
     /// Apply the bitwise OR operation to the content of two blocks.
-    pub fn orBlocks(block1: Block, block2: Block) callconv(.Inline) Block {
+    pub inline fn orBlocks(block1: Block, block2: Block) Block {
         return Block{ .repr = block1.repr | block2.repr };
     }
 
@@ -103,18 +96,18 @@ pub const Block = struct {
         const cpu = std.Target.x86.cpu;
 
         /// The recommended number of AES encryption/decryption to perform in parallel for the chosen implementation.
-        pub const optimal_parallel_blocks = switch (std.Target.current.cpu.model) {
-            &cpu.westmere => 6,
-            &cpu.sandybridge, &cpu.ivybridge => 8,
+        pub const optimal_parallel_blocks = switch (builtin.cpu.model) {
+            &cpu.westmere, &cpu.goldmont => 3,
+            &cpu.cannonlake, &cpu.skylake, &cpu.skylake_avx512, &cpu.tremont, &cpu.goldmont_plus, &cpu.cascadelake => 4,
+            &cpu.icelake_client, &cpu.icelake_server, &cpu.tigerlake, &cpu.rocketlake, &cpu.alderlake => 6,
             &cpu.haswell, &cpu.broadwell => 7,
-            &cpu.cannonlake, &cpu.skylake, &cpu.skylake_avx512 => 4,
-            &cpu.icelake_client, &cpu.icelake_server => 6,
-            &cpu.znver1, &cpu.znver2 => 8,
+            &cpu.sandybridge, &cpu.ivybridge => 8,
+            &cpu.znver1, &cpu.znver2, &cpu.znver3, &cpu.znver4 => 8,
             else => 8,
         };
 
         /// Encrypt multiple blocks in parallel, each their own round key.
-        pub fn encryptParallel(comptime count: usize, blocks: [count]Block, round_keys: [count]Block) callconv(.Inline) [count]Block {
+        pub inline fn encryptParallel(comptime count: usize, blocks: [count]Block, round_keys: [count]Block) [count]Block {
             comptime var i = 0;
             var out: [count]Block = undefined;
             inline while (i < count) : (i += 1) {
@@ -124,7 +117,7 @@ pub const Block = struct {
         }
 
         /// Decrypt multiple blocks in parallel, each their own round key.
-        pub fn decryptParallel(comptime count: usize, blocks: [count]Block, round_keys: [count]Block) callconv(.Inline) [count]Block {
+        pub inline fn decryptParallel(comptime count: usize, blocks: [count]Block, round_keys: [count]Block) [count]Block {
             comptime var i = 0;
             var out: [count]Block = undefined;
             inline while (i < count) : (i += 1) {
@@ -134,7 +127,7 @@ pub const Block = struct {
         }
 
         /// Encrypt multiple blocks in parallel with the same round key.
-        pub fn encryptWide(comptime count: usize, blocks: [count]Block, round_key: Block) callconv(.Inline) [count]Block {
+        pub inline fn encryptWide(comptime count: usize, blocks: [count]Block, round_key: Block) [count]Block {
             comptime var i = 0;
             var out: [count]Block = undefined;
             inline while (i < count) : (i += 1) {
@@ -144,7 +137,7 @@ pub const Block = struct {
         }
 
         /// Decrypt multiple blocks in parallel with the same round key.
-        pub fn decryptWide(comptime count: usize, blocks: [count]Block, round_key: Block) callconv(.Inline) [count]Block {
+        pub inline fn decryptWide(comptime count: usize, blocks: [count]Block, round_key: Block) [count]Block {
             comptime var i = 0;
             var out: [count]Block = undefined;
             inline while (i < count) : (i += 1) {
@@ -154,7 +147,7 @@ pub const Block = struct {
         }
 
         /// Encrypt multiple blocks in parallel with the same last round key.
-        pub fn encryptLastWide(comptime count: usize, blocks: [count]Block, round_key: Block) callconv(.Inline) [count]Block {
+        pub inline fn encryptLastWide(comptime count: usize, blocks: [count]Block, round_key: Block) [count]Block {
             comptime var i = 0;
             var out: [count]Block = undefined;
             inline while (i < count) : (i += 1) {
@@ -164,7 +157,7 @@ pub const Block = struct {
         }
 
         /// Decrypt multiple blocks in parallel with the same last round key.
-        pub fn decryptLastWide(comptime count: usize, blocks: [count]Block, round_key: Block) callconv(.Inline) [count]Block {
+        pub inline fn decryptLastWide(comptime count: usize, blocks: [count]Block, round_key: Block) [count]Block {
             comptime var i = 0;
             var out: [count]Block = undefined;
             inline while (i < count) : (i += 1) {
@@ -196,18 +189,18 @@ fn KeySchedule(comptime Aes: type) type {
                 \\ vpxor   %[ts], %[r], %[r]
                 : [r] "=&x" (-> BlockVec),
                   [s] "=&x" (s),
-                  [ts] "=&x" (ts)
+                  [ts] "=&x" (ts),
                 : [rc] "n" (rc),
                   [t] "x" (t),
                   [tx] "x" (tx),
-                  [mask] "n" (@as(u8, if (second) 0xaa else 0xff))
+                  [mask] "n" (@as(u8, if (second) 0xaa else 0xff)),
             );
         }
 
         fn expand128(t1: *Block) Self {
             var round_keys: [11]Block = undefined;
             const rcs = [_]u8{ 1, 2, 4, 8, 16, 32, 64, 128, 27, 54 };
-            inline for (rcs) |rc, round| {
+            inline for (rcs, 0..) |rc, round| {
                 round_keys[round] = t1.*;
                 t1.repr = drc(false, rc, t1.repr, t1.repr);
             }
@@ -219,7 +212,7 @@ fn KeySchedule(comptime Aes: type) type {
             var round_keys: [15]Block = undefined;
             const rcs = [_]u8{ 1, 2, 4, 8, 16, 32 };
             round_keys[0] = t1.*;
-            inline for (rcs) |rc, round| {
+            inline for (rcs, 0..) |rc, round| {
                 round_keys[round * 2 + 1] = t2.*;
                 t1.repr = drc(false, rc, t2.repr, t1.repr);
                 round_keys[round * 2 + 2] = t1.*;
@@ -241,8 +234,8 @@ fn KeySchedule(comptime Aes: type) type {
                 inv_round_keys[i] = Block{
                     .repr = asm (
                         \\ vaesimc %[rk], %[inv_rk]
-                        : [inv_rk] "=x" (-> BlockVec)
-                        : [rk] "x" (round_keys[rounds - i].repr)
+                        : [inv_rk] "=x" (-> BlockVec),
+                        : [rk] "x" (round_keys[rounds - i].repr),
                     ),
                 };
             }

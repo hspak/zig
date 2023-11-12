@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 // Ported from musl, which is licensed under the MIT license:
 // https://git.musl-libc.org/cgit/musl/tree/COPYRIGHT
 //
@@ -32,7 +27,7 @@ fn cbrt32(x: f32) f32 {
     const B1: u32 = 709958130; // (127 - 127.0 / 3 - 0.03306235651) * 2^23
     const B2: u32 = 642849266; // (127 - 127.0 / 3 - 24 / 3 - 0.03306235651) * 2^23
 
-    var u = @bitCast(u32, x);
+    var u = @as(u32, @bitCast(x));
     var hx = u & 0x7FFFFFFF;
 
     // cbrt(nan, inf) = itself
@@ -46,7 +41,7 @@ fn cbrt32(x: f32) f32 {
         if (hx == 0) {
             return x;
         }
-        u = @bitCast(u32, x * 0x1.0p24);
+        u = @as(u32, @bitCast(x * 0x1.0p24));
         hx = u & 0x7FFFFFFF;
         hx = hx / 3 + B2;
     } else {
@@ -57,7 +52,7 @@ fn cbrt32(x: f32) f32 {
     u |= hx;
 
     // first step newton to 16 bits
-    var t: f64 = @bitCast(f32, u);
+    var t: f64 = @as(f32, @bitCast(u));
     var r: f64 = t * t * t;
     t = t * (@as(f64, x) + x + r) / (x + r + r);
 
@@ -65,7 +60,7 @@ fn cbrt32(x: f32) f32 {
     r = t * t * t;
     t = t * (@as(f64, x) + x + r) / (x + r + r);
 
-    return @floatCast(f32, t);
+    return @as(f32, @floatCast(t));
 }
 
 fn cbrt64(x: f64) f64 {
@@ -79,8 +74,8 @@ fn cbrt64(x: f64) f64 {
     const P3: f64 = -0.758397934778766047437;
     const P4: f64 = 0.145996192886612446982;
 
-    var u = @bitCast(u64, x);
-    var hx = @intCast(u32, u >> 32) & 0x7FFFFFFF;
+    var u = @as(u64, @bitCast(x));
+    var hx = @as(u32, @intCast(u >> 32)) & 0x7FFFFFFF;
 
     // cbrt(nan, inf) = itself
     if (hx >= 0x7FF00000) {
@@ -89,12 +84,12 @@ fn cbrt64(x: f64) f64 {
 
     // cbrt to ~5bits
     if (hx < 0x00100000) {
-        u = @bitCast(u64, x * 0x1.0p54);
-        hx = @intCast(u32, u >> 32) & 0x7FFFFFFF;
+        u = @as(u64, @bitCast(x * 0x1.0p54));
+        hx = @as(u32, @intCast(u >> 32)) & 0x7FFFFFFF;
 
-        // cbrt(0) is itself
+        // cbrt(+-0) = itself
         if (hx == 0) {
-            return 0;
+            return x;
         }
         hx = hx / 3 + B2;
     } else {
@@ -103,7 +98,7 @@ fn cbrt64(x: f64) f64 {
 
     u &= 1 << 63;
     u |= @as(u64, hx) << 32;
-    var t = @bitCast(f64, u);
+    var t = @as(f64, @bitCast(u));
 
     // cbrt to 23 bits
     // cbrt(x) = t * cbrt(x / t^3) ~= t * P(t^3 / x)
@@ -111,9 +106,9 @@ fn cbrt64(x: f64) f64 {
     t = t * ((P0 + r * (P1 + r * P2)) + ((r * r) * r) * (P3 + r * P4));
 
     // Round t away from 0 to 23 bits
-    u = @bitCast(u64, t);
+    u = @as(u64, @bitCast(t));
     u = (u + 0x80000000) & 0xFFFFFFFFC0000000;
-    t = @bitCast(f64, u);
+    t = @as(f64, @bitCast(u));
 
     // one step newton to 53 bits
     const s = t * t;
@@ -125,44 +120,44 @@ fn cbrt64(x: f64) f64 {
 }
 
 test "math.cbrt" {
-    expect(cbrt(@as(f32, 0.0)) == cbrt32(0.0));
-    expect(cbrt(@as(f64, 0.0)) == cbrt64(0.0));
+    try expect(cbrt(@as(f32, 0.0)) == cbrt32(0.0));
+    try expect(cbrt(@as(f64, 0.0)) == cbrt64(0.0));
 }
 
 test "math.cbrt32" {
     const epsilon = 0.000001;
 
-    expect(cbrt32(0.0) == 0.0);
-    expect(math.approxEqAbs(f32, cbrt32(0.2), 0.584804, epsilon));
-    expect(math.approxEqAbs(f32, cbrt32(0.8923), 0.962728, epsilon));
-    expect(math.approxEqAbs(f32, cbrt32(1.5), 1.144714, epsilon));
-    expect(math.approxEqAbs(f32, cbrt32(37.45), 3.345676, epsilon));
-    expect(math.approxEqAbs(f32, cbrt32(123123.234375), 49.748501, epsilon));
+    try expect(math.isPositiveZero(cbrt32(0.0)));
+    try expect(math.approxEqAbs(f32, cbrt32(0.2), 0.584804, epsilon));
+    try expect(math.approxEqAbs(f32, cbrt32(0.8923), 0.962728, epsilon));
+    try expect(math.approxEqAbs(f32, cbrt32(1.5), 1.144714, epsilon));
+    try expect(math.approxEqAbs(f32, cbrt32(37.45), 3.345676, epsilon));
+    try expect(math.approxEqAbs(f32, cbrt32(123123.234375), 49.748501, epsilon));
 }
 
 test "math.cbrt64" {
     const epsilon = 0.000001;
 
-    expect(cbrt64(0.0) == 0.0);
-    expect(math.approxEqAbs(f64, cbrt64(0.2), 0.584804, epsilon));
-    expect(math.approxEqAbs(f64, cbrt64(0.8923), 0.962728, epsilon));
-    expect(math.approxEqAbs(f64, cbrt64(1.5), 1.144714, epsilon));
-    expect(math.approxEqAbs(f64, cbrt64(37.45), 3.345676, epsilon));
-    expect(math.approxEqAbs(f64, cbrt64(123123.234375), 49.748501, epsilon));
+    try expect(math.isPositiveZero(cbrt64(0.0)));
+    try expect(math.approxEqAbs(f64, cbrt64(0.2), 0.584804, epsilon));
+    try expect(math.approxEqAbs(f64, cbrt64(0.8923), 0.962728, epsilon));
+    try expect(math.approxEqAbs(f64, cbrt64(1.5), 1.144714, epsilon));
+    try expect(math.approxEqAbs(f64, cbrt64(37.45), 3.345676, epsilon));
+    try expect(math.approxEqAbs(f64, cbrt64(123123.234375), 49.748501, epsilon));
 }
 
 test "math.cbrt.special" {
-    expect(cbrt32(0.0) == 0.0);
-    expect(cbrt32(-0.0) == -0.0);
-    expect(math.isPositiveInf(cbrt32(math.inf(f32))));
-    expect(math.isNegativeInf(cbrt32(-math.inf(f32))));
-    expect(math.isNan(cbrt32(math.nan(f32))));
+    try expect(math.isPositiveZero(cbrt32(0.0)));
+    try expect(@as(u32, @bitCast(cbrt32(-0.0))) == @as(u32, 0x80000000));
+    try expect(math.isPositiveInf(cbrt32(math.inf(f32))));
+    try expect(math.isNegativeInf(cbrt32(-math.inf(f32))));
+    try expect(math.isNan(cbrt32(math.nan(f32))));
 }
 
 test "math.cbrt64.special" {
-    expect(cbrt64(0.0) == 0.0);
-    expect(cbrt64(-0.0) == -0.0);
-    expect(math.isPositiveInf(cbrt64(math.inf(f64))));
-    expect(math.isNegativeInf(cbrt64(-math.inf(f64))));
-    expect(math.isNan(cbrt64(math.nan(f64))));
+    try expect(math.isPositiveZero(cbrt64(0.0)));
+    try expect(math.isNegativeZero(cbrt64(-0.0)));
+    try expect(math.isPositiveInf(cbrt64(math.inf(f64))));
+    try expect(math.isNegativeInf(cbrt64(-math.inf(f64))));
+    try expect(math.isNan(cbrt64(math.nan(f64))));
 }

@@ -1,20 +1,36 @@
-const Builder = @import("std").build.Builder;
+const std = @import("std");
 
-pub fn build(b: *Builder) void {
-    const target = b.standardTargetOptions(.{});
-    const lib = b.addSharedLibrary("mathtest", "mathtest.zig", b.version(1, 0, 0));
-    lib.setTarget(target);
+pub fn build(b: *std.Build) void {
+    const test_step = b.step("test", "Test it");
+    b.default_step = test_step;
 
-    const exe = b.addExecutable("test", null);
-    exe.setTarget(target);
-    exe.addCSourceFile("test.c", &[_][]const u8{"-std=c99"});
+    if (@import("builtin").os.tag == .windows) {
+        // https://github.com/ziglang/zig/issues/16959
+        return;
+    }
+
+    const optimize: std.builtin.OptimizeMode = .Debug;
+    const target: std.zig.CrossTarget = .{};
+    const lib = b.addSharedLibrary(.{
+        .name = "mathtest",
+        .root_source_file = .{ .path = "mathtest.zig" },
+        .version = .{ .major = 1, .minor = 0, .patch = 0 },
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "test",
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.addCSourceFile(.{
+        .file = .{ .path = "test.c" },
+        .flags = &[_][]const u8{"-std=c99"},
+    });
     exe.linkLibrary(lib);
     exe.linkSystemLibrary("c");
 
-    b.default_step.dependOn(&exe.step);
-
-    const run_cmd = exe.run();
-
-    const test_step = b.step("test", "Test the program");
+    const run_cmd = b.addRunArtifact(exe);
     test_step.dependOn(&run_cmd.step);
 }

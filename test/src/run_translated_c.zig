@@ -1,16 +1,14 @@
 // This is the implementation of the test harness for running translated
 // C code. For the actual test cases, see test/run_translated_c.zig.
 const std = @import("std");
-const build = std.build;
 const ArrayList = std.ArrayList;
 const fmt = std.fmt;
 const mem = std.mem;
 const fs = std.fs;
-const warn = std.debug.warn;
 
 pub const RunTranslatedCContext = struct {
-    b: *build.Builder,
-    step: *build.Step,
+    b: *std.Build,
+    step: *std.Build.Step,
     test_index: usize,
     test_filter: ?[]const u8,
     target: std.zig.CrossTarget,
@@ -84,20 +82,19 @@ pub const RunTranslatedCContext = struct {
 
         const write_src = b.addWriteFiles();
         for (case.sources.items) |src_file| {
-            write_src.add(src_file.filename, src_file.source);
+            _ = write_src.add(src_file.filename, src_file.source);
         }
         const translate_c = b.addTranslateC(.{
-            .write_file = .{
-                .step = write_src,
-                .basename = case.sources.items[0].filename,
-            },
+            .source_file = write_src.files.items[0].getPath(),
+            .target = .{},
+            .optimize = .Debug,
         });
+
         translate_c.step.name = b.fmt("{s} translate-c", .{annotated_case_name});
-        const exe = translate_c.addExecutable();
-        exe.setTarget(self.target);
+        const exe = translate_c.addExecutable(.{});
         exe.step.name = b.fmt("{s} build-exe", .{annotated_case_name});
         exe.linkLibC();
-        const run = exe.run();
+        const run = b.addRunArtifact(exe);
         run.step.name = b.fmt("{s} run", .{annotated_case_name});
         if (!case.allow_warnings) {
             run.expectStdErrEqual("");

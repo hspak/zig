@@ -1,9 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
-
 //! A semaphore is an unsigned integer that blocks the kernel thread if
 //! the number would become negative.
 //! This API supports static initialization and does not require deinitialization.
@@ -17,10 +11,12 @@ const Semaphore = @This();
 const std = @import("../std.zig");
 const Mutex = std.Thread.Mutex;
 const Condition = std.Thread.Condition;
+const builtin = @import("builtin");
+const testing = std.testing;
 
 pub fn wait(sem: *Semaphore) void {
-    const held = sem.mutex.acquire();
-    defer held.release();
+    sem.mutex.lock();
+    defer sem.mutex.unlock();
 
     while (sem.permits == 0)
         sem.cond.wait(&sem.mutex);
@@ -31,9 +27,35 @@ pub fn wait(sem: *Semaphore) void {
 }
 
 pub fn post(sem: *Semaphore) void {
-    const held = sem.mutex.acquire();
-    defer held.release();
+    sem.mutex.lock();
+    defer sem.mutex.unlock();
 
     sem.permits += 1;
     sem.cond.signal();
+}
+
+test "Thread.Semaphore" {
+    if (builtin.single_threaded) {
+        return error.SkipZigTest;
+    }
+
+    const TestContext = struct {
+        sem: *Semaphore,
+        n: *i32,
+        fn worker(ctx: *@This()) void {
+            ctx.sem.wait();
+            ctx.n.* += 1;
+            ctx.sem.post();
+        }
+    };
+    const num_threads = 3;
+    var sem = Semaphore{ .permits = 1 };
+    var threads: [num_threads]std.Thread = undefined;
+    var n: i32 = 0;
+    var ctx = TestContext{ .sem = &sem, .n = &n };
+
+    for (&threads) |*t| t.* = try std.Thread.spawn(.{}, TestContext.worker, .{&ctx});
+    for (threads) |t| t.join();
+    sem.wait();
+    try testing.expect(n == num_threads);
 }

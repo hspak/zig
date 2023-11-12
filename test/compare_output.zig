@@ -10,115 +10,12 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    @cInclude("stdio.h");
         \\});
         \\pub export fn main(argc: c_int, argv: [*][*]u8) c_int {
+        \\    _ = argc;
+        \\    _ = argv;
         \\    _ = c.puts("Hello, world!");
         \\    return 0;
         \\}
-    , "Hello, world!" ++ std.cstr.line_sep);
-
-    cases.addCase(x: {
-        var tc = cases.create("multiple files with private function",
-            \\usingnamespace @import("std").io;
-            \\usingnamespace @import("foo.zig");
-            \\
-            \\pub fn main() void {
-            \\    privateFunction();
-            \\    const stdout = getStdOut().writer();
-            \\    stdout.print("OK 2\n", .{}) catch unreachable;
-            \\}
-            \\
-            \\fn privateFunction() void {
-            \\    printText();
-            \\}
-        , "OK 1\nOK 2\n");
-
-        tc.addSourceFile("foo.zig",
-            \\usingnamespace @import("std").io;
-            \\
-            \\// purposefully conflicting function with main.zig
-            \\// but it's private so it should be OK
-            \\fn privateFunction() void {
-            \\    const stdout = getStdOut().writer();
-            \\    stdout.print("OK 1\n", .{}) catch unreachable;
-            \\}
-            \\
-            \\pub fn printText() void {
-            \\    privateFunction();
-            \\}
-        );
-
-        break :x tc;
-    });
-
-    cases.addCase(x: {
-        var tc = cases.create("import segregation",
-            \\usingnamespace @import("foo.zig");
-            \\usingnamespace @import("bar.zig");
-            \\
-            \\pub fn main() void {
-            \\    foo_function();
-            \\    bar_function();
-            \\}
-        , "OK\nOK\n");
-
-        tc.addSourceFile("foo.zig",
-            \\usingnamespace @import("std").io;
-            \\pub fn foo_function() void {
-            \\    const stdout = getStdOut().writer();
-            \\    stdout.print("OK\n", .{}) catch unreachable;
-            \\}
-        );
-
-        tc.addSourceFile("bar.zig",
-            \\usingnamespace @import("other.zig");
-            \\usingnamespace @import("std").io;
-            \\
-            \\pub fn bar_function() void {
-            \\    if (foo_function()) {
-            \\        const stdout = getStdOut().writer();
-            \\        stdout.print("OK\n", .{}) catch unreachable;
-            \\    }
-            \\}
-        );
-
-        tc.addSourceFile("other.zig",
-            \\pub fn foo_function() bool {
-            \\    // this one conflicts with the one from foo
-            \\    return true;
-            \\}
-        );
-
-        break :x tc;
-    });
-
-    cases.addCase(x: {
-        var tc = cases.create("two files usingnamespace import each other",
-            \\usingnamespace @import("a.zig");
-            \\
-            \\pub fn main() void {
-            \\    ok();
-            \\}
-        , "OK\n");
-
-        tc.addSourceFile("a.zig",
-            \\usingnamespace @import("b.zig");
-            \\const io = @import("std").io;
-            \\
-            \\pub const a_text = "OK\n";
-            \\
-            \\pub fn ok() void {
-            \\    const stdout = io.getStdOut().writer();
-            \\    stdout.print(b_text, .{}) catch unreachable;
-            \\}
-        );
-
-        tc.addSourceFile("b.zig",
-            \\usingnamespace @import("a.zig");
-            \\
-            \\pub const b_text = a_text;
-        );
-
-        break :x tc;
-    });
+    , "Hello, world!" ++ if (@import("builtin").os.tag == .windows) "\r\n" else "\n");
 
     cases.add("hello world without libc",
         \\const io = @import("std").io;
@@ -131,7 +28,8 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
 
     cases.addC("number literals",
         \\const std = @import("std");
-        \\const is_windows = std.Target.current.os.tag == .windows;
+        \\const builtin = @import("builtin");
+        \\const is_windows = builtin.os.tag == .windows;
         \\const c = @cImport({
         \\    if (is_windows) {
         \\        // See https://github.com/ziglang/zig/issues/515
@@ -143,6 +41,8 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\});
         \\
         \\pub export fn main(argc: c_int, argv: [*][*]u8) c_int {
+        \\    _ = argc;
+        \\    _ = argv;
         \\    if (is_windows) {
         \\        // we want actual \n, not \r\n
         \\        _ = c._setmode(1, c._O_BINARY);
@@ -175,7 +75,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    _ = c.printf("0.0e0: %.013a\n",
         \\         @as(f64, 0.0e0));
         \\    _ = c.printf("000000000000000000000000000000000000000000000000000000000.0e0: %.013a\n",
-        \\         @as(f64, 000000000000000000000000000000000000000000000000000000000.0e0));
+        \\         @as(f64, 0.0e0));
         \\    _ = c.printf("0.000000000000000000000000000000000000000000000000000000000e0: %.013a\n",
         \\         @as(f64, 0.000000000000000000000000000000000000000000000000000000000e0));
         \\    _ = c.printf("0.0e000000000000000000000000000000000000000000000000000000000: %.013a\n",
@@ -265,8 +165,10 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\const y : u16 = 5678;
         \\pub fn main() void {
         \\    var x_local : i32 = print_ok(x);
+        \\    _ = x_local;
         \\}
         \\fn print_ok(val: @TypeOf(x)) @TypeOf(foo) {
+        \\    _ = val;
         \\    const stdout = io.getStdOut().writer();
         \\    stdout.print("OK\n", .{}) catch unreachable;
         \\    return 0;
@@ -277,9 +179,9 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
     cases.addC("expose function pointer to C land",
         \\const c = @cImport(@cInclude("stdlib.h"));
         \\
-        \\export fn compare_fn(a: ?*const c_void, b: ?*const c_void) c_int {
-        \\    const a_int = @ptrCast(*const i32, @alignCast(@alignOf(i32), a));
-        \\    const b_int = @ptrCast(*const i32, @alignCast(@alignOf(i32), b));
+        \\export fn compare_fn(a: ?*const anyopaque, b: ?*const anyopaque) c_int {
+        \\    const a_int: *const i32 = @ptrCast(@alignCast(a));
+        \\    const b_int: *const i32 = @ptrCast(@alignCast(b));
         \\    if (a_int.* < b_int.*) {
         \\        return -1;
         \\    } else if (a_int.* > b_int.*) {
@@ -292,9 +194,9 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\pub export fn main() c_int {
         \\    var array = [_]u32{ 1, 7, 3, 2, 0, 9, 4, 8, 6, 5 };
         \\
-        \\    c.qsort(@ptrCast(?*c_void, &array), @intCast(c_ulong, array.len), @sizeOf(i32), compare_fn);
+        \\    c.qsort(@ptrCast(&array), @intCast(array.len), @sizeOf(i32), compare_fn);
         \\
-        \\    for (array) |item, i| {
+        \\    for (array, 0..) |item, i| {
         \\        if (item != i) {
         \\            c.abort();
         \\        }
@@ -306,7 +208,8 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
 
     cases.addC("casting between float and integer types",
         \\const std = @import("std");
-        \\const is_windows = std.Target.current.os.tag == .windows;
+        \\const builtin = @import("builtin");
+        \\const is_windows = builtin.os.tag == .windows;
         \\const c = @cImport({
         \\    if (is_windows) {
         \\        // See https://github.com/ziglang/zig/issues/515
@@ -318,14 +221,16 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\});
         \\
         \\pub export fn main(argc: c_int, argv: [*][*]u8) c_int {
+        \\    _ = argc;
+        \\    _ = argv;
         \\    if (is_windows) {
         \\        // we want actual \n, not \r\n
         \\        _ = c._setmode(1, c._O_BINARY);
         \\    }
         \\    const small: f32 = 3.25;
         \\    const x: f64 = small;
-        \\    const y = @floatToInt(i32, x);
-        \\    const z = @intToFloat(f64, y);
+        \\    const y: i32 = @intFromFloat(x);
+        \\    const z: f64 = @floatFromInt(y);
         \\    _ = c.printf("%.2f\n%d\n%.2f\n%.2f\n", x, y, z, @as(f64, -0.4));
         \\    return 0;
         \\}
@@ -337,13 +242,19 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\const Foo = struct {
         \\    field1: Bar,
         \\
-        \\    fn method(a: *const Foo) bool { return true; }
+        \\    fn method(a: *const Foo) bool {
+        \\        _ = a;
+        \\        return true;
+        \\    }
         \\};
         \\
         \\const Bar = struct {
         \\    field2: i32,
         \\
-        \\    fn method(b: *const Bar) bool { return true; }
+        \\    fn method(b: *const Bar) bool {
+        \\        _ = b;
+        \\        return true;
+        \\    }
         \\};
         \\
         \\pub fn main() void {
@@ -380,7 +291,11 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    stdout.print("before\n", .{}) catch unreachable;
         \\    defer stdout.print("defer1\n", .{}) catch unreachable;
         \\    defer stdout.print("defer2\n", .{}) catch unreachable;
-        \\    var args_it = @import("std").process.args();
+        \\    var gpa = @import("std").heap.GeneralPurposeAllocator(.{}){};
+        \\    defer _ = gpa.deinit();
+        \\    var arena = @import("std").heap.ArenaAllocator.init(gpa.allocator());
+        \\    defer arena.deinit();
+        \\    var args_it = @import("std").process.argsWithAllocator(arena.allocator()) catch unreachable;
         \\    if (args_it.skip() and !args_it.skip()) return;
         \\    defer stdout.print("defer3\n", .{}) catch unreachable;
         \\    stdout.print("after\n", .{}) catch unreachable;
@@ -444,15 +359,17 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
             \\const std = @import("std");
             \\const io = std.io;
             \\const os = std.os;
-            \\const allocator = std.testing.allocator;
             \\
             \\pub fn main() !void {
-            \\    var args_it = std.process.args();
+            \\    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+            \\    defer _ = gpa.deinit();
+            \\    var arena = std.heap.ArenaAllocator.init(gpa.allocator());
+            \\    defer arena.deinit();
+            \\    var args_it = try std.process.argsWithAllocator(arena.allocator());
             \\    const stdout = io.getStdOut().writer();
             \\    var index: usize = 0;
             \\    _ = args_it.skip();
-            \\    while (args_it.next(allocator)) |arg_or_err| : (index += 1) {
-            \\        const arg = try arg_or_err;
+            \\    while (args_it.next()) |arg| : (index += 1) {
             \\        try stdout.print("{}: {s}\n", .{index, arg});
             \\    }
             \\}
@@ -483,15 +400,17 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
             \\const std = @import("std");
             \\const io = std.io;
             \\const os = std.os;
-            \\const allocator = std.testing.allocator;
             \\
             \\pub fn main() !void {
-            \\    var args_it = std.process.args();
+            \\    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+            \\    defer _ = gpa.deinit();
+            \\    var arena = std.heap.ArenaAllocator.init(gpa.allocator());
+            \\    defer arena.deinit();
+            \\    var args_it = try std.process.argsWithAllocator(arena.allocator());
             \\    const stdout = io.getStdOut().writer();
             \\    var index: usize = 0;
             \\    _ = args_it.skip();
-            \\    while (args_it.next(allocator)) |arg_or_err| : (index += 1) {
-            \\        const arg = try arg_or_err;
+            \\    while (args_it.next()) |arg| : (index += 1) {
             \\        try stdout.print("{}: {s}\n", .{index, arg});
             \\    }
             \\}
@@ -516,4 +435,113 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
 
         break :x tc;
     });
+
+    // It is required to override the log function in order to print to stdout instead of stderr
+    cases.add("std.log per scope log level override",
+        \\const std = @import("std");
+        \\
+        \\pub const std_options = struct {
+        \\    pub const log_level: std.log.Level = .debug;
+        \\    
+        \\    pub const log_scope_levels = &[_]std.log.ScopeLevel{
+        \\        .{ .scope = .a, .level = .warn },
+        \\        .{ .scope = .c, .level = .err },
+        \\    };
+        \\    pub const logFn = log;
+        \\};
+        \\
+        \\const loga = std.log.scoped(.a);
+        \\const logb = std.log.scoped(.b);
+        \\const logc = std.log.scoped(.c);
+        \\
+        \\pub fn main() !void {
+        \\    loga.debug("", .{});
+        \\    logb.debug("", .{});
+        \\    logc.debug("", .{});
+        \\
+        \\    loga.info("", .{});
+        \\    logb.info("", .{});
+        \\    logc.info("", .{});
+        \\
+        \\    loga.warn("", .{});
+        \\    logb.warn("", .{});
+        \\    logc.warn("", .{});
+        \\
+        \\    loga.err("", .{});
+        \\    logb.err("", .{});
+        \\    logc.err("", .{});
+        \\}
+        \\pub fn log(
+        \\    comptime level: std.log.Level,
+        \\    comptime scope: @TypeOf(.EnumLiteral),
+        \\    comptime format: []const u8,
+        \\    args: anytype,
+        \\) void {
+        \\    const level_txt = comptime level.asText();
+        \\    const prefix2 = if (scope == .default) ": " else "(" ++ @tagName(scope) ++ "):";
+        \\    const stdout = std.io.getStdOut().writer();
+        \\    nosuspend stdout.print(level_txt ++ prefix2 ++ format ++ "\n", args) catch return;
+        \\}
+    ,
+        \\debug(b):
+        \\info(b):
+        \\warning(a):
+        \\warning(b):
+        \\error(a):
+        \\error(b):
+        \\error(c):
+        \\
+    );
+
+    // It is required to override the log function in order to print to stdout instead of stderr
+    cases.add("std.heap.LoggingAllocator logs to std.log",
+        \\const std = @import("std");
+        \\
+        \\pub const std_options = struct {
+        \\    pub const log_level: std.log.Level = .debug;
+        \\    pub const logFn = log;
+        \\};
+        \\
+        \\pub fn main() !void {
+        \\    var allocator_buf: [10]u8 = undefined;
+        \\    var fba = std.heap.FixedBufferAllocator.init(&allocator_buf);
+        \\    var fba_wrapped = std.mem.validationWrap(fba);
+        \\    var logging_allocator = std.heap.loggingAllocator(fba_wrapped.allocator());
+        \\    const allocator = logging_allocator.allocator();
+        \\
+        \\    var a = try allocator.alloc(u8, 10);
+        \\    try std.testing.expect(allocator.resize(a, 5));
+        \\    a = a[0..5];
+        \\    try std.testing.expect(a.len == 5);
+        \\    try std.testing.expect(!allocator.resize(a, 20));
+        \\    allocator.free(a);
+        \\}
+        \\
+        \\pub fn log(
+        \\    comptime level: std.log.Level,
+        \\    comptime scope: @TypeOf(.EnumLiteral),
+        \\    comptime format: []const u8,
+        \\    args: anytype,
+        \\) void {
+        \\    const level_txt = comptime level.asText();
+        \\    const prefix2 = if (scope == .default) ": " else "(" ++ @tagName(scope) ++ "): ";
+        \\    const stdout = std.io.getStdOut().writer();
+        \\    nosuspend stdout.print(level_txt ++ prefix2 ++ format ++ "\n", args) catch return;
+        \\}
+    ,
+        \\debug: alloc - success - len: 10, ptr_align: 0
+        \\debug: shrink - success - 10 to 5, buf_align: 0
+        \\error: expand - failure - 5 to 20, buf_align: 0
+        \\debug: free - len: 5
+        \\
+    );
+
+    cases.add("valid carriage return example", "const io = @import(\"std\").io;\r\n" ++ // Testing CRLF line endings are valid
+        "\r\n" ++
+        "pub \r fn main() void {\r\n" ++ // Testing isolated carriage return as whitespace is valid
+        "    const stdout = io.getStdOut().writer();\r\n" ++
+        "    stdout.print(\\\\A Multiline\r\n" ++ // testing CRLF at end of multiline string line is valid and normalises to \n in the output
+        "                 \\\\String\r\n" ++
+        "                 , .{}) catch unreachable;\r\n" ++
+        "}\r\n", "A Multiline\nString");
 }

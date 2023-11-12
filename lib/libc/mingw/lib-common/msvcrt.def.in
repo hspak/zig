@@ -930,7 +930,7 @@ _scalb
 F_X64(_scalbf)
 _scanf_l
 _scanf_s_l
-_scprintf
+F_NON_I386(_scprintf) ; i386 _scprintf replaced by emu
 _scprintf_l
 _scprintf_p_l
 _scwprintf
@@ -1015,6 +1015,7 @@ _stricmp_l
 _stricoll
 _stricoll_l
 _strlwr
+strlwr == _strlwr
 _strlwr_l
 _strlwr_s
 _strlwr_s_l
@@ -1110,7 +1111,7 @@ _vprintf_l
 _vprintf_p
 _vprintf_p_l
 _vprintf_s_l
-_vscprintf
+F_NON_I386(_vscprintf) ; i386 _vscprintf replaced by emu
 _vscprintf_l
 _vscprintf_p_l
 _vscwprintf
@@ -1161,6 +1162,7 @@ _wcsicmp_l
 _wcsicoll
 _wcsicoll_l
 _wcslwr
+wcslwr == _wcslwr
 _wcslwr_l
 _wcslwr_s
 _wcslwr_s_l

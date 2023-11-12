@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("../std.zig");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
@@ -19,7 +14,7 @@ pub fn Queue(comptime T: type) type {
         mutex: std.Thread.Mutex,
 
         pub const Self = @This();
-        pub const Node = std.TailQueue(T).Node;
+        pub const Node = std.DoublyLinkedList(T).Node;
 
         /// Initializes a new queue. The queue does not provide a `deinit()`
         /// function, so the user must take care of cleaning up the queue elements.
@@ -32,12 +27,12 @@ pub fn Queue(comptime T: type) type {
         }
 
         /// Appends `node` to the queue.
-        /// The lifetime of `node` must be longer than lifetime of queue.
+        /// The lifetime of `node` must be longer than the lifetime of the queue.
         pub fn put(self: *Self, node: *Node) void {
             node.next = null;
 
-            const held = self.mutex.acquire();
-            defer held.release();
+            self.mutex.lock();
+            defer self.mutex.unlock();
 
             node.prev = self.tail;
             self.tail = node;
@@ -53,8 +48,8 @@ pub fn Queue(comptime T: type) type {
         /// It is safe to `get()` a node from the queue while another thread tries
         /// to `remove()` the same node at the same time.
         pub fn get(self: *Self) ?*Node {
-            const held = self.mutex.acquire();
-            defer held.release();
+            self.mutex.lock();
+            defer self.mutex.unlock();
 
             const head = self.head orelse return null;
             self.head = head.next;
@@ -69,16 +64,18 @@ pub fn Queue(comptime T: type) type {
             return head;
         }
 
+        /// Prepends `node` to the front of the queue.
+        /// The lifetime of `node` must be longer than the lifetime of the queue.
         pub fn unget(self: *Self, node: *Node) void {
             node.prev = null;
 
-            const held = self.mutex.acquire();
-            defer held.release();
+            self.mutex.lock();
+            defer self.mutex.unlock();
 
             const opt_head = self.head;
             self.head = node;
-            if (opt_head) |head| {
-                head.next = node;
+            if (opt_head) |old_head| {
+                node.next = old_head;
             } else {
                 assert(self.tail == null);
                 self.tail = node;
@@ -89,8 +86,8 @@ pub fn Queue(comptime T: type) type {
         /// It is safe to `remove()` a node from the queue while another thread tries
         /// to `get()` the same node at the same time.
         pub fn remove(self: *Self, node: *Node) bool {
-            const held = self.mutex.acquire();
-            defer held.release();
+            self.mutex.lock();
+            defer self.mutex.unlock();
 
             if (node.prev == null and node.next == null and self.head != node) {
                 return false;
@@ -115,8 +112,8 @@ pub fn Queue(comptime T: type) type {
         /// Note that in a multi-consumer environment a return value of `false`
         /// does not mean that `get` will yield a non-`null` value!
         pub fn isEmpty(self: *Self) bool {
-            const held = self.mutex.acquire();
-            defer held.release();
+            self.mutex.lock();
+            defer self.mutex.unlock();
             return self.head == null;
         }
 
@@ -138,7 +135,7 @@ pub fn Queue(comptime T: type) type {
                 ) !void {
                     try s.writeByteNTimes(' ', indent);
                     if (optional_node) |node| {
-                        try s.print("0x{x}={}\n", .{ @ptrToInt(node), node.data });
+                        try s.print("0x{x}={}\n", .{ @intFromPtr(node), node.data });
                         if (depth == 0) {
                             try s.print("(max depth)\n", .{});
                             return;
@@ -149,8 +146,8 @@ pub fn Queue(comptime T: type) type {
                     }
                 }
             };
-            const held = self.mutex.acquire();
-            defer held.release();
+            self.mutex.lock();
+            defer self.mutex.unlock();
 
             try stream.print("head: ", .{});
             try S.dumpRecursive(stream, self.head, 0, 4);
@@ -161,7 +158,7 @@ pub fn Queue(comptime T: type) type {
 }
 
 const Context = struct {
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
     queue: *Queue(i32),
     put_sum: isize,
     get_sum: isize,
@@ -181,8 +178,8 @@ test "std.atomic.Queue" {
     var plenty_of_memory = try std.heap.page_allocator.alloc(u8, 300 * 1024);
     defer std.heap.page_allocator.free(plenty_of_memory);
 
-    var fixed_buffer_allocator = std.heap.ThreadSafeFixedBufferAllocator.init(plenty_of_memory);
-    var a = &fixed_buffer_allocator.allocator;
+    var fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(plenty_of_memory);
+    var a = fixed_buffer_allocator.threadSafeAllocator();
 
     var queue = Queue(i32).init();
     var context = Context{
@@ -195,41 +192,41 @@ test "std.atomic.Queue" {
     };
 
     if (builtin.single_threaded) {
-        expect(context.queue.isEmpty());
+        try expect(context.queue.isEmpty());
         {
             var i: usize = 0;
             while (i < put_thread_count) : (i += 1) {
-                expect(startPuts(&context) == 0);
+                try expect(startPuts(&context) == 0);
             }
         }
-        expect(!context.queue.isEmpty());
+        try expect(!context.queue.isEmpty());
         context.puts_done = true;
         {
             var i: usize = 0;
             while (i < put_thread_count) : (i += 1) {
-                expect(startGets(&context) == 0);
+                try expect(startGets(&context) == 0);
             }
         }
-        expect(context.queue.isEmpty());
+        try expect(context.queue.isEmpty());
     } else {
-        expect(context.queue.isEmpty());
+        try expect(context.queue.isEmpty());
 
-        var putters: [put_thread_count]*std.Thread = undefined;
-        for (putters) |*t| {
-            t.* = try std.Thread.spawn(startPuts, &context);
+        var putters: [put_thread_count]std.Thread = undefined;
+        for (&putters) |*t| {
+            t.* = try std.Thread.spawn(.{}, startPuts, .{&context});
         }
-        var getters: [put_thread_count]*std.Thread = undefined;
-        for (getters) |*t| {
-            t.* = try std.Thread.spawn(startGets, &context);
+        var getters: [put_thread_count]std.Thread = undefined;
+        for (&getters) |*t| {
+            t.* = try std.Thread.spawn(.{}, startGets, .{&context});
         }
 
         for (putters) |t|
-            t.wait();
+            t.join();
         @atomicStore(bool, &context.puts_done, true, .SeqCst);
         for (getters) |t|
-            t.wait();
+            t.join();
 
-        expect(context.queue.isEmpty());
+        try expect(context.queue.isEmpty());
     }
 
     if (context.put_sum != context.get_sum) {
@@ -247,10 +244,11 @@ test "std.atomic.Queue" {
 
 fn startPuts(ctx: *Context) u8 {
     var put_count: usize = puts_per_thread;
-    var r = std.rand.DefaultPrng.init(0xdeadbeef);
+    var prng = std.rand.DefaultPrng.init(0xdeadbeef);
+    const random = prng.random();
     while (put_count != 0) : (put_count -= 1) {
         std.time.sleep(1); // let the os scheduler be our fuzz
-        const x = @bitCast(i32, r.random.int(u32));
+        const x = @as(i32, @bitCast(random.int(u32)));
         const node = ctx.allocator.create(Queue(i32).Node) catch unreachable;
         node.* = .{
             .prev = undefined,
@@ -279,7 +277,7 @@ fn startGets(ctx: *Context) u8 {
 
 test "std.atomic.Queue single-threaded" {
     var queue = Queue(i32).init();
-    expect(queue.isEmpty());
+    try expect(queue.isEmpty());
 
     var node_0 = Queue(i32).Node{
         .data = 0,
@@ -287,7 +285,7 @@ test "std.atomic.Queue single-threaded" {
         .prev = undefined,
     };
     queue.put(&node_0);
-    expect(!queue.isEmpty());
+    try expect(!queue.isEmpty());
 
     var node_1 = Queue(i32).Node{
         .data = 1,
@@ -295,10 +293,10 @@ test "std.atomic.Queue single-threaded" {
         .prev = undefined,
     };
     queue.put(&node_1);
-    expect(!queue.isEmpty());
+    try expect(!queue.isEmpty());
 
-    expect(queue.get().?.data == 0);
-    expect(!queue.isEmpty());
+    try expect(queue.get().?.data == 0);
+    try expect(!queue.isEmpty());
 
     var node_2 = Queue(i32).Node{
         .data = 2,
@@ -306,7 +304,7 @@ test "std.atomic.Queue single-threaded" {
         .prev = undefined,
     };
     queue.put(&node_2);
-    expect(!queue.isEmpty());
+    try expect(!queue.isEmpty());
 
     var node_3 = Queue(i32).Node{
         .data = 3,
@@ -314,13 +312,13 @@ test "std.atomic.Queue single-threaded" {
         .prev = undefined,
     };
     queue.put(&node_3);
-    expect(!queue.isEmpty());
+    try expect(!queue.isEmpty());
 
-    expect(queue.get().?.data == 1);
-    expect(!queue.isEmpty());
+    try expect(queue.get().?.data == 1);
+    try expect(!queue.isEmpty());
 
-    expect(queue.get().?.data == 2);
-    expect(!queue.isEmpty());
+    try expect(queue.get().?.data == 2);
+    try expect(!queue.isEmpty());
 
     var node_4 = Queue(i32).Node{
         .data = 4,
@@ -328,17 +326,31 @@ test "std.atomic.Queue single-threaded" {
         .prev = undefined,
     };
     queue.put(&node_4);
-    expect(!queue.isEmpty());
+    try expect(!queue.isEmpty());
 
-    expect(queue.get().?.data == 3);
+    try expect(queue.get().?.data == 3);
     node_3.next = null;
-    expect(!queue.isEmpty());
+    try expect(!queue.isEmpty());
 
-    expect(queue.get().?.data == 4);
-    expect(queue.isEmpty());
+    queue.unget(&node_3);
+    try expect(queue.get().?.data == 3);
+    try expect(!queue.isEmpty());
 
-    expect(queue.get() == null);
-    expect(queue.isEmpty());
+    try expect(queue.get().?.data == 4);
+    try expect(queue.isEmpty());
+
+    try expect(queue.get() == null);
+    try expect(queue.isEmpty());
+
+    // unget an empty queue
+    queue.unget(&node_4);
+    try expect(queue.tail == &node_4);
+    try expect(queue.head == &node_4);
+
+    try expect(queue.get().?.data == 4);
+
+    try expect(queue.get() == null);
+    try expect(queue.isEmpty());
 }
 
 test "std.atomic.Queue dump" {
@@ -352,7 +364,7 @@ test "std.atomic.Queue dump" {
     // Test empty stream
     fbs.reset();
     try queue.dumpToStream(fbs.writer());
-    expect(mem.eql(u8, buffer[0..fbs.pos],
+    try expect(mem.eql(u8, buffer[0..fbs.pos],
         \\head: (null)
         \\tail: (null)
         \\
@@ -375,8 +387,8 @@ test "std.atomic.Queue dump" {
         \\tail: 0x{x}=1
         \\ (null)
         \\
-    , .{ @ptrToInt(queue.head), @ptrToInt(queue.tail) });
-    expect(mem.eql(u8, buffer[0..fbs.pos], expected));
+    , .{ @intFromPtr(queue.head), @intFromPtr(queue.tail) });
+    try expect(mem.eql(u8, buffer[0..fbs.pos], expected));
 
     // Test a stream with two elements
     var node_1 = Queue(i32).Node{
@@ -396,6 +408,6 @@ test "std.atomic.Queue dump" {
         \\tail: 0x{x}=2
         \\ (null)
         \\
-    , .{ @ptrToInt(queue.head), @ptrToInt(queue.head.?.next), @ptrToInt(queue.tail) });
-    expect(mem.eql(u8, buffer[0..fbs.pos], expected));
+    , .{ @intFromPtr(queue.head), @intFromPtr(queue.head.?.next), @intFromPtr(queue.tail) });
+    try expect(mem.eql(u8, buffer[0..fbs.pos], expected));
 }

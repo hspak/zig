@@ -1,10 +1,5 @@
-cmake_minimum_required(VERSION 2.8.12)
-
-# Use ccache if possible
-FIND_PROGRAM(CCACHE_PROGRAM ccache)
-IF(CCACHE_PROGRAM)
-    MESSAGE(STATUS "Found ccache ${CCACHE_PROGRAM}")
-ENDIF()
+cmake_minimum_required(VERSION 3.5)
+include(CheckSymbolExists)
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Debug" CACHE STRING
@@ -12,8 +7,24 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 if(NOT CMAKE_INSTALL_PREFIX)
-    set(CMAKE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}" CACHE STRING
+    set(CMAKE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/stage3" CACHE STRING
       "Directory to install zig to" FORCE)
+endif()
+
+# CMake recognizes the CMAKE_PREFIX_PATH environment variable for some things,
+# and also the CMAKE_PREFIX_PATH cache variable for other things. However, it
+# does not relate these two things, i.e. if the environment variable is set,
+# CMake does not populate the cache variable in a corresponding manner. Some
+# package systems, such as Homebrew, set the environment variable but not the
+# cache variable. Furthermore, the environment variable follows the system path
+# separator, such as ':' on POSIX and ';' on Windows, but the cache variable
+# follows CMake's array behavior, i.e. always ';' for a separator.
+list(APPEND ZIG_CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH}")
+if(WIN32)
+  list(APPEND ZIG_CMAKE_PREFIX_PATH $ENV{CMAKE_PREFIX_PATH})
+else()
+  string(REGEX REPLACE ":" ";" ZIG_CMAKE_PREFIX_PATH_STRING "$ENV{CMAKE_PREFIX_PATH}")
+  list(APPEND ZIG_CMAKE_PREFIX_PATH "${ZIG_CMAKE_PREFIX_PATH_STRING}")
 endif()
 
 set(CMAKE_USER_MAKE_RULES_OVERRIDE
@@ -25,13 +36,13 @@ project(zig C CXX)
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})
 
 set(ZIG_VERSION_MAJOR 0)
-set(ZIG_VERSION_MINOR 8)
+set(ZIG_VERSION_MINOR 12)
 set(ZIG_VERSION_PATCH 0)
 set(ZIG_VERSION "" CACHE STRING "Override Zig version string. Default is to find out with git.")
 
 if("${ZIG_VERSION}" STREQUAL "")
-    set(ZIG_VERSION "${ZIG_VERSION_MAJOR}.${ZIG_VERSION_MINOR}.${ZIG_VERSION_PATCH}")
-    find_program(GIT_EXE NAMES git)
+    set(RESOLVED_ZIG_VERSION "${ZIG_VERSION_MAJOR}.${ZIG_VERSION_MINOR}.${ZIG_VERSION_PATCH}")
+    find_program(GIT_EXE NAMES git NAMES_PER_DIR)
     if(GIT_EXE)
         execute_process(
             COMMAND ${GIT_EXE} -C ${CMAKE_SOURCE_DIR} describe --match *.*.* --tags
@@ -40,11 +51,12 @@ if("${ZIG_VERSION}" STREQUAL "")
             OUTPUT_STRIP_TRAILING_WHITESPACE
             ERROR_QUIET)
         if(EXIT_STATUS EQUAL "0")
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/.git/HEAD)
             if(GIT_DESCRIBE MATCHES "^v?([0-9]+\\.[0-9]+\\.[0-9]+)$")
                 # Tagged release version.
                 set(GIT_TAG ${CMAKE_MATCH_1})
-                if(NOT GIT_TAG VERSION_EQUAL ZIG_VERSION)
-                    message(SEND_ERROR "Zig version (${ZIG_VERSION}) does not match Git tag (${GIT_TAG}).")
+                if(NOT GIT_TAG VERSION_EQUAL RESOLVED_ZIG_VERSION)
+                    message(SEND_ERROR "Zig version (${RESOLVED_ZIG_VERSION}) does not match Git tag (${GIT_TAG}).")
                 endif()
             elseif(GIT_DESCRIBE MATCHES "^v?([0-9]+\\.[0-9]+\\.[0-9]+)-([0-9]+)-g(.+)$")
                 # Untagged pre-release. The Zig version is updated to include the number of commits
@@ -53,43 +65,52 @@ if("${ZIG_VERSION}" STREQUAL "")
                 set(GIT_TAG ${CMAKE_MATCH_1})
                 set(GIT_COMMITS_AFTER_TAG ${CMAKE_MATCH_2})
                 set(GIT_COMMIT ${CMAKE_MATCH_3})
-                if(NOT ZIG_VERSION VERSION_GREATER GIT_TAG)
-                    message(SEND_ERROR "Zig version (${ZIG_VERSION}) must be greater than tagged ancestor (${GIT_TAG}).")
+                if(NOT RESOLVED_ZIG_VERSION VERSION_GREATER GIT_TAG)
+                    message(SEND_ERROR "Zig version (${RESOLVED_ZIG_VERSION}) must be greater than tagged ancestor (${GIT_TAG}).")
                 endif()
-                set(ZIG_VERSION "${ZIG_VERSION}-dev.${GIT_COMMITS_AFTER_TAG}+${GIT_COMMIT}")
+                set(RESOLVED_ZIG_VERSION "${RESOLVED_ZIG_VERSION}-dev.${GIT_COMMITS_AFTER_TAG}+${GIT_COMMIT}")
             else()
                 message(WARNING "Failed to parse version from output of `git describe`.")
             endif()
         endif()
     endif()
+else()
+    set(RESOLVED_ZIG_VERSION "${ZIG_VERSION}")
 endif()
-message("Configuring zig version ${ZIG_VERSION}")
+message(STATUS "Configuring zig version ${RESOLVED_ZIG_VERSION}")
+
+set(ZIG_NO_LIB off CACHE BOOL
+    "Disable copying lib/ files to install prefix during the build phase")
+
+# This used to do something and it may or may not do something in the future.
+# Right now it does nothing.
+set(ZIG_NO_LANGREF off CACHE BOOL
+    "Disable copying of langref to the install prefix during the build phase")
 
 set(ZIG_STATIC off CACHE BOOL "Attempt to build a static zig executable (not compatible with glibc)")
-set(ZIG_STATIC_LLVM off CACHE BOOL "Prefer linking against static LLVM libraries")
-set(ZIG_PREFER_CLANG_CPP_DYLIB off CACHE BOOL "Try to link against -lclang-cpp")
-set(ZIG_USE_CCACHE off CACHE BOOL "Use ccache if available")
+set(ZIG_SHARED_LLVM off CACHE BOOL "Prefer linking against shared LLVM libraries")
+set(ZIG_STATIC_LLVM ${ZIG_STATIC} CACHE BOOL "Prefer linking against static LLVM libraries")
+set(ZIG_STATIC_ZLIB ${ZIG_STATIC} CACHE BOOL "Prefer linking against static zlib")
+set(ZIG_STATIC_ZSTD ${ZIG_STATIC} CACHE BOOL "Prefer linking against static zstd")
+set(ZIG_USE_CCACHE off CACHE BOOL "Use ccache")
 
-if(CCACHE_PROGRAM AND ZIG_USE_CCACHE)
-    SET_PROPERTY(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_PROGRAM}")
+if(ZIG_USE_CCACHE)
+    find_program(CCACHE_PROGRAM ccache)
+    if(CCACHE_PROGRAM)
+      set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_PROGRAM}")
+    else()
+      message(SEND_ERROR "ccache requested but not found")
+    endif()
 endif()
 
-if(ZIG_STATIC)
-    set(ZIG_STATIC_LLVM "on")
+if (ZIG_SHARED_LLVM AND ZIG_STATIC_LLVM)
+    message(SEND_ERROR "-DZIG_SHARED_LLVM and -DZIG_STATIC_LLVM cannot both be enabled simultaneously")
 endif()
-
-string(REGEX REPLACE "\\\\" "\\\\\\\\" ZIG_LIBC_LIB_DIR_ESCAPED "${ZIG_LIBC_LIB_DIR}")
-string(REGEX REPLACE "\\\\" "\\\\\\\\" ZIG_LIBC_STATIC_LIB_DIR_ESCAPED "${ZIG_LIBC_STATIC_LIB_DIR}")
-string(REGEX REPLACE "\\\\" "\\\\\\\\" ZIG_LIBC_INCLUDE_DIR_ESCAPED "${ZIG_LIBC_INCLUDE_DIR}")
-
-option(ZIG_TEST_COVERAGE "Build Zig with test coverage instrumentation" OFF)
 
 set(ZIG_TARGET_TRIPLE "native" CACHE STRING "arch-os-abi to output binaries for")
-set(ZIG_TARGET_MCPU "baseline" CACHE STRING "-mcpu parameter to output binaries for")
-set(ZIG_EXECUTABLE "" CACHE STRING "(when cross compiling) path to already-built zig binary")
+set(ZIG_TARGET_MCPU "native" CACHE STRING "-mcpu parameter to output binaries for")
 set(ZIG_SINGLE_THREADED off CACHE BOOL "limit the zig compiler to use only 1 thread")
-set(ZIG_OMIT_STAGE2 off CACHE BOOL "omit the stage2 backend from stage1")
-set(ZIG_ENABLE_LOGGING off CACHE BOOL "enable logging")
+set(ZIG_AR_WORKAROUND off CACHE BOOL "append 'ar' subcommand to CMAKE_AR")
 
 if("${ZIG_TARGET_TRIPLE}" STREQUAL "native")
     set(ZIG_USE_LLVM_CONFIG ON CACHE BOOL "use llvm-config to find LLVM libraries")
@@ -97,17 +118,52 @@ else()
     set(ZIG_USE_LLVM_CONFIG OFF CACHE BOOL "use llvm-config to find LLVM libraries")
 endif()
 
-find_package(llvm)
-find_package(clang)
-find_package(lld)
+if(ZIG_AR_WORKAROUND)
+  string(REPLACE "<CMAKE_AR>" "<CMAKE_AR> ar" CMAKE_C_ARCHIVE_CREATE ${CMAKE_C_ARCHIVE_CREATE})
+  string(REPLACE "<CMAKE_AR>" "<CMAKE_AR> ar" CMAKE_CXX_ARCHIVE_CREATE ${CMAKE_CXX_ARCHIVE_CREATE})
+endif()
+
+set(ZIG_PIE off CACHE BOOL "produce a position independent zig executable")
+
+# Detect system libcxx name.
+if ("c++" IN_LIST CMAKE_CXX_IMPLICIT_LINK_LIBRARIES)
+    set(ZIG_SYSTEM_LIBCXX "c++" CACHE STRING "system libcxx name for build.zig")
+else()
+    set(ZIG_SYSTEM_LIBCXX "stdc++" CACHE STRING "system libcxx name for build.zig")
+endif()
+
+find_package(llvm 17)
+find_package(clang 17)
+find_package(lld 17)
+
+if(ZIG_STATIC_ZLIB)
+    if (MSVC)
+        list(REMOVE_ITEM LLVM_LIBRARIES "z.lib")
+    else()
+        list(REMOVE_ITEM LLVM_LIBRARIES "-lz")
+    endif()
+
+    find_library(ZLIB NAMES libz.a libzlibstatic.a z zlib libz NAMES_PER_DIR)
+    list(APPEND LLVM_LIBRARIES "${ZLIB}")
+endif()
+
+if(ZIG_STATIC_ZSTD)
+    if (MSVC)
+        list(REMOVE_ITEM LLVM_LIBRARIES "zstd.lib")
+    else()
+        list(REMOVE_ITEM LLVM_LIBRARIES "-lzstd")
+    endif()
+
+    find_library(ZSTD NAMES libzstd.a libzstdstatic.a zstd NAMES_PER_DIR)
+    list(APPEND LLVM_LIBRARIES "${ZSTD}")
+endif()
 
 if(APPLE AND ZIG_STATIC)
-    list(REMOVE_ITEM LLVM_LIBRARIES "-lz")
-    find_library(ZLIB NAMES libz.a z zlib libz)
-    list(APPEND LLVM_LIBRARIES "${ZLIB}")
-
     list(REMOVE_ITEM LLVM_LIBRARIES "-lcurses")
-    find_library(CURSES NAMES libcurses.a curses libcurses libncurses.a ncurses libncurses)
+    find_library(CURSES NAMES libcurses.a libncurses.a NAMES_PER_DIR
+      PATHS
+        /usr/local/opt/ncurses/lib
+        /opt/homebrew/opt/ncurses/lib)
     list(APPEND LLVM_LIBRARIES "${CURSES}")
 endif()
 
@@ -121,227 +177,47 @@ foreach(CONFIG_TYPE ${CMAKE_CONFIGURATION_TYPES})
     string(TOUPPER ${CONFIG_TYPE} CONFIG_TYPE)
     set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_${CONFIG_TYPE} ${ZIG_CPP_LIB_DIR})
     set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_${CONFIG_TYPE} ${ZIG_CPP_LIB_DIR})
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${CONFIG_TYPE} ${CMAKE_BINARY_DIR})
 endforeach(CONFIG_TYPE CMAKE_CONFIGURATION_TYPES)
 
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${LLD_INCLUDE_DIRS})
 include_directories(${CLANG_INCLUDE_DIRS})
 
-# No patches have been applied to SoftFloat-3e
-set(EMBEDDED_SOFTFLOAT_SOURCES
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/8086/f128M_isSignalingNaN.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/8086/s_commonNaNToF128M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/8086/s_commonNaNToF16UI.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/8086/s_commonNaNToF32UI.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/8086/s_commonNaNToF64UI.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/8086/s_f128MToCommonNaN.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/8086/s_f16UIToCommonNaN.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/8086/s_f32UIToCommonNaN.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/8086/s_f64UIToCommonNaN.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/8086/s_propagateNaNF128M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/8086/s_propagateNaNF16UI.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/8086/softfloat_raiseFlags.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_add.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_div.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_eq.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_eq_signaling.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_le.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_le_quiet.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_lt.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_lt_quiet.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_mul.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_mulAdd.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_rem.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_roundToInt.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_sqrt.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_sub.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_to_f16.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_to_f32.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_to_f64.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_to_i32.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_to_i32_r_minMag.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_to_i64.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_to_i64_r_minMag.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_to_ui32.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_to_ui32_r_minMag.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_to_ui64.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_to_ui64_r_minMag.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f16_add.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f16_div.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f16_eq.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f16_isSignalingNaN.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f16_lt.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f16_mul.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f16_rem.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f16_roundToInt.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f16_sqrt.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f16_sub.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f16_to_f128M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f16_to_f64.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f32_to_f128M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f64_to_f128M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f64_to_f16.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/i32_to_f128M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_add256M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_addCarryM.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_addComplCarryM.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_addF128M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_addM.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_addMagsF16.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_addMagsF32.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_addMagsF64.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_approxRecip32_1.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_approxRecipSqrt32_1.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_approxRecipSqrt_1Ks.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_approxRecip_1Ks.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_compare128M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_compare96M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_countLeadingZeros16.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_countLeadingZeros32.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_countLeadingZeros64.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_countLeadingZeros8.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_eq128.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_invalidF128M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_isNaNF128M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_le128.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_lt128.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_mul128MTo256M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_mul64To128M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_mulAddF128M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_mulAddF16.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_mulAddF32.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_mulAddF64.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_negXM.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_normRoundPackMToF128M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_normRoundPackToF16.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_normRoundPackToF32.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_normRoundPackToF64.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_normSubnormalF128SigM.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_normSubnormalF16Sig.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_normSubnormalF32Sig.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_normSubnormalF64Sig.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_remStepMBy32.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_roundMToI64.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_roundMToUI64.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_roundPackMToF128M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_roundPackToF16.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_roundPackToF32.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_roundPackToF64.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_roundToI32.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_roundToI64.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_roundToUI32.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_roundToUI64.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_shiftLeftM.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_shiftNormSigF128M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_shiftRightJam256M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_shiftRightJam32.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_shiftRightJam64.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_shiftRightJamM.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_shiftRightM.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_shortShiftLeft64To96M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_shortShiftLeftM.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_shortShiftRightExtendM.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_shortShiftRightJam64.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_shortShiftRightJamM.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_shortShiftRightM.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_sub1XM.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_sub256M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_subM.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_subMagsF16.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_subMagsF32.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_subMagsF64.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/s_tryPropagateNaNF128M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f16_mulAdd.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/f128M_mulAdd.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/softfloat_state.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/ui32_to_f128M.c"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/ui64_to_f128M.c"
-)
-add_library(embedded_softfloat STATIC ${EMBEDDED_SOFTFLOAT_SOURCES})
-if(MSVC)
-    set_target_properties(embedded_softfloat PROPERTIES
-        COMPILE_FLAGS "/w /O2"
-    )
-else()
-    set_target_properties(embedded_softfloat PROPERTIES
-        COMPILE_FLAGS "-std=c99 -O3"
-    )
-endif()
-target_include_directories(embedded_softfloat PUBLIC
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e-prebuilt"
-    "${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/8086"
-)
-include_directories("${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/include")
-set(SOFTFLOAT_LIBRARIES embedded_softfloat)
-
 find_package(Threads)
 
 set(ZIG_LIB_DIR "lib/zig")
-set(C_HEADERS_DEST "${ZIG_LIB_DIR}/include")
-set(LIBC_FILES_DEST "${ZIG_LIB_DIR}/libc")
-set(LIBUNWIND_FILES_DEST "${ZIG_LIB_DIR}/libunwind")
-set(LIBCXX_FILES_DEST "${ZIG_LIB_DIR}/libcxx")
-set(ZIG_STD_DEST "${ZIG_LIB_DIR}/std")
 set(ZIG_CONFIG_H_OUT "${CMAKE_BINARY_DIR}/config.h")
 set(ZIG_CONFIG_ZIG_OUT "${CMAKE_BINARY_DIR}/config.zig")
 
-# This is our shim which will be replaced by stage1.zig.
-set(ZIG0_SOURCES
-    "${CMAKE_SOURCE_DIR}/src/stage1/zig0.cpp"
-)
-
-set(STAGE1_SOURCES
-    "${CMAKE_SOURCE_DIR}/src/stage1/analyze.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/ast_render.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/bigfloat.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/bigint.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/buffer.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/codegen.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/dump_analysis.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/errmsg.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/error.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/heap.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/ir.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/ir_print.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/mem.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/os.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/parser.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/range_set.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/stage1.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/target.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/tokenizer.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/util.cpp"
-    "${CMAKE_SOURCE_DIR}/src/stage1/softfloat_ext.cpp"
-)
-set(OPTIMIZED_C_SOURCES
-    "${CMAKE_SOURCE_DIR}/src/stage1/parse_f128.c"
+set(ZIG_WASM2C_SOURCES
+    "${CMAKE_SOURCE_DIR}/stage1/wasm2c.c"
 )
 set(ZIG_CPP_SOURCES
     # These are planned to stay even when we are self-hosted.
     "${CMAKE_SOURCE_DIR}/src/zig_llvm.cpp"
+    "${CMAKE_SOURCE_DIR}/src/zig_llvm-ar.cpp"
     "${CMAKE_SOURCE_DIR}/src/zig_clang.cpp"
     "${CMAKE_SOURCE_DIR}/src/zig_clang_driver.cpp"
     "${CMAKE_SOURCE_DIR}/src/zig_clang_cc1_main.cpp"
     "${CMAKE_SOURCE_DIR}/src/zig_clang_cc1as_main.cpp"
-    # https://github.com/ziglang/zig/issues/6363
-    "${CMAKE_SOURCE_DIR}/src/windows_sdk.cpp"
 )
-# Needed because we use cmake, not the zig build system, to build zig1.o.
-# This list is generated by building zig and then clearing the zig-cache directory,
-# then manually running the build-obj command (see BUILD_ZIG1_ARGS), and then looking
-# in the zig-cache directory for the compiler-generated list of zig file dependencies.
+# Needed because we use cmake, not the zig build system, to build zig2.o.
 set(ZIG_STAGE2_SOURCES
     "${ZIG_CONFIG_ZIG_OUT}"
     "${CMAKE_SOURCE_DIR}/lib/std/array_hash_map.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/array_list.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/ascii.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/atomic.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/atomic/bool.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/atomic/int.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/atomic/Atomic.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/atomic/queue.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/atomic/stack.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/base64.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/BitStack.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/buf_map.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/Build.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/Build/Cache.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/Build/Cache/DepTokenizer.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/builtin.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/c.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/c/linux.zig"
@@ -354,7 +230,12 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/lib/std/crypto/siphash.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/debug.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/dwarf.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/dwarf_bits.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/dwarf/AT.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/dwarf/ATE.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/dwarf/FORM.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/dwarf/LANG.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/dwarf/OP.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/dwarf/TAG.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/elf.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/event.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/event/batch.zig"
@@ -384,11 +265,11 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/lib/std/io/find_byte_writer.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/io/fixed_buffer_stream.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/io/limited_reader.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/io/reader.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/io/Reader.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/io/seekable_stream.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/io/writer.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/json.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/json/write_stream.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/json/stringify.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/leb128.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/linked_list.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/log.zig"
@@ -396,16 +277,13 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/lib/std/math.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/math/big.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/math/big/int.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/math/floor.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/math/float.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/math/frexp.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/math/inf.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/math/isinf.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/math/isnan.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/math/ln.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/math/log.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/math/log10.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/math/log2.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/math/nan.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/math/signbit.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/math/sqrt.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/mem.zig"
@@ -415,18 +293,13 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/lib/std/meta/trait.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/multi_array_list.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/os.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/os/bits.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/os/bits/linux.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/os/bits/linux/errno-generic.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/os/bits/linux/netlink.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/os/bits/linux/prctl.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/os/bits/linux/securebits.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/os/bits/linux/x86_64.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/os/linux.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/os/linux/errno/generic.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/os/linux/x86_64.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/os/linux.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/os/linux/io_uring.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/os/linux/x86_64.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/os/windows.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/os/windows/bits.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/os/windows/ntstatus.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/os/windows/win32error.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/Progress.zig"
@@ -434,68 +307,180 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/lib/std/process.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/rand.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/sort.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/addXf3.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/atomics.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/clear_cache.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/clzsi2.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/compareXf2.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/divdf3.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/divsf3.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/divtf3.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/divti3.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/extendXfYf2.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixdfdi.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixdfsi.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixdfti.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixint.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixsfdi.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixsfsi.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixsfti.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixtfdi.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixtfsi.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixtfti.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixuint.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixunsdfdi.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixunsdfsi.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixunsdfti.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixunssfdi.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixunssfsi.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixunssfti.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixunstfdi.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixunstfsi.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/fixunstfti.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/floatXisf.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/floatdidf.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/floatditf.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/floatsiXf.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/floattidf.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/floattitf.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/floatundidf.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/floatundisf.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/floatunditf.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/floatunsidf.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/floatunsisf.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/floatunsitf.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/floatuntidf.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/floatuntisf.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/floatuntitf.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/int.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/modti3.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/mulXf3.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/muldi3.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/mulodi4.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/muloti4.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/multi3.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/negXf2.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/popcountdi2.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/shift.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/stack_probe.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/truncXfYf2.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/udivmod.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/udivmodti4.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/udivti3.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/umodti3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/absv.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/absvdi2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/absvsi2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/absvti2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/adddf3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/addf3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/addo.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/addsf3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/addtf3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/addxf3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/arm.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/atomics.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/aulldiv.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/aullrem.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/bswap.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/ceil.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/clear_cache.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/cmp.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/cmpdf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/cmpsf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/cmptf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/cmpxf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/common.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/comparef.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/cos.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/count0bits.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/divdf3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/divsf3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/divtf3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/divti3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/divxf3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/emutls.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/exp.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/exp2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/extenddftf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/extenddfxf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/extendf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/extendhfsf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/extendhftf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/extendhfxf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/extendsfdf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/extendsftf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/extendsfxf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/extendxftf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fabs.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixdfdi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixdfsi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixdfti.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixhfdi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixhfsi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixhfti.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixsfdi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixsfsi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixsfti.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixtfdi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixtfsi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixtfti.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixunsdfdi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixunsdfsi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixunsdfti.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixunshfdi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixunshfsi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixunshfti.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixunssfdi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixunssfsi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixunssfti.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixunstfdi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixunstfsi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixunstfti.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixunsxfdi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixunsxfsi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixunsxfti.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixxfdi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixxfsi.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fixxfti.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/int_from_float.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatdidf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatdihf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatdisf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatditf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatdixf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatsidf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatsihf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatsisf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatsitf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatsixf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floattidf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floattihf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floattisf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floattitf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floattixf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatundidf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatundihf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatundisf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatunditf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatundixf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatunsidf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatunsihf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatunsisf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatunsitf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatunsixf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatuntidf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatuntihf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatuntisf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatuntitf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floatuntixf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/floor.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fma.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fmax.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fmin.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/fmod.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/gedf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/gesf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/getf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/gexf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/int.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/float_from_int.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/log.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/log10.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/log2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/modti3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/mulXi3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/muldf3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/mulf3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/mulo.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/mulsf3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/multf3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/mulxf3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/negXi2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/negv.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/os_version_check.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/parity.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/popcount.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/rem_pio2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/rem_pio2_large.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/rem_pio2f.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/round.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/shift.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/sin.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/sincos.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/sqrt.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/stack_probe.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/subo.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/subsf3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/subdf3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/subtf3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/subxf3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/negsf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/negdf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/negtf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/negxf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/tan.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/trig.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/trunc.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/truncdfhf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/truncdfsf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/truncf.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/truncsfhf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/trunctfdf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/trunctfhf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/trunctfsf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/trunctfxf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/truncxfdf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/truncxfhf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/truncxfsf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/udivmod.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/udivmodei4.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/udivmodti4.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/udivti3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/umodti3.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/unorddf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/unordsf2.zig"
+    "${CMAKE_SOURCE_DIR}/lib/compiler_rt/unordtf2.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/start.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/std.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/target.zig"
@@ -511,51 +496,85 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/lib/std/target/powerpc.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/target/riscv.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/target/sparc.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/target/systemz.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/target/s390x.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/target/wasm.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/target/x86.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/Thread.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/Thread/AutoResetEvent.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/Thread/Futex.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/Thread/Mutex.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/Thread/Pool.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/Thread/ResetEvent.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/Thread/StaticResetEvent.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/Thread/WaitGroup.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/time.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/treap.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/unicode.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/zig.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/zig/ast.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/zig/cross_target.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/zig/parse.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/zig/Ast.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/zig/CrossTarget.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/zig/c_builtins.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/zig/Parse.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/zig/render.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/zig/Server.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/zig/string_literal.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/zig/system.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/zig/system/NativePaths.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/zig/system/NativeTargetInfo.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/zig/system/x86.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/zig/tokenizer.zig"
-    "${CMAKE_SOURCE_DIR}/src/Cache.zig"
+    "${CMAKE_SOURCE_DIR}/src/Air.zig"
+    "${CMAKE_SOURCE_DIR}/src/AstGen.zig"
+    "${CMAKE_SOURCE_DIR}/src/AstRlAnnotate.zig"
     "${CMAKE_SOURCE_DIR}/src/Compilation.zig"
-    "${CMAKE_SOURCE_DIR}/src/DepTokenizer.zig"
+    "${CMAKE_SOURCE_DIR}/src/Liveness.zig"
     "${CMAKE_SOURCE_DIR}/src/Module.zig"
     "${CMAKE_SOURCE_DIR}/src/Package.zig"
+    "${CMAKE_SOURCE_DIR}/src/Package/Fetch.zig"
     "${CMAKE_SOURCE_DIR}/src/RangeSet.zig"
-    "${CMAKE_SOURCE_DIR}/src/ThreadPool.zig"
+    "${CMAKE_SOURCE_DIR}/src/Sema.zig"
     "${CMAKE_SOURCE_DIR}/src/TypedValue.zig"
-    "${CMAKE_SOURCE_DIR}/src/WaitGroup.zig"
-    "${CMAKE_SOURCE_DIR}/src/AstGen.zig"
+    "${CMAKE_SOURCE_DIR}/src/Zir.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/aarch64/CodeGen.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/aarch64/Emit.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/aarch64/Mir.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/aarch64/bits.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/aarch64/abi.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/arm/CodeGen.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/arm/Emit.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/arm/Mir.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/arm/bits.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/arm/abi.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/riscv64/CodeGen.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/riscv64/Emit.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/riscv64/Mir.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/riscv64/bits.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/riscv64/abi.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/sparc64/CodeGen.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/sparc64/Emit.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/sparc64/Mir.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/sparc64/bits.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/sparc64/abi.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/wasm/CodeGen.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/wasm/Emit.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/wasm/Mir.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/x86_64/CodeGen.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/x86_64/Disassembler.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/x86_64/Emit.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/x86_64/Encoding.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/x86_64/Mir.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/x86_64/abi.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/x86_64/bits.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/x86_64/encoder.zig"
+    "${CMAKE_SOURCE_DIR}/src/arch/x86_64/encodings.zig"
     "${CMAKE_SOURCE_DIR}/src/clang.zig"
     "${CMAKE_SOURCE_DIR}/src/clang_options.zig"
     "${CMAKE_SOURCE_DIR}/src/clang_options_data.zig"
     "${CMAKE_SOURCE_DIR}/src/codegen.zig"
-    "${CMAKE_SOURCE_DIR}/src/codegen/aarch64.zig"
-    "${CMAKE_SOURCE_DIR}/src/codegen/arm.zig"
     "${CMAKE_SOURCE_DIR}/src/codegen/c.zig"
+    "${CMAKE_SOURCE_DIR}/src/codegen/c/type.zig"
     "${CMAKE_SOURCE_DIR}/src/codegen/llvm.zig"
     "${CMAKE_SOURCE_DIR}/src/codegen/llvm/bindings.zig"
-    "${CMAKE_SOURCE_DIR}/src/codegen/riscv64.zig"
-    "${CMAKE_SOURCE_DIR}/src/codegen/spu-mk2.zig"
-    "${CMAKE_SOURCE_DIR}/src/codegen/wasm.zig"
-    "${CMAKE_SOURCE_DIR}/src/codegen/x86_64.zig"
     "${CMAKE_SOURCE_DIR}/src/glibc.zig"
     "${CMAKE_SOURCE_DIR}/src/introspect.zig"
-    "${CMAKE_SOURCE_DIR}/src/ir.zig"
     "${CMAKE_SOURCE_DIR}/src/libc_installation.zig"
     "${CMAKE_SOURCE_DIR}/src/libcxx.zig"
     "${CMAKE_SOURCE_DIR}/src/libtsan.zig"
@@ -563,35 +582,71 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/src/link.zig"
     "${CMAKE_SOURCE_DIR}/src/link/C.zig"
     "${CMAKE_SOURCE_DIR}/src/link/Coff.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/Coff/Atom.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/Coff/ImportTable.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/Coff/Object.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/Coff/lld.zig"
     "${CMAKE_SOURCE_DIR}/src/link/Elf.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/Elf/Archive.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/Elf/Atom.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/Elf/LdScript.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/Elf/LinkerDefined.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/Elf/Object.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/Elf/SharedObject.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/Elf/Symbol.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/Elf/ZigObject.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/Elf/eh_frame.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/Elf/file.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/Elf/gc.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/Elf/synthetic_sections.zig"
     "${CMAKE_SOURCE_DIR}/src/link/MachO.zig"
     "${CMAKE_SOURCE_DIR}/src/link/MachO/Archive.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/Atom.zig"
     "${CMAKE_SOURCE_DIR}/src/link/MachO/CodeSignature.zig"
     "${CMAKE_SOURCE_DIR}/src/link/MachO/DebugSymbols.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/DwarfInfo.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/Dylib.zig"
     "${CMAKE_SOURCE_DIR}/src/link/MachO/Object.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/Relocation.zig"
     "${CMAKE_SOURCE_DIR}/src/link/MachO/Trie.zig"
-    "${CMAKE_SOURCE_DIR}/src/link/MachO/Zld.zig"
-    "${CMAKE_SOURCE_DIR}/src/link/MachO/bind.zig"
-    "${CMAKE_SOURCE_DIR}/src/link/MachO/commands.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/UnwindInfo.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/dyld_info/bind.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/dyld_info/Rebase.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/dead_strip.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/eh_frame.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/fat.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/hasher.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/load_commands.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/thunks.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/uuid.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/zld.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/Plan9.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/Plan9/aout.zig"
     "${CMAKE_SOURCE_DIR}/src/link/Wasm.zig"
-    "${CMAKE_SOURCE_DIR}/src/link/C/zig.h"
     "${CMAKE_SOURCE_DIR}/src/link/msdos-stub.bin"
-    "${CMAKE_SOURCE_DIR}/src/liveness.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/StringTable.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/tapi.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/tapi/Tokenizer.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/tapi/parse.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/tapi/yaml.zig"
     "${CMAKE_SOURCE_DIR}/src/main.zig"
     "${CMAKE_SOURCE_DIR}/src/mingw.zig"
     "${CMAKE_SOURCE_DIR}/src/musl.zig"
+    "${CMAKE_SOURCE_DIR}/src/print_air.zig"
     "${CMAKE_SOURCE_DIR}/src/print_env.zig"
     "${CMAKE_SOURCE_DIR}/src/print_targets.zig"
-    "${CMAKE_SOURCE_DIR}/src/stage1.zig"
+    "${CMAKE_SOURCE_DIR}/src/print_zir.zig"
+    "${CMAKE_SOURCE_DIR}/src/register_manager.zig"
     "${CMAKE_SOURCE_DIR}/src/target.zig"
     "${CMAKE_SOURCE_DIR}/src/tracy.zig"
     "${CMAKE_SOURCE_DIR}/src/translate_c.zig"
     "${CMAKE_SOURCE_DIR}/src/translate_c/ast.zig"
     "${CMAKE_SOURCE_DIR}/src/type.zig"
     "${CMAKE_SOURCE_DIR}/src/value.zig"
+    "${CMAKE_SOURCE_DIR}/src/wasi_libc.zig"
     "${CMAKE_SOURCE_DIR}/src/windows_sdk.zig"
-    "${CMAKE_SOURCE_DIR}/src/zir.zig"
-    "${CMAKE_SOURCE_DIR}/src/Sema.zig"
+    "${CMAKE_SOURCE_DIR}/src/stubs/aro_builtins.zig"
+    "${CMAKE_SOURCE_DIR}/src/stubs/aro_names.zig"
 )
 
 if(MSVC)
@@ -602,24 +657,12 @@ if(MSVC)
     endif()
 endif()
 
-if(ZIG_OMIT_STAGE2)
-  set(ZIG_OMIT_STAGE2_BOOL "true")
-else()
-  set(ZIG_OMIT_STAGE2_BOOL "false")
-endif()
-
-if(ZIG_ENABLE_LOGGING)
-  set(ZIG_ENABLE_LOGGING_BOOL "true")
-else()
-  set(ZIG_ENABLE_LOGGING_BOOL "false")
-endif()
-
 configure_file (
-    "${CMAKE_SOURCE_DIR}/src/stage1/config.h.in"
+    "${CMAKE_SOURCE_DIR}/stage1/config.h.in"
     "${ZIG_CONFIG_H_OUT}"
 )
 configure_file (
-    "${CMAKE_SOURCE_DIR}/src/config.zig.in"
+    "${CMAKE_SOURCE_DIR}/stage1/config.zig.in"
     "${ZIG_CONFIG_ZIG_OUT}"
 )
 
@@ -627,61 +670,21 @@ include_directories(
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_BINARY_DIR}
     "${CMAKE_SOURCE_DIR}/src"
-    "${CMAKE_SOURCE_DIR}/src/stage1"
 )
 
-# These have to go before the -Wno- flags
 if(MSVC)
-  set(EXE_CFLAGS "/std:c++14")
-else(MSVC)
-  set(EXE_CFLAGS "-std=c++14")
-endif(MSVC)
-
-if(ZIG_STATIC)
-    set(EXE_CFLAGS "${EXE_CFLAGS} -DZIG_LINK_MODE=Static")
+  set(EXE_CXX_FLAGS "/std:c++17")
+  set(EXE_LDFLAGS "/STACK:16777216")
+  if(NOT "${CMAKE_BUILD_TYPE}" STREQUAL "Release" AND NOT "${CMAKE_BUILD_TYPE}" STREQUAL "MinSizeRel")
+    set(EXE_LDFLAGS "${EXE_LDFLAGS} /debug:fastlink")
+  endif()
 else()
-    set(EXE_CFLAGS "${EXE_CFLAGS} -DZIG_LINK_MODE=Dynamic")
-endif()
-
-if("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
-    if(MSVC)
-        set(EXE_CFLAGS "${EXE_CFLAGS} /w")
-    else()
-        set(EXE_CFLAGS "${EXE_CFLAGS} -Werror -Wall")
-        # fallthrough support was added in GCC 7.0
-        if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 7.0)
-            set(EXE_CFLAGS "${EXE_CFLAGS} -Werror=implicit-fallthrough")
-        endif()
-        # GCC 9.2 and older are unable to detect valid variable initialization in some cases
-        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS_EQUAL 9.2)
-            set(EXE_CFLAGS "${EXE_CFLAGS} -Wno-maybe-uninitialized")
-        endif()
-    endif()
-endif()
-
-if(MSVC)
-    set(EXE_CFLAGS "${EXE_CFLAGS}")
-else()
-    set(EXE_CFLAGS "${EXE_CFLAGS} -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -D_GNU_SOURCE -fvisibility-inlines-hidden -fno-exceptions -fno-rtti -Werror=type-limits -Wno-missing-braces -Wno-comment")
-    if(MINGW)
-        set(EXE_CFLAGS "${EXE_CFLAGS} -Wno-format")
-    endif()
-endif()
-
-if(MSVC)
-  set(OPTIMIZED_C_FLAGS "/O2")
-else(MSVC)
-  set(OPTIMIZED_C_FLAGS "-std=c99 -O3")
-endif(MSVC)
-
-set(EXE_LDFLAGS " ")
-if(MSVC)
-    set(EXE_LDFLAGS "${EXE_LDFLAGS} /STACK:16777216")
-    if(NOT "${CMAKE_BUILD_TYPE}" STREQUAL "Release" AND NOT "${CMAKE_BUILD_TYPE}" STREQUAL "MinSizeRel")
-        set(EXE_LDFLAGS "${EXE_LDFLAGS} /debug:fastlink")
-    endif()
-elseif(MINGW)
+  set(EXE_CXX_FLAGS "-std=c++17 -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -D_GNU_SOURCE -fvisibility-inlines-hidden -fno-exceptions -fno-rtti -Werror=type-limits -Wno-missing-braces -Wno-comment")
+  set(EXE_LDFLAGS " ")
+  if(MINGW)
+    set(EXE_CXX_FLAGS "${EXE_CXX_FLAGS} -Wno-format")
     set(EXE_LDFLAGS "${EXE_LDFLAGS} -Wl,--stack,16777216")
+  endif()
 endif()
 
 if(ZIG_STATIC)
@@ -692,21 +695,15 @@ if(ZIG_STATIC)
     elseif(NOT MSVC)
         set(EXE_LDFLAGS "${EXE_LDFLAGS} -static")
     endif()
-else()
-    if(MINGW)
-        set(EXE_LDFLAGS "${EXE_LDFLAGS}")
-    endif()
-endif()
-
-if(ZIG_TEST_COVERAGE)
-    set(EXE_CFLAGS "${EXE_CFLAGS} -fprofile-arcs -ftest-coverage")
-    set(EXE_LDFLAGS "${EXE_LDFLAGS} -fprofile-arcs -ftest-coverage")
 endif()
 
 add_library(zigcpp STATIC ${ZIG_CPP_SOURCES})
-set_target_properties(zigcpp PROPERTIES
-    COMPILE_FLAGS ${EXE_CFLAGS}
-)
+if(ZIG_PIE)
+    set(ZIGCPP_CXX_FLAGS "${EXE_CXX_FLAGS} -fno-stack-protector -fPIC")
+else()
+    set(ZIGCPP_CXX_FLAGS "${EXE_CXX_FLAGS} -fno-stack-protector")
+endif()
+set_target_properties(zigcpp PROPERTIES COMPILE_FLAGS ${ZIGCPP_CXX_FLAGS})
 
 target_link_libraries(zigcpp LINK_PUBLIC
     ${CLANG_LIBRARIES}
@@ -715,138 +712,238 @@ target_link_libraries(zigcpp LINK_PUBLIC
     ${CMAKE_THREAD_LIBS_INIT}
 )
 
-add_library(opt_c_util STATIC ${OPTIMIZED_C_SOURCES})
-set_target_properties(opt_c_util PROPERTIES
-    COMPILE_FLAGS "${OPTIMIZED_C_FLAGS}"
+string(TOLOWER "${CMAKE_HOST_SYSTEM_NAME}" ZIG_HOST_TARGET_OS)
+if(ZIG_HOST_TARGET_OS STREQUAL "darwin")
+  set(ZIG_HOST_TARGET_OS "macos")
+elseif(ZIG_HOST_TARGET_OS STREQUAL "sunos")
+  check_symbol_exists(__illumos__ "" ZIG_HOST_TARGET_HAS_ILLUMOS_MACRO)
+  if (ZIG_HOST_TARGET_HAS_ILLUMOS_MACRO)
+    set(ZIG_HOST_TARGET_OS "illumos")
+  else()
+    set(ZIG_HOST_TARGET_OS "solaris")
+  endif()
+endif()
+
+string(TOLOWER "${CMAKE_HOST_SYSTEM_PROCESSOR}" ZIG_HOST_TARGET_ARCH)
+if(ZIG_HOST_TARGET_ARCH MATCHES "^i[3-9]86$")
+  if (ZIG_HOST_TARGET_OS MATCHES "(solaris|illumos)")
+    set(ZIG_HOST_TARGET_ARCH "x86_64")
+  else()
+    set(ZIG_HOST_TARGET_ARCH "x86")
+  endif()
+elseif(ZIG_HOST_TARGET_ARCH STREQUAL "amd64")
+  set(ZIG_HOST_TARGET_ARCH "x86_64")
+elseif(ZIG_HOST_TARGET_ARCH STREQUAL "arm64")
+  set(ZIG_HOST_TARGET_ARCH "aarch64")
+elseif(ZIG_HOST_TARGET_ARCH STREQUAL "armv7l")
+  set(ZIG_HOST_TARGET_ARCH "arm")
+elseif(ZIG_HOST_TARGET_ARCH STREQUAL "armv7b")
+  set(ZIG_HOST_TARGET_ARCH "armeb")
+endif()
+string(REGEX REPLACE "^((arm|thumb)(hf?)?)el$" "\\1" ZIG_HOST_TARGET_ARCH "${ZIG_HOST_TARGET_ARCH}")
+if(ZIG_HOST_TARGET_ARCH MATCHES "^arm(hf?)?(eb)?$")
+  check_symbol_exists(__thumb__ "" ZIG_HOST_TARGET_DEFAULTS_TO_THUMB)
+  if(ZIG_HOST_TARGET_DEFAULTS_TO_THUMB)
+    string(REGEX REPLACE "^arm" "thumb" ZIG_HOST_TARGET_ARCH "${ZIG_HOST_TARGET_ARCH}")
+  endif()
+endif()
+string(REGEX REPLACE "^ppc((64)?(le)?)$" "powerpc\\1" ZIG_HOST_TARGET_ARCH "${ZIG_HOST_TARGET_ARCH}")
+
+if(MSVC)
+  set(ZIG_HOST_TARGET_ABI "-msvc")
+elseif(MINGW)
+  set(ZIG_HOST_TARGET_ABI "-gnu")
+elseif(ZIG_HOST_TARGET_ARCH MATCHES "^(arm|thumb)hf?(eb)?$")
+  string(REGEX REPLACE "^(arm|thumb)hf?((eb)?)$" "\\1\\2" ZIG_HOST_TARGET_ARCH "${ZIG_HOST_TARGET_ARCH}")
+  set(ZIG_HOST_TARGET_ABI "-eabihf")
+else()
+  set(ZIG_HOST_TARGET_ABI "")
+endif()
+
+set(ZIG_HOST_TARGET_TRIPLE "${ZIG_HOST_TARGET_ARCH}-${ZIG_HOST_TARGET_OS}${ZIG_HOST_TARGET_ABI}" CACHE STRING "Host zig target triple.")
+
+if(MSVC)
+  set(ZIG_WASM2C_COMPILE_FLAGS "")
+  set(ZIG1_COMPILE_FLAGS "/Os")
+  set(ZIG2_COMPILE_FLAGS "/Od")
+  set(ZIG2_LINK_FLAGS "/STACK:16777216 /FORCE:MULTIPLE")
+else()
+  set(ZIG_WASM2C_COMPILE_FLAGS "-std=c99 -O2")
+  set(ZIG1_COMPILE_FLAGS "-std=c99 -Os")
+  set(ZIG2_COMPILE_FLAGS "-std=c99 -O0 -fno-stack-protector")
+  if(APPLE)
+    set(ZIG2_LINK_FLAGS "-Wl,-stack_size,0x10000000")
+  elseif(MINGW)
+    set(ZIG2_LINK_FLAGS "-Wl,--stack,0x10000000")
+  # Solaris/illumos ld(1) does not provide a --stack-size option.
+  elseif(CMAKE_HOST_SOLARIS)
+    unset(ZIG2_LINK_FLAGS)
+  else()
+    set(ZIG2_LINK_FLAGS "-Wl,-z,stack-size=0x10000000")
+  endif()
+endif()
+
+set(ZIG1_WASM_MODULE "${CMAKE_SOURCE_DIR}/stage1/zig1.wasm")
+set(ZIG1_C_SOURCE "${CMAKE_BINARY_DIR}/zig1.c")
+set(ZIG2_C_SOURCE "${CMAKE_BINARY_DIR}/zig2.c")
+set(ZIG_COMPILER_RT_C_SOURCE "${CMAKE_BINARY_DIR}/compiler_rt.c")
+
+add_executable(zig-wasm2c ${ZIG_WASM2C_SOURCES})
+set_target_properties(zig-wasm2c PROPERTIES COMPILE_FLAGS "${ZIG_WASM2C_COMPILE_FLAGS}")
+
+add_custom_command(
+  OUTPUT "${ZIG1_C_SOURCE}"
+  COMMAND zig-wasm2c "${ZIG1_WASM_MODULE}" "${ZIG1_C_SOURCE}"
+  DEPENDS zig-wasm2c "${ZIG1_WASM_MODULE}"
+  COMMENT STATUS "Converting ${ZIG1_WASM_MODULE} to ${ZIG1_C_SOURCE}"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )
 
-add_library(zigstage1 STATIC ${STAGE1_SOURCES})
-set_target_properties(zigstage1 PROPERTIES
-    COMPILE_FLAGS ${EXE_CFLAGS}
-    LINK_FLAGS ${EXE_LDFLAGS}
+add_executable(zig1 ${ZIG1_C_SOURCE} "${CMAKE_SOURCE_DIR}/stage1/wasi.c")
+set_target_properties(zig1 PROPERTIES COMPILE_FLAGS ${ZIG1_COMPILE_FLAGS})
+
+if(MSVC)
+  target_link_options(zig1 PRIVATE /STACK:0x10000000)
+else()
+  target_link_libraries(zig1 LINK_PUBLIC m)
+  if(MINGW)
+    target_link_options(zig1 PRIVATE -Wl,--stack,0x10000000)
+  endif()
+endif()
+
+set(BUILD_ZIG2_ARGS
+  "${CMAKE_SOURCE_DIR}/lib"
+  build-exe src/main.zig -ofmt=c -lc
+  -OReleaseSmall
+  --name zig2 -femit-bin="${ZIG2_C_SOURCE}"
+  --mod "build_options::${ZIG_CONFIG_ZIG_OUT}"
+  --mod "Builtins/Builtin.def::src/stubs/aro_builtins.zig"
+  --mod "Attribute/names.def::src/stubs/aro_names.zig"
+  --mod "aro:Builtins/Builtin.def,Attribute/names.def:deps/aro/lib.zig"
+  --deps build_options,aro
+  -target "${ZIG_HOST_TARGET_TRIPLE}"
 )
-target_link_libraries(zigstage1 LINK_PUBLIC
-    opt_c_util
-    ${SOFTFLOAT_LIBRARIES}
-    zigcpp
+
+add_custom_command(
+  OUTPUT "${ZIG2_C_SOURCE}"
+  COMMAND zig1 ${BUILD_ZIG2_ARGS}
+  DEPENDS zig1 "${ZIG_STAGE2_SOURCES}"
+  COMMENT STATUS "Running zig1.wasm to produce ${ZIG2_C_SOURCE}"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )
+
+set(BUILD_COMPILER_RT_ARGS
+  "${CMAKE_SOURCE_DIR}/lib"
+  build-obj lib/compiler_rt.zig -ofmt=c
+  -OReleaseSmall
+  --name compiler_rt -femit-bin="${ZIG_COMPILER_RT_C_SOURCE}"
+  --mod "build_options::${ZIG_CONFIG_ZIG_OUT}"
+  --deps build_options
+  -target "${ZIG_HOST_TARGET_TRIPLE}"
+)
+
+add_custom_command(
+  OUTPUT "${ZIG_COMPILER_RT_C_SOURCE}"
+  COMMAND zig1 ${BUILD_COMPILER_RT_ARGS}
+  DEPENDS zig1 "${ZIG_STAGE2_SOURCES}"
+  COMMENT STATUS "Running zig1.wasm to produce ${ZIG_COMPILER_RT_C_SOURCE}"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+add_executable(zig2 ${ZIG2_C_SOURCE} ${ZIG_COMPILER_RT_C_SOURCE})
+set_target_properties(zig2 PROPERTIES
+  COMPILE_FLAGS ${ZIG2_COMPILE_FLAGS}
+  LINK_FLAGS "${ZIG2_LINK_FLAGS}"
+)
+target_include_directories(zig2 PUBLIC "${CMAKE_SOURCE_DIR}/stage1")
+target_link_libraries(zig2 LINK_PUBLIC zigcpp)
+
+if(MSVC)
+  target_link_libraries(zig2 LINK_PUBLIC ntdll.lib)
+elseif(MINGW)
+  target_link_libraries(zig2 LINK_PUBLIC ntdll)
+endif()
+
 if(NOT MSVC)
-    target_link_libraries(zigstage1 LINK_PUBLIC ${LIBXML2})
+    target_link_libraries(zig2 LINK_PUBLIC ${LIBXML2})
 endif()
 
 if(ZIG_DIA_GUIDS_LIB)
-    target_link_libraries(zigstage1 LINK_PUBLIC ${ZIG_DIA_GUIDS_LIB})
+    target_link_libraries(zig2 LINK_PUBLIC ${ZIG_DIA_GUIDS_LIB})
 endif()
 
 if(MSVC OR MINGW)
-    target_link_libraries(zigstage1 LINK_PUBLIC version)
+    target_link_libraries(zig2 LINK_PUBLIC version)
 endif()
 
-if("${ZIG_EXECUTABLE}" STREQUAL "")
-  add_executable(zig0 ${ZIG0_SOURCES})
-  set_target_properties(zig0 PROPERTIES
-      COMPILE_FLAGS ${EXE_CFLAGS}
-      LINK_FLAGS ${EXE_LDFLAGS}
-  )
-  target_link_libraries(zig0 zigstage1)
-endif()
-
-if(MSVC)
-    set(ZIG1_OBJECT "${CMAKE_BINARY_DIR}/zig1.obj")
-else()
-    set(ZIG1_OBJECT "${CMAKE_BINARY_DIR}/zig1.o")
-endif()
 if("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
-    set(ZIG1_RELEASE_ARG "")
+  set(ZIG_RELEASE_ARG "")
+elseif("${CMAKE_BUILD_TYPE}" STREQUAL "RelWithDebInfo")
+  set(ZIG_RELEASE_ARG -Doptimize=ReleaseFast)
 else()
-    set(ZIG1_RELEASE_ARG -OReleaseFast --strip)
+  set(ZIG_RELEASE_ARG -Doptimize=ReleaseFast -Dstrip)
+endif()
+if(ZIG_NO_LIB)
+  set(ZIG_NO_LIB_ARG "-Dno-lib")
+else()
+  set(ZIG_NO_LIB_ARG "")
 endif()
 if(ZIG_SINGLE_THREADED)
-  set(ZIG1_SINGLE_THREADED_ARG "--single-threaded")
+  set(ZIG_SINGLE_THREADED_ARG "-Dsingle-threaded")
 else()
-  set(ZIG1_SINGLE_THREADED_ARG "")
+  set(ZIG_SINGLE_THREADED_ARG "")
+endif()
+if(ZIG_STATIC AND NOT MSVC)
+  set(ZIG_STATIC_ARG "-Duse-zig-libcxx")
+else()
+  set(ZIG_STATIC_ARG "")
 endif()
 
-set(BUILD_ZIG1_ARGS
-    "src/stage1.zig"
-    -target "${ZIG_TARGET_TRIPLE}"
-    "-mcpu=${ZIG_TARGET_MCPU}"
-    --name zig1
-    --override-lib-dir "${CMAKE_SOURCE_DIR}/lib"
-    "-femit-bin=${ZIG1_OBJECT}"
-    "${ZIG1_RELEASE_ARG}"
-    "${ZIG1_SINGLE_THREADED_ARG}"
-    -lc
-    --pkg-begin build_options "${ZIG_CONFIG_ZIG_OUT}"
-    --pkg-end
-    --pkg-begin compiler_rt "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt.zig"
-    --pkg-end
+if(CMAKE_POSITION_INDEPENDENT_CODE OR ZIG_PIE)
+  set(ZIG_PIE_ARG "-Dpie")
+else()
+  set(ZIG_PIE_ARG "")
+endif()
+
+# -Dno-langref is currently hardcoded because building the langref takes too damn long
+# -Dno-autodocs is currently hardcoded because the C backend generates a miscompilation
+#   that prevents it from working.
+# To obtain these two forms of documentation, run zig build against stage3 rather than stage2.
+set(ZIG_BUILD_ARGS
+  --zig-lib-dir "${CMAKE_SOURCE_DIR}/lib"
+  "-Dconfig_h=${ZIG_CONFIG_H_OUT}"
+  "-Denable-llvm"
+  ${ZIG_RELEASE_ARG}
+  ${ZIG_STATIC_ARG}
+  ${ZIG_NO_LIB_ARG}
+  "-Dno-langref"
+  "-Dno-autodocs"
+  ${ZIG_SINGLE_THREADED_ARG}
+  ${ZIG_PIE_ARG}
+  "-Dtarget=${ZIG_TARGET_TRIPLE}"
+  "-Dcpu=${ZIG_TARGET_MCPU}"
+  "-Dversion-string=${RESOLVED_ZIG_VERSION}"
 )
 
-if("${ZIG_EXECUTABLE}" STREQUAL "")
-  add_custom_command(
-      OUTPUT "${ZIG1_OBJECT}"
-      COMMAND zig0 ${BUILD_ZIG1_ARGS}
-      DEPENDS zig0 "${ZIG_STAGE2_SOURCES}"
-      COMMENT STATUS "Building self-hosted component ${ZIG1_OBJECT}"
-      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-  )
-  set(ZIG_EXECUTABLE "${zig_BINARY_DIR}/zig")
-  if (WIN32)
-    set(ZIG_EXECUTABLE "${ZIG_EXECUTABLE}.exe")
-  endif()
-else()
-  add_custom_command(
-      OUTPUT "${ZIG1_OBJECT}"
-      COMMAND "${ZIG_EXECUTABLE}" "build-obj" ${BUILD_ZIG1_ARGS}
-      DEPENDS ${ZIG_STAGE2_SOURCES}
-      COMMENT STATUS "Building self-hosted component ${ZIG1_OBJECT}"
-      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-  )
-endif()
-
-# cmake won't let us configure an executable without C sources.
-add_executable(zig "${CMAKE_SOURCE_DIR}/src/stage1/empty.cpp" "${ZIG1_OBJECT}")
-
-set_target_properties(zig PROPERTIES
-    COMPILE_FLAGS ${EXE_CFLAGS}
-    LINK_FLAGS ${EXE_LDFLAGS}
+add_custom_target(stage3 ALL
+  DEPENDS "${CMAKE_BINARY_DIR}/stage3/bin/zig"
 )
-target_link_libraries(zig zigstage1)
-if(MSVC)
-  target_link_libraries(zig ntdll.lib)
-elseif(MINGW)
-  target_link_libraries(zig ntdll)
+
+add_custom_command(
+  OUTPUT "${CMAKE_BINARY_DIR}/stage3/bin/zig"
+  COMMAND zig2 build --prefix "${CMAKE_BINARY_DIR}/stage3" ${ZIG_BUILD_ARGS}
+  COMMENT STATUS "Building stage3"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)
+
+if(WIN32)
+  set(ZIG_EXECUTABLE "${CMAKE_BINARY_DIR}/zig2.exe")
+else()
+  set(ZIG_EXECUTABLE "${CMAKE_BINARY_DIR}/zig2")
 endif()
 
-install(TARGETS zig DESTINATION bin)
-
-set(ZIG_SKIP_INSTALL_LIB_FILES off CACHE BOOL
-    "Disable copying lib/ files to install prefix during the build phase")
-
-if(NOT ZIG_SKIP_INSTALL_LIB_FILES)
-    set(ZIG_INSTALL_ARGS "build"
-        --override-lib-dir "${CMAKE_SOURCE_DIR}/lib"
-        "-Dlib-files-only"
-        --prefix "${CMAKE_INSTALL_PREFIX}"
-        "-Dconfig_h=${ZIG_CONFIG_H_OUT}"
-        install
-    )
-
-    # CODE has no effect with Visual Studio build system generator, therefore
-    # when using Visual Studio build system generator we resort to running
-    # `zig build install` during the build phase.
-    if(MSVC)
-        add_custom_target(zig_install_lib_files ALL
-            COMMAND zig ${ZIG_INSTALL_ARGS}
-            DEPENDS zig
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        )
-    else()
-        get_target_property(zig_BINARY_DIR zig BINARY_DIR)
-        install(CODE "set(zig_EXE \"${ZIG_EXECUTABLE}\")")
-        install(CODE "set(ZIG_INSTALL_ARGS \"${ZIG_INSTALL_ARGS}\")")
-        install(CODE "set(CMAKE_SOURCE_DIR \"${CMAKE_SOURCE_DIR}\")")
-        install(SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/cmake/install.cmake)
-    endif()
-endif()
+install(CODE "set(ZIG_EXECUTABLE \"${ZIG_EXECUTABLE}\")")
+install(CODE "set(ZIG_BUILD_ARGS \"${ZIG_BUILD_ARGS}\")")
+install(CODE "set(CMAKE_INSTALL_PREFIX \"${CMAKE_INSTALL_PREFIX}\")")
+install(CODE "set(CMAKE_SOURCE_DIR \"${CMAKE_SOURCE_DIR}\")")
+install(SCRIPT "${CMAKE_SOURCE_DIR}/cmake/install.cmake")

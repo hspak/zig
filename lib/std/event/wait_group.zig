@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("../std.zig");
 const builtin = @import("builtin");
 const Loop = std.event.Loop;
@@ -19,7 +14,7 @@ const Loop = std.event.Loop;
 /// `begin` will return error.Overflow when the limit is reached, even
 /// if the integer type has not has not overflowed.
 /// By default `max_value` is set to std.math.maxInt(CounterType).
-pub const WaitGroup = WaitGroupGeneric(std.meta.bitCount(usize));
+pub const WaitGroup = WaitGroupGeneric(@bitSizeOf(usize));
 
 pub fn WaitGroupGeneric(comptime counter_size: u16) type {
     const CounterType = std.meta.Int(.unsigned, counter_size);
@@ -40,8 +35,8 @@ pub fn WaitGroupGeneric(comptime counter_size: u16) type {
 
         const Self = @This();
         pub fn begin(self: *Self, count: CounterType) error{Overflow}!void {
-            const held = self.mutex.acquire();
-            defer held.release();
+            self.mutex.lock();
+            defer self.mutex.unlock();
 
             const new_counter = try std.math.add(CounterType, self.counter, count);
             if (new_counter > self.max_counter) return error.Overflow;
@@ -50,8 +45,8 @@ pub fn WaitGroupGeneric(comptime counter_size: u16) type {
 
         pub fn finish(self: *Self, count: CounterType) void {
             var waiters = blk: {
-                const held = self.mutex.acquire();
-                defer held.release();
+                self.mutex.lock();
+                defer self.mutex.unlock();
                 self.counter = std.math.sub(CounterType, self.counter, count) catch unreachable;
                 if (self.counter == 0) {
                     const temp = self.waiters;
@@ -70,10 +65,10 @@ pub fn WaitGroupGeneric(comptime counter_size: u16) type {
         }
 
         pub fn wait(self: *Self) void {
-            const held = self.mutex.acquire();
+            self.mutex.lock();
 
             if (self.counter == 0) {
-                held.release();
+                self.mutex.unlock();
                 return;
             }
 
@@ -88,7 +83,7 @@ pub fn WaitGroupGeneric(comptime counter_size: u16) type {
                 self_waiter.next = null;
             }
             suspend {
-                held.release();
+                self.mutex.unlock();
             }
         }
     };

@@ -1,15 +1,10 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("../std.zig");
+const builtin = @import("builtin");
 const assert = std.debug.assert;
 const testing = std.testing;
-const builtin = @import("builtin");
 const Lock = std.event.Lock;
 
-/// This is a value that starts out unavailable, until resolve() is called
+/// This is a value that starts out unavailable, until resolve() is called.
 /// While it is unavailable, functions suspend when they try to get() it,
 /// and then are resumed when resolve() is called.
 /// At this point the value remains forever available, and another resolve() is not allowed.
@@ -107,7 +102,7 @@ fn testFuture() void {
 
     const result = (await a) + (await b);
 
-    testing.expect(result == 12);
+    try testing.expect(result == 12);
 }
 
 fn waitOnFuture(future: *Future(i32)) i32 {

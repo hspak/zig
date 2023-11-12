@@ -1,16 +1,11 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
-
 const std = @import("std");
+const builtin = @import("builtin");
 const crypto = std.crypto;
 const aes = crypto.core.aes;
 const assert = std.debug.assert;
 const math = std.math;
 const mem = std.mem;
-const Error = crypto.Error;
+const AuthenticationError = crypto.errors.AuthenticationError;
 
 pub const Aes128Ocb = AesOcb(aes.Aes128);
 pub const Aes256Ocb = AesOcb(aes.Aes256);
@@ -33,11 +28,11 @@ fn AesOcb(comptime Aes: anytype) type {
             table: [56]Block align(16) = undefined,
             upto: usize,
 
-            fn double(l: Block) callconv(.Inline) Block {
-                const l_ = mem.readIntBig(u128, &l);
+            inline fn double(l: Block) Block {
+                const l_ = mem.readInt(u128, &l, .big);
                 const l_2 = (l_ << 1) ^ (0x87 & -%(l_ >> 127));
                 var l2: Block = undefined;
-                mem.writeIntBig(u128, &l2, l_2);
+                mem.writeInt(u128, &l2, l_2, .big);
                 return l2;
             }
 
@@ -71,7 +66,7 @@ fn AesOcb(comptime Aes: anytype) type {
             var offset = [_]u8{0} ** 16;
             var i: usize = 0;
             while (i < full_blocks) : (i += 1) {
-                xorWith(&offset, lt[@ctz(usize, i + 1)]);
+                xorWith(&offset, lt[@ctz(i + 1)]);
                 var e = xorBlocks(offset, a[i * 16 ..][0..16].*);
                 aes_enc_ctx.encrypt(&e, &e);
                 xorWith(&sum, e);
@@ -80,7 +75,7 @@ fn AesOcb(comptime Aes: anytype) type {
             if (leftover > 0) {
                 xorWith(&offset, lx.star);
                 var padded = [_]u8{0} ** 16;
-                mem.copy(u8, padded[0..leftover], a[i * 16 ..][0..leftover]);
+                @memcpy(padded[0..leftover], a[i * 16 ..][0..leftover]);
                 padded[leftover] = 1;
                 var e = xorBlocks(offset, padded);
                 aes_enc_ctx.encrypt(&e, &e);
@@ -91,24 +86,24 @@ fn AesOcb(comptime Aes: anytype) type {
 
         fn getOffset(aes_enc_ctx: EncryptCtx, npub: [nonce_length]u8) Block {
             var nx = [_]u8{0} ** 16;
-            nx[0] = @intCast(u8, @truncate(u7, tag_length * 8) << 1);
+            nx[0] = @as(u8, @intCast(@as(u7, @truncate(tag_length * 8)) << 1));
             nx[16 - nonce_length - 1] = 1;
-            mem.copy(u8, nx[16 - nonce_length ..], &npub);
+            nx[nx.len - nonce_length ..].* = npub;
 
-            const bottom = @truncate(u6, nx[15]);
+            const bottom: u6 = @truncate(nx[15]);
             nx[15] &= 0xc0;
             var ktop_: Block = undefined;
             aes_enc_ctx.encrypt(&ktop_, &nx);
-            const ktop = mem.readIntBig(u128, &ktop_);
-            var stretch = (@as(u192, ktop) << 64) | @as(u192, @truncate(u64, ktop >> 64) ^ @truncate(u64, ktop >> 56));
+            const ktop = mem.readInt(u128, &ktop_, .big);
+            var stretch = (@as(u192, ktop) << 64) | @as(u192, @as(u64, @truncate(ktop >> 64)) ^ @as(u64, @truncate(ktop >> 56)));
             var offset: Block = undefined;
-            mem.writeIntBig(u128, &offset, @truncate(u128, stretch >> (64 - @as(u7, bottom))));
+            mem.writeInt(u128, &offset, @as(u128, @truncate(stretch >> (64 - @as(u7, bottom)))), .big);
             return offset;
         }
 
-        const has_aesni = comptime std.Target.x86.featureSetHas(std.Target.current.cpu.features, .aes);
-        const has_armaes = comptime std.Target.aarch64.featureSetHas(std.Target.current.cpu.features, .aes);
-        const wb: usize = if ((std.Target.current.cpu.arch == .x86_64 and has_aesni) or (std.Target.current.cpu.arch == .aarch64 and has_armaes)) 4 else 0;
+        const has_aesni = std.Target.x86.featureSetHas(builtin.cpu.features, .aes);
+        const has_armaes = std.Target.aarch64.featureSetHas(builtin.cpu.features, .aes);
+        const wb: usize = if ((builtin.cpu.arch == .x86_64 and has_aesni) or (builtin.cpu.arch == .aarch64 and has_armaes)) 4 else 0;
 
         /// c: ciphertext: output buffer should be of size m.len
         /// tag: authentication tag: output MAC
@@ -134,25 +129,25 @@ fn AesOcb(comptime Aes: anytype) type {
                 var es: [16 * wb]u8 align(16) = undefined;
                 var j: usize = 0;
                 while (j < wb) : (j += 1) {
-                    xorWith(&offset, lt[@ctz(usize, i + 1 + j)]);
+                    xorWith(&offset, lt[@ctz(i + 1 + j)]);
                     offsets[j] = offset;
                     const p = m[(i + j) * 16 ..][0..16].*;
-                    mem.copy(u8, es[j * 16 ..][0..16], &xorBlocks(p, offsets[j]));
+                    es[j * 16 ..][0..16].* = xorBlocks(p, offsets[j]);
                     xorWith(&sum, p);
                 }
                 aes_enc_ctx.encryptWide(wb, &es, &es);
                 j = 0;
                 while (j < wb) : (j += 1) {
                     const e = es[j * 16 ..][0..16].*;
-                    mem.copy(u8, c[(i + j) * 16 ..][0..16], &xorBlocks(e, offsets[j]));
+                    c[(i + j) * 16 ..][0..16].* = xorBlocks(e, offsets[j]);
                 }
             }
             while (i < full_blocks) : (i += 1) {
-                xorWith(&offset, lt[@ctz(usize, i + 1)]);
+                xorWith(&offset, lt[@ctz(i + 1)]);
                 const p = m[i * 16 ..][0..16].*;
                 var e = xorBlocks(p, offset);
                 aes_enc_ctx.encrypt(&e, &e);
-                mem.copy(u8, c[i * 16 ..][0..16], &xorBlocks(e, offset));
+                c[i * 16 ..][0..16].* = xorBlocks(e, offset);
                 xorWith(&sum, p);
             }
             const leftover = m.len % 16;
@@ -160,11 +155,11 @@ fn AesOcb(comptime Aes: anytype) type {
                 xorWith(&offset, lx.star);
                 var pad = offset;
                 aes_enc_ctx.encrypt(&pad, &pad);
-                for (m[i * 16 ..]) |x, j| {
+                for (m[i * 16 ..], 0..) |x, j| {
                     c[i * 16 + j] = pad[j] ^ x;
                 }
                 var e = [_]u8{0} ** 16;
-                mem.copy(u8, e[0..leftover], m[i * 16 ..][0..leftover]);
+                @memcpy(e[0..leftover], m[i * 16 ..][0..leftover]);
                 e[leftover] = 0x80;
                 xorWith(&sum, e);
             }
@@ -173,13 +168,16 @@ fn AesOcb(comptime Aes: anytype) type {
             tag.* = xorBlocks(e, hash(aes_enc_ctx, &lx, ad));
         }
 
-        /// m: message: output buffer should be of size c.len
-        /// c: ciphertext
-        /// tag: authentication tag
-        /// ad: Associated Data
-        /// npub: public nonce
-        /// k: secret key
-        pub fn decrypt(m: []u8, c: []const u8, tag: [tag_length]u8, ad: []const u8, npub: [nonce_length]u8, key: [key_length]u8) Error!void {
+        /// `m`: Message
+        /// `c`: Ciphertext
+        /// `tag`: Authentication tag
+        /// `ad`: Associated data
+        /// `npub`: Public nonce
+        /// `k`: Private key
+        /// Asserts `c.len == m.len`.
+        ///
+        /// Contents of `m` are undefined if an error is returned.
+        pub fn decrypt(m: []u8, c: []const u8, tag: [tag_length]u8, ad: []const u8, npub: [nonce_length]u8, key: [key_length]u8) AuthenticationError!void {
             assert(c.len == m.len);
 
             const aes_enc_ctx = Aes.initEnc(key);
@@ -198,26 +196,26 @@ fn AesOcb(comptime Aes: anytype) type {
                 var es: [16 * wb]u8 align(16) = undefined;
                 var j: usize = 0;
                 while (j < wb) : (j += 1) {
-                    xorWith(&offset, lt[@ctz(usize, i + 1 + j)]);
+                    xorWith(&offset, lt[@ctz(i + 1 + j)]);
                     offsets[j] = offset;
                     const q = c[(i + j) * 16 ..][0..16].*;
-                    mem.copy(u8, es[j * 16 ..][0..16], &xorBlocks(q, offsets[j]));
+                    es[j * 16 ..][0..16].* = xorBlocks(q, offsets[j]);
                 }
                 aes_dec_ctx.decryptWide(wb, &es, &es);
                 j = 0;
                 while (j < wb) : (j += 1) {
                     const p = xorBlocks(es[j * 16 ..][0..16].*, offsets[j]);
-                    mem.copy(u8, m[(i + j) * 16 ..][0..16], &p);
+                    m[(i + j) * 16 ..][0..16].* = p;
                     xorWith(&sum, p);
                 }
             }
             while (i < full_blocks) : (i += 1) {
-                xorWith(&offset, lt[@ctz(usize, i + 1)]);
+                xorWith(&offset, lt[@ctz(i + 1)]);
                 const q = c[i * 16 ..][0..16].*;
                 var e = xorBlocks(q, offset);
                 aes_dec_ctx.decrypt(&e, &e);
                 const p = xorBlocks(e, offset);
-                mem.copy(u8, m[i * 16 ..][0..16], &p);
+                m[i * 16 ..][0..16].* = p;
                 xorWith(&sum, p);
             }
             const leftover = m.len % 16;
@@ -225,11 +223,11 @@ fn AesOcb(comptime Aes: anytype) type {
                 xorWith(&offset, lx.star);
                 var pad = offset;
                 aes_enc_ctx.encrypt(&pad, &pad);
-                for (c[i * 16 ..]) |x, j| {
+                for (c[i * 16 ..], 0..) |x, j| {
                     m[i * 16 + j] = pad[j] ^ x;
                 }
                 var e = [_]u8{0} ** 16;
-                mem.copy(u8, e[0..leftover], m[i * 16 ..][0..leftover]);
+                @memcpy(e[0..leftover], m[i * 16 ..][0..leftover]);
                 e[leftover] = 0x80;
                 xorWith(&sum, e);
             }
@@ -237,24 +235,25 @@ fn AesOcb(comptime Aes: anytype) type {
             aes_enc_ctx.encrypt(&e, &e);
             var computed_tag = xorBlocks(e, hash(aes_enc_ctx, &lx, ad));
             const verify = crypto.utils.timingSafeEql([tag_length]u8, computed_tag, tag);
-            crypto.utils.secureZero(u8, &computed_tag);
             if (!verify) {
+                crypto.utils.secureZero(u8, &computed_tag);
+                @memset(m, undefined);
                 return error.AuthenticationFailed;
             }
         }
     };
 }
 
-fn xorBlocks(x: Block, y: Block) callconv(.Inline) Block {
+inline fn xorBlocks(x: Block, y: Block) Block {
     var z: Block = x;
-    for (z) |*v, i| {
+    for (&z, 0..) |*v, i| {
         v.* = x[i] ^ y[i];
     }
     return z;
 }
 
-fn xorWith(x: *Block, y: Block) callconv(.Inline) void {
-    for (x) |*v, i| {
+inline fn xorWith(x: *Block, y: Block) void {
+    for (x, 0..) |*v, i| {
         v.* ^= y[i];
     }
 }
@@ -262,6 +261,9 @@ fn xorWith(x: *Block, y: Block) callconv(.Inline) void {
 const hexToBytes = std.fmt.hexToBytes;
 
 test "AesOcb test vector 1" {
+    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
+    if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest;
+
     var k: [Aes128Ocb.key_length]u8 = undefined;
     var nonce: [Aes128Ocb.nonce_length]u8 = undefined;
     var tag: [Aes128Ocb.tag_length]u8 = undefined;
@@ -271,7 +273,6 @@ test "AesOcb test vector 1" {
     var c: [0]u8 = undefined;
     Aes128Ocb.encrypt(&c, &tag, "", "", nonce, k);
 
-    var expected_c: [c.len]u8 = undefined;
     var expected_tag: [tag.len]u8 = undefined;
     _ = try hexToBytes(&expected_tag, "785407BFFFC8AD9EDCC5520AC9111EE6");
 
@@ -280,6 +281,9 @@ test "AesOcb test vector 1" {
 }
 
 test "AesOcb test vector 2" {
+    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
+    if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest;
+
     var k: [Aes128Ocb.key_length]u8 = undefined;
     var nonce: [Aes128Ocb.nonce_length]u8 = undefined;
     var tag: [Aes128Ocb.tag_length]u8 = undefined;
@@ -299,6 +303,9 @@ test "AesOcb test vector 2" {
 }
 
 test "AesOcb test vector 3" {
+    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
+    if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest;
+
     var k: [Aes128Ocb.key_length]u8 = undefined;
     var nonce: [Aes128Ocb.nonce_length]u8 = undefined;
     var tag: [Aes128Ocb.tag_length]u8 = undefined;
@@ -321,6 +328,9 @@ test "AesOcb test vector 3" {
 }
 
 test "AesOcb test vector 4" {
+    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
+    if (builtin.zig_backend == .stage2_x86_64) return error.SkipZigTest;
+
     var k: [Aes128Ocb.key_length]u8 = undefined;
     var nonce: [Aes128Ocb.nonce_length]u8 = undefined;
     var tag: [Aes128Ocb.tag_length]u8 = undefined;

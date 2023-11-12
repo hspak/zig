@@ -2,17 +2,18 @@ const std = @import("std");
 const mem = std.mem;
 
 /// Print the string as a Zig identifier escaping it with @"" syntax if needed.
-pub fn formatId(
+fn formatId(
     bytes: []const u8,
     comptime fmt: []const u8,
     options: std.fmt.FormatOptions,
     writer: anytype,
 ) !void {
+    _ = fmt;
     if (isValidId(bytes)) {
         return writer.writeAll(bytes);
     }
     try writer.writeAll("@\"");
-    try formatEscapes(bytes, "", options, writer);
+    try stringEscape(bytes, "", options, writer);
     try writer.writeByte('"');
 }
 
@@ -22,7 +23,9 @@ pub fn fmtId(bytes: []const u8) std.fmt.Formatter(formatId) {
 }
 
 pub fn isValidId(bytes: []const u8) bool {
-    for (bytes) |c, i| {
+    if (bytes.len == 0) return false;
+    if (mem.eql(u8, bytes, "_")) return false;
+    for (bytes, 0..) |c, i| {
         switch (c) {
             '_', 'a'...'z', 'A'...'Z' => {},
             '0'...'9' => if (i == 0) return false,
@@ -32,15 +35,25 @@ pub fn isValidId(bytes: []const u8) bool {
     return std.zig.Token.getKeyword(bytes) == null;
 }
 
+test "isValidId" {
+    try std.testing.expect(!isValidId(""));
+    try std.testing.expect(isValidId("foobar"));
+    try std.testing.expect(!isValidId("a b c"));
+    try std.testing.expect(!isValidId("3d"));
+    try std.testing.expect(!isValidId("enum"));
+    try std.testing.expect(isValidId("i386"));
+}
+
 /// Print the string as escaped contents of a double quoted or single-quoted string.
 /// Format `{}` treats contents as a double-quoted string.
 /// Format `{'}` treats contents as a single-quoted string.
-pub fn formatEscapes(
+pub fn stringEscape(
     bytes: []const u8,
     comptime fmt: []const u8,
     options: std.fmt.FormatOptions,
     writer: anytype,
 ) !void {
+    _ = options;
     for (bytes) |byte| switch (byte) {
         '\n' => try writer.writeAll("\\n"),
         '\r' => try writer.writeAll("\\r"),
@@ -68,7 +81,7 @@ pub fn formatEscapes(
         // Use hex escapes for rest any unprintable characters.
         else => {
             try writer.writeAll("\\x");
-            try std.fmt.formatInt(byte, 16, false, .{ .width = 2, .fill = '0' }, writer);
+            try std.fmt.formatInt(byte, 16, .lower, .{ .width = 2, .fill = '0' }, writer);
         },
     };
 }
@@ -77,7 +90,7 @@ pub fn formatEscapes(
 /// The format specifier must be one of:
 ///  * `{}` treats contents as a double-quoted string.
 ///  * `{'}` treats contents as a single-quoted string.
-pub fn fmtEscapes(bytes: []const u8) std.fmt.Formatter(formatEscapes) {
+pub fn fmtEscapes(bytes: []const u8) std.fmt.Formatter(stringEscape) {
     return .{ .data = bytes };
 }
 

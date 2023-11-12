@@ -1,17 +1,12 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 // Translated from BLAKE3 reference implementation.
 // Source: https://github.com/BLAKE3-team/BLAKE3
 
 const std = @import("../std.zig");
+const builtin = @import("builtin");
 const fmt = std.fmt;
 const math = std.math;
 const mem = std.mem;
 const testing = std.testing;
-const Vector = std.meta.Vector;
 
 const ChunkIterator = struct {
     slice: []u8,
@@ -25,7 +20,7 @@ const ChunkIterator = struct {
     }
 
     fn next(self: *ChunkIterator) ?[]u8 {
-        const next_chunk = self.slice[0..math.min(self.chunk_len, self.slice.len)];
+        const next_chunk = self.slice[0..@min(self.chunk_len, self.slice.len)];
         self.slice = self.slice[next_chunk.len..];
         return if (next_chunk.len > 0) next_chunk else null;
     }
@@ -63,10 +58,10 @@ const DERIVE_KEY_CONTEXT: u8 = 1 << 5;
 const DERIVE_KEY_MATERIAL: u8 = 1 << 6;
 
 const CompressVectorized = struct {
-    const Lane = Vector(4, u32);
+    const Lane = @Vector(4, u32);
     const Rows = [4]Lane;
 
-    fn g(comptime even: bool, rows: *Rows, m: Lane) callconv(.Inline) void {
+    inline fn g(comptime even: bool, rows: *Rows, m: Lane) void {
         rows[0] +%= rows[1] +% m;
         rows[3] ^= rows[0];
         rows[3] = math.rotr(Lane, rows[3], if (even) 8 else 16);
@@ -75,13 +70,13 @@ const CompressVectorized = struct {
         rows[1] = math.rotr(Lane, rows[1], if (even) 7 else 12);
     }
 
-    fn diagonalize(rows: *Rows) callconv(.Inline) void {
+    inline fn diagonalize(rows: *Rows) void {
         rows[0] = @shuffle(u32, rows[0], undefined, [_]i32{ 3, 0, 1, 2 });
         rows[3] = @shuffle(u32, rows[3], undefined, [_]i32{ 2, 3, 0, 1 });
         rows[2] = @shuffle(u32, rows[2], undefined, [_]i32{ 1, 2, 3, 0 });
     }
 
-    fn undiagonalize(rows: *Rows) callconv(.Inline) void {
+    inline fn undiagonalize(rows: *Rows) void {
         rows[0] = @shuffle(u32, rows[0], undefined, [_]i32{ 1, 2, 3, 0 });
         rows[3] = @shuffle(u32, rows[3], undefined, [_]i32{ 2, 3, 0, 1 });
         rows[2] = @shuffle(u32, rows[2], undefined, [_]i32{ 3, 0, 1, 2 });
@@ -94,7 +89,7 @@ const CompressVectorized = struct {
         counter: u64,
         flags: u8,
     ) [16]u32 {
-        const md = Lane{ @truncate(u32, counter), @truncate(u32, counter >> 32), block_len, @as(u32, flags) };
+        const md = Lane{ @as(u32, @truncate(counter)), @as(u32, @truncate(counter >> 32)), block_len, @as(u32, flags) };
         var rows = Rows{ chaining_value[0..4].*, chaining_value[4..8].*, IV[0..4].*, md };
 
         var m = Rows{ block_words[0..4].*, block_words[4..8].*, block_words[8..12].*, block_words[12..16].* };
@@ -136,10 +131,10 @@ const CompressVectorized = struct {
 
         rows[0] ^= rows[2];
         rows[1] ^= rows[3];
-        rows[2] ^= Vector(4, u32){ chaining_value[0], chaining_value[1], chaining_value[2], chaining_value[3] };
-        rows[3] ^= Vector(4, u32){ chaining_value[4], chaining_value[5], chaining_value[6], chaining_value[7] };
+        rows[2] ^= @Vector(4, u32){ chaining_value[0], chaining_value[1], chaining_value[2], chaining_value[3] };
+        rows[3] ^= @Vector(4, u32){ chaining_value[4], chaining_value[5], chaining_value[6], chaining_value[7] };
 
-        return @bitCast([16]u32, rows);
+        return @as([16]u32, @bitCast(rows));
     }
 };
 
@@ -189,15 +184,15 @@ const CompressGeneric = struct {
             IV[1],
             IV[2],
             IV[3],
-            @truncate(u32, counter),
-            @truncate(u32, counter >> 32),
+            @as(u32, @truncate(counter)),
+            @as(u32, @truncate(counter >> 32)),
             block_len,
             flags,
         };
         for (MSG_SCHEDULE) |schedule| {
             round(&state, block_words, schedule);
         }
-        for (chaining_value) |_, i| {
+        for (chaining_value, 0..) |_, i| {
             state[i] ^= state[i + 8];
             state[i + 8] ^= chaining_value[i];
         }
@@ -205,16 +200,19 @@ const CompressGeneric = struct {
     }
 };
 
-const compress = if (std.Target.current.cpu.arch == .x86_64) CompressVectorized.compress else CompressGeneric.compress;
+const compress = if (builtin.cpu.arch == .x86_64 and builtin.zig_backend != .stage2_x86_64)
+    CompressVectorized.compress
+else
+    CompressGeneric.compress;
 
 fn first8Words(words: [16]u32) [8]u32 {
-    return @ptrCast(*const [8]u32, &words).*;
+    return @as(*const [8]u32, @ptrCast(&words)).*;
 }
 
 fn wordsFromLittleEndianBytes(comptime count: usize, bytes: [count * 4]u8) [count]u32 {
     var words: [count]u32 = undefined;
-    for (words) |*word, i| {
-        word.* = mem.readIntSliceLittle(u32, bytes[4 * i ..]);
+    for (&words, 0..) |*word, i| {
+        word.* = mem.readInt(u32, bytes[4 * i ..][0..4], .little);
     }
     return words;
 }
@@ -254,8 +252,8 @@ const Output = struct {
             var word_counter: usize = 0;
             while (out_word_it.next()) |out_word| {
                 var word_bytes: [4]u8 = undefined;
-                mem.writeIntLittle(u32, &word_bytes, words[word_counter]);
-                mem.copy(u8, out_word, word_bytes[0..out_word.len]);
+                mem.writeInt(u32, &word_bytes, words[word_counter], .little);
+                @memcpy(out_word, word_bytes[0..out_word.len]);
                 word_counter += 1;
             }
             output_block_counter += 1;
@@ -285,9 +283,9 @@ const ChunkState = struct {
 
     fn fillBlockBuf(self: *ChunkState, input: []const u8) []const u8 {
         const want = BLOCK_LEN - self.block_len;
-        const take = math.min(want, input.len);
-        mem.copy(u8, self.block[self.block_len..][0..take], input[0..take]);
-        self.block_len += @truncate(u8, take);
+        const take = @min(want, input.len);
+        @memcpy(self.block[self.block_len..][0..take], input[0..take]);
+        self.block_len += @as(u8, @truncate(take));
         return input[take..];
     }
 
@@ -338,8 +336,8 @@ fn parentOutput(
     flags: u8,
 ) Output {
     var block_words: [16]u32 align(16) = undefined;
-    mem.copy(u32, block_words[0..8], left_child_cv[0..]);
-    mem.copy(u32, block_words[8..], right_child_cv[0..]);
+    block_words[0..8].* = left_child_cv;
+    block_words[8..].* = right_child_cv;
     return Output{
         .input_chaining_value = key,
         .block_words = block_words,
@@ -394,6 +392,7 @@ pub const Blake3 = struct {
     /// Construct a new `Blake3` for the key derivation function. The context
     /// string should be hardcoded, globally unique, and application-specific.
     pub fn initKdf(context: []const u8, options: KdfOptions) Blake3 {
+        _ = options;
         var context_hasher = Blake3.init_internal(IV, DERIVE_KEY_CONTEXT);
         context_hasher.update(context);
         var context_key: [KEY_LEN]u8 = undefined;
@@ -402,10 +401,10 @@ pub const Blake3 = struct {
         return Blake3.init_internal(context_key_words, DERIVE_KEY_MATERIAL);
     }
 
-    pub fn hash(in: []const u8, out: []u8, options: Options) void {
-        var hasher = Blake3.init(options);
-        hasher.update(in);
-        hasher.final(out);
+    pub fn hash(b: []const u8, out: []u8, options: Options) void {
+        var d = Blake3.init(options);
+        d.update(b);
+        d.final(out);
     }
 
     fn pushCv(self: *Blake3, cv: [8]u32) void {
@@ -451,7 +450,7 @@ pub const Blake3 = struct {
 
             // Compress input bytes into the current chunk state.
             const want = CHUNK_LEN - self.chunk_state.len();
-            const take = math.min(want, input.len);
+            const take = @min(want, input.len);
             self.chunk_state.update(input[0..take]);
             input = input[take..];
         }
@@ -474,6 +473,18 @@ pub const Blake3 = struct {
             );
         }
         output.rootOutputBytes(out_slice);
+    }
+
+    pub const Error = error{};
+    pub const Writer = std.io.Writer(*Blake3, Error, write);
+
+    fn write(self: *Blake3, bytes: []const u8) Error!usize {
+        self.update(bytes);
+        return bytes.len;
+    }
+
+    pub fn writer(self: *Blake3) Writer {
+        return .{ .context = self };
     }
 };
 
@@ -641,18 +652,18 @@ const reference_test = ReferenceTest{
     },
 };
 
-fn testBlake3(hasher: *Blake3, input_len: usize, expected_hex: [262]u8) void {
+fn testBlake3(hasher: *Blake3, input_len: usize, expected_hex: [262]u8) !void {
     // Save initial state
     const initial_state = hasher.*;
 
     // Setup input pattern
     var input_pattern: [251]u8 = undefined;
-    for (input_pattern) |*e, i| e.* = @truncate(u8, i);
+    for (&input_pattern, 0..) |*e, i| e.* = @as(u8, @truncate(i));
 
     // Write repeating input pattern to hasher
     var input_counter = input_len;
     while (input_counter > 0) {
-        const update_len = math.min(input_counter, input_pattern.len);
+        const update_len = @min(input_counter, input_pattern.len);
         hasher.update(input_pattern[0..update_len]);
         input_counter -= update_len;
     }
@@ -664,20 +675,23 @@ fn testBlake3(hasher: *Blake3, input_len: usize, expected_hex: [262]u8) void {
     // Compare to expected value
     var expected_bytes: [expected_hex.len / 2]u8 = undefined;
     _ = fmt.hexToBytes(expected_bytes[0..], expected_hex[0..]) catch unreachable;
-    testing.expectEqual(actual_bytes, expected_bytes);
+    try testing.expectEqual(actual_bytes, expected_bytes);
 
     // Restore initial state
     hasher.* = initial_state;
 }
 
 test "BLAKE3 reference test cases" {
-    var hash = &Blake3.init(.{});
-    var keyed_hash = &Blake3.init(.{ .key = reference_test.key.* });
-    var derive_key = &Blake3.initKdf(reference_test.context_string, .{});
+    var hash_state = Blake3.init(.{});
+    const hash = &hash_state;
+    var keyed_hash_state = Blake3.init(.{ .key = reference_test.key.* });
+    const keyed_hash = &keyed_hash_state;
+    var derive_key_state = Blake3.initKdf(reference_test.context_string, .{});
+    const derive_key = &derive_key_state;
 
     for (reference_test.cases) |t| {
-        testBlake3(hash, t.input_len, t.hash.*);
-        testBlake3(keyed_hash, t.input_len, t.keyed_hash.*);
-        testBlake3(derive_key, t.input_len, t.derive_key.*);
+        try testBlake3(hash, t.input_len, t.hash.*);
+        try testBlake3(keyed_hash, t.input_len, t.keyed_hash.*);
+        try testBlake3(derive_key, t.input_len, t.derive_key.*);
     }
 }

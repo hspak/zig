@@ -1,10 +1,5 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("std.zig");
-const builtin = std.builtin;
+const builtin = @import("builtin");
 const testing = std.testing;
 
 pub fn once(comptime f: fn () void) Once(f) {
@@ -31,8 +26,8 @@ pub fn Once(comptime f: fn () void) type {
         fn callSlow(self: *@This()) void {
             @setCold(true);
 
-            const T = self.mutex.acquire();
-            defer T.release();
+            self.mutex.lock();
+            defer self.mutex.unlock();
 
             // The first thread to acquire the mutex gets to run the initializer
             if (!self.done) {
@@ -55,17 +50,18 @@ test "Once executes its function just once" {
         global_once.call();
         global_once.call();
     } else {
-        var threads: [10]*std.Thread = undefined;
-        defer for (threads) |handle| handle.wait();
+        var threads: [10]std.Thread = undefined;
+        defer for (threads) |handle| handle.join();
 
-        for (threads) |*handle| {
-            handle.* = try std.Thread.spawn(struct {
+        for (&threads) |*handle| {
+            handle.* = try std.Thread.spawn(.{}, struct {
                 fn thread_fn(x: u8) void {
+                    _ = x;
                     global_once.call();
                 }
-            }.thread_fn, 0);
+            }.thread_fn, .{0});
         }
     }
 
-    testing.expectEqual(@as(i32, 1), global_number);
+    try testing.expectEqual(@as(i32, 1), global_number);
 }

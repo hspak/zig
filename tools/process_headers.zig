@@ -32,7 +32,7 @@ const MultiArch = union(enum) {
     specific: Arch,
 
     fn eql(a: MultiArch, b: MultiArch) bool {
-        if (@enumToInt(a) != @enumToInt(b))
+        if (@intFromEnum(a) != @intFromEnum(b))
             return false;
         if (a != .specific)
             return true;
@@ -45,7 +45,7 @@ const MultiAbi = union(enum) {
     specific: Abi,
 
     fn eql(a: MultiAbi, b: MultiAbi) bool {
-        if (@enumToInt(a) != @enumToInt(b))
+        if (@intFromEnum(a) != @intFromEnum(b))
             return false;
         if (std.meta.Tag(MultiAbi)(a) != .specific)
             return true;
@@ -85,8 +85,18 @@ const glibc_targets = [_]LibCTarget{
         .abi = MultiAbi{ .specific = Abi.gnueabihf },
     },
     LibCTarget{
+        .name = "csky-linux-gnuabiv2",
+        .arch = MultiArch{ .specific = Arch.csky },
+        .abi = MultiAbi{ .specific = Abi.gnueabihf },
+    },
+    LibCTarget{
+        .name = "csky-linux-gnuabiv2-soft",
+        .arch = MultiArch{ .specific = Arch.csky },
+        .abi = MultiAbi{ .specific = Abi.gnueabi },
+    },
+    LibCTarget{
         .name = "i686-linux-gnu",
-        .arch = MultiArch{ .specific = Arch.i386 },
+        .arch = MultiArch{ .specific = Arch.x86 },
         .abi = MultiAbi{ .specific = Abi.gnu },
     },
     LibCTarget{
@@ -112,12 +122,22 @@ const glibc_targets = [_]LibCTarget{
     LibCTarget{
         .name = "mipsel-linux-gnu",
         .arch = MultiArch{ .specific = Arch.mipsel },
-        .abi = MultiAbi{ .specific = Abi.gnu },
+        .abi = MultiAbi{ .specific = Abi.gnueabihf },
+    },
+    LibCTarget{
+        .name = "mipsel-linux-gnu-soft",
+        .arch = MultiArch{ .specific = Arch.mipsel },
+        .abi = MultiAbi{ .specific = Abi.gnueabi },
     },
     LibCTarget{
         .name = "mips-linux-gnu",
         .arch = MultiArch{ .specific = Arch.mips },
-        .abi = MultiAbi{ .specific = Abi.gnu },
+        .abi = MultiAbi{ .specific = Abi.gnueabihf },
+    },
+    LibCTarget{
+        .name = "mips-linux-gnu-soft",
+        .arch = MultiArch{ .specific = Arch.mips },
+        .abi = MultiAbi{ .specific = Abi.gnueabi },
     },
     LibCTarget{
         .name = "powerpc64le-linux-gnu",
@@ -132,7 +152,12 @@ const glibc_targets = [_]LibCTarget{
     LibCTarget{
         .name = "powerpc-linux-gnu",
         .arch = MultiArch{ .specific = Arch.powerpc },
-        .abi = MultiAbi{ .specific = Abi.gnu },
+        .abi = MultiAbi{ .specific = Abi.gnueabihf },
+    },
+    LibCTarget{
+        .name = "powerpc-linux-gnu-soft",
+        .arch = MultiArch{ .specific = Arch.powerpc },
+        .abi = MultiAbi{ .specific = Abi.gnueabi },
     },
     LibCTarget{
         .name = "riscv64-linux-gnu-rv64imac-lp64",
@@ -144,14 +169,15 @@ const glibc_targets = [_]LibCTarget{
         .arch = MultiArch{ .specific = Arch.s390x },
         .abi = MultiAbi{ .specific = Abi.gnu },
     },
+    // It's unclear which zig target this glibc sparcv9 target maps to.
+    //LibCTarget{
+    //    .name = "sparcv9-linux-gnu",
+    //    .arch = MultiArch{ .specific = Arch.sparc },
+    //    .abi = MultiAbi{ .specific = Abi.gnu },
+    //},
     LibCTarget{
         .name = "sparc64-linux-gnu",
-        .arch = MultiArch{ .specific = Arch.sparc },
-        .abi = MultiAbi{ .specific = Abi.gnu },
-    },
-    LibCTarget{
-        .name = "sparcv9-linux-gnu",
-        .arch = MultiArch{ .specific = Arch.sparcv9 },
+        .arch = MultiArch{ .specific = Arch.sparc64 },
         .abi = MultiAbi{ .specific = Abi.gnu },
     },
     LibCTarget{
@@ -163,6 +189,11 @@ const glibc_targets = [_]LibCTarget{
         .name = "x86_64-linux-gnu-x32",
         .arch = MultiArch{ .specific = Arch.x86_64 },
         .abi = MultiAbi{ .specific = Abi.gnux32 },
+    },
+    LibCTarget{
+        .name = "m68k-linux-gnu",
+        .arch = MultiArch{ .specific = Arch.m68k },
+        .abi = MultiAbi{ .specific = Abi.gnu },
     },
 };
 
@@ -179,7 +210,7 @@ const musl_targets = [_]LibCTarget{
     },
     LibCTarget{
         .name = "i386",
-        .arch = MultiArch{ .specific = .i386 },
+        .arch = MultiArch{ .specific = .x86 },
         .abi = MultiAbi.musl,
     },
     LibCTarget{
@@ -217,6 +248,11 @@ const musl_targets = [_]LibCTarget{
         .arch = MultiArch{ .specific = .x86_64 },
         .abi = MultiAbi.musl,
     },
+    LibCTarget{
+        .name = "m68k",
+        .arch = MultiArch{ .specific = .m68k },
+        .abi = MultiAbi{ .specific = .musl },
+    },
 };
 
 const DestTarget = struct {
@@ -224,17 +260,22 @@ const DestTarget = struct {
     os: OsTag,
     abi: Abi,
 
-    fn hash(a: DestTarget) u32 {
-        return @enumToInt(a.arch) +%
-            (@enumToInt(a.os) *% @as(u32, 4202347608)) +%
-            (@enumToInt(a.abi) *% @as(u32, 4082223418));
-    }
+    const HashContext = struct {
+        pub fn hash(self: @This(), a: DestTarget) u32 {
+            _ = self;
+            return @intFromEnum(a.arch) +%
+                (@intFromEnum(a.os) *% @as(u32, 4202347608)) +%
+                (@intFromEnum(a.abi) *% @as(u32, 4082223418));
+        }
 
-    fn eql(a: DestTarget, b: DestTarget) bool {
-        return a.arch.eql(b.arch) and
-            a.os == b.os and
-            a.abi == b.abi;
-    }
+        pub fn eql(self: @This(), a: DestTarget, b: DestTarget, b_index: usize) bool {
+            _ = self;
+            _ = b_index;
+            return a.arch.eql(b.arch) and
+                a.os == b.os and
+                a.abi == b.abi;
+        }
+    };
 };
 
 const Contents = struct {
@@ -244,12 +285,13 @@ const Contents = struct {
     is_generic: bool,
 
     fn hitCountLessThan(context: void, lhs: *const Contents, rhs: *const Contents) bool {
+        _ = context;
         return lhs.hit_count < rhs.hit_count;
     }
 };
 
 const HashToContents = std.StringHashMap(Contents);
-const TargetToHash = std.ArrayHashMap(DestTarget, []const u8, DestTarget.hash, DestTarget.eql, true);
+const TargetToHash = std.ArrayHashMap(DestTarget, []const u8, DestTarget.HashContext, true);
 const PathTable = std.StringHashMap(*TargetToHash);
 
 const LibCVendor = enum {
@@ -259,7 +301,7 @@ const LibCVendor = enum {
 
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    const allocator = &arena.allocator;
+    const allocator = arena.allocator();
     const args = try std.process.argsAlloc(allocator);
     var search_paths = std.ArrayList([]const u8).init(allocator);
     var opt_out_dir: ?[]const u8 = null;
@@ -270,7 +312,7 @@ pub fn main() !void {
         if (std.mem.eql(u8, args[arg_i], "--help"))
             usageAndExit(args[0]);
         if (arg_i + 1 >= args.len) {
-            std.debug.warn("expected argument after '{s}'\n", .{args[arg_i]});
+            std.debug.print("expected argument after '{s}'\n", .{args[arg_i]});
             usageAndExit(args[0]);
         }
 
@@ -283,7 +325,7 @@ pub fn main() !void {
             assert(opt_abi == null);
             opt_abi = args[arg_i + 1];
         } else {
-            std.debug.warn("unrecognized argument: {s}\n", .{args[arg_i]});
+            std.debug.print("unrecognized argument: {s}\n", .{args[arg_i]});
             usageAndExit(args[0]);
         }
 
@@ -297,7 +339,7 @@ pub fn main() !void {
     else if (std.mem.eql(u8, abi_name, "glibc"))
         LibCVendor.glibc
     else {
-        std.debug.warn("unrecognized C ABI: {s}\n", .{abi_name});
+        std.debug.print("unrecognized C ABI: {s}\n", .{abi_name});
         usageAndExit(args[0]);
     };
     const generic_name = try std.fmt.allocPrint(allocator, "generic-{s}", .{abi_name});
@@ -340,20 +382,20 @@ pub fn main() !void {
             try dir_stack.append(target_include_dir);
 
             while (dir_stack.popOrNull()) |full_dir_name| {
-                var dir = std.fs.cwd().openDir(full_dir_name, .{ .iterate = true }) catch |err| switch (err) {
+                var iterable_dir = std.fs.cwd().openIterableDir(full_dir_name, .{}) catch |err| switch (err) {
                     error.FileNotFound => continue :search,
                     error.AccessDenied => continue :search,
                     else => return err,
                 };
-                defer dir.close();
+                defer iterable_dir.close();
 
-                var dir_it = dir.iterate();
+                var dir_it = iterable_dir.iterate();
 
                 while (try dir_it.next()) |entry| {
                     const full_path = try std.fs.path.join(allocator, &[_][]const u8{ full_dir_name, entry.name });
                     switch (entry.kind) {
-                        .Directory => try dir_stack.append(full_path),
-                        .File => {
+                        .directory => try dir_stack.append(full_path),
+                        .file => {
                             const rel_path = try std.fs.path.relative(allocator, target_include_dir, full_path);
                             const max_size = 2 * 1024 * 1024 * 1024;
                             const raw_bytes = try std.fs.cwd().readFileAlloc(allocator, full_path, max_size);
@@ -367,14 +409,14 @@ pub fn main() !void {
                             const gop = try hash_to_contents.getOrPut(hash);
                             if (gop.found_existing) {
                                 max_bytes_saved += raw_bytes.len;
-                                gop.entry.value.hit_count += 1;
-                                std.debug.warn("duplicate: {s} {s} ({:2})\n", .{
+                                gop.value_ptr.hit_count += 1;
+                                std.debug.print("duplicate: {s} {s} ({:2})\n", .{
                                     libc_target.name,
                                     rel_path,
                                     std.fmt.fmtIntSizeDec(raw_bytes.len),
                                 });
                             } else {
-                                gop.entry.value = Contents{
+                                gop.value_ptr.* = Contents{
                                     .bytes = trimmed,
                                     .hit_count = 1,
                                     .hash = hash,
@@ -382,24 +424,24 @@ pub fn main() !void {
                                 };
                             }
                             const path_gop = try path_table.getOrPut(rel_path);
-                            const target_to_hash = if (path_gop.found_existing) path_gop.entry.value else blk: {
+                            const target_to_hash = if (path_gop.found_existing) path_gop.value_ptr.* else blk: {
                                 const ptr = try allocator.create(TargetToHash);
                                 ptr.* = TargetToHash.init(allocator);
-                                path_gop.entry.value = ptr;
+                                path_gop.value_ptr.* = ptr;
                                 break :blk ptr;
                             };
                             try target_to_hash.putNoClobber(dest_target, hash);
                         },
-                        else => std.debug.warn("warning: weird file: {s}\n", .{full_path}),
+                        else => std.debug.print("warning: weird file: {s}\n", .{full_path}),
                     }
                 }
             }
             break;
         } else {
-            std.debug.warn("warning: libc target not found: {s}\n", .{libc_target.name});
+            std.debug.print("warning: libc target not found: {s}\n", .{libc_target.name});
         }
     }
-    std.debug.warn("summary: {:2} could be reduced to {:2}\n", .{
+    std.debug.print("summary: {:2} could be reduced to {:2}\n", .{
         std.fmt.fmtIntSizeDec(total_bytes),
         std.fmt.fmtIntSizeDec(total_bytes - max_bytes_saved),
     });
@@ -413,17 +455,17 @@ pub fn main() !void {
     while (path_it.next()) |path_kv| {
         var contents_list = std.ArrayList(*Contents).init(allocator);
         {
-            var hash_it = path_kv.value.iterator();
+            var hash_it = path_kv.value_ptr.*.iterator();
             while (hash_it.next()) |hash_kv| {
-                const contents = &hash_to_contents.getEntry(hash_kv.value).?.value;
+                const contents = hash_to_contents.getPtr(hash_kv.value_ptr.*).?;
                 try contents_list.append(contents);
             }
         }
-        std.sort.sort(*Contents, contents_list.items, {}, Contents.hitCountLessThan);
+        std.mem.sort(*Contents, contents_list.items, {}, Contents.hitCountLessThan);
         const best_contents = contents_list.popOrNull().?;
         if (best_contents.hit_count > 1) {
             // worth it to make it generic
-            const full_path = try std.fs.path.join(allocator, &[_][]const u8{ out_dir, generic_name, path_kv.key });
+            const full_path = try std.fs.path.join(allocator, &[_][]const u8{ out_dir, generic_name, path_kv.key_ptr.* });
             try std.fs.cwd().makePath(std.fs.path.dirname(full_path).?);
             try std.fs.cwd().writeFile(full_path, best_contents.bytes);
             best_contents.is_generic = true;
@@ -431,19 +473,19 @@ pub fn main() !void {
                 if (contender.hit_count > 1) {
                     const this_missed_bytes = contender.hit_count * contender.bytes.len;
                     missed_opportunity_bytes += this_missed_bytes;
-                    std.debug.warn("Missed opportunity ({:2}): {s}\n", .{
+                    std.debug.print("Missed opportunity ({:2}): {s}\n", .{
                         std.fmt.fmtIntSizeDec(this_missed_bytes),
-                        path_kv.key,
+                        path_kv.key_ptr.*,
                     });
                 } else break;
             }
         }
-        var hash_it = path_kv.value.iterator();
+        var hash_it = path_kv.value_ptr.*.iterator();
         while (hash_it.next()) |hash_kv| {
-            const contents = &hash_to_contents.getEntry(hash_kv.value).?.value;
+            const contents = hash_to_contents.get(hash_kv.value_ptr.*).?;
             if (contents.is_generic) continue;
 
-            const dest_target = hash_kv.key;
+            const dest_target = hash_kv.key_ptr.*;
             const arch_name = switch (dest_target.arch) {
                 .specific => |a| @tagName(a),
                 else => @tagName(dest_target.arch),
@@ -453,7 +495,7 @@ pub fn main() !void {
                 @tagName(dest_target.os),
                 @tagName(dest_target.abi),
             });
-            const full_path = try std.fs.path.join(allocator, &[_][]const u8{ out_dir, out_subpath, path_kv.key });
+            const full_path = try std.fs.path.join(allocator, &[_][]const u8{ out_dir, out_subpath, path_kv.key_ptr.* });
             try std.fs.cwd().makePath(std.fs.path.dirname(full_path).?);
             try std.fs.cwd().writeFile(full_path, contents.bytes);
         }
@@ -461,10 +503,10 @@ pub fn main() !void {
 }
 
 fn usageAndExit(arg0: []const u8) noreturn {
-    std.debug.warn("Usage: {s} [--search-path <dir>] --out <dir> --abi <name>\n", .{arg0});
-    std.debug.warn("--search-path can be used any number of times.\n", .{});
-    std.debug.warn("    subdirectories of search paths look like, e.g. x86_64-linux-gnu\n", .{});
-    std.debug.warn("--out is a dir that will be created, and populated with the results\n", .{});
-    std.debug.warn("--abi is either musl or glibc\n", .{});
+    std.debug.print("Usage: {s} [--search-path <dir>] --out <dir> --abi <name>\n", .{arg0});
+    std.debug.print("--search-path can be used any number of times.\n", .{});
+    std.debug.print("    subdirectories of search paths look like, e.g. x86_64-linux-gnu\n", .{});
+    std.debug.print("--out is a dir that will be created, and populated with the results\n", .{});
+    std.debug.print("--abi is either musl or glibc\n", .{});
     std.process.exit(1);
 }

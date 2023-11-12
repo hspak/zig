@@ -1,74 +1,153 @@
-const Package = @This();
+pub const Module = @import("Package/Module.zig");
+pub const Fetch = @import("Package/Fetch.zig");
+pub const build_zig_basename = "build.zig";
+pub const Manifest = @import("Package/Manifest.zig");
 
-const std = @import("std");
-const fs = std.fs;
-const mem = std.mem;
-const Allocator = mem.Allocator;
+pub const Path = struct {
+    root_dir: Cache.Directory,
+    /// The path, relative to the root dir, that this `Path` represents.
+    /// Empty string means the root_dir is the path.
+    sub_path: []const u8 = "",
 
-const Compilation = @import("Compilation.zig");
-
-pub const Table = std.StringHashMapUnmanaged(*Package);
-
-root_src_directory: Compilation.Directory,
-/// Relative to `root_src_directory`. May contain path separators.
-root_src_path: []const u8,
-table: Table = .{},
-parent: ?*Package = null,
-
-/// Allocate a Package. No references to the slices passed are kept.
-pub fn create(
-    gpa: *Allocator,
-    /// Null indicates the current working directory
-    root_src_dir_path: ?[]const u8,
-    /// Relative to root_src_dir_path
-    root_src_path: []const u8,
-) !*Package {
-    const ptr = try gpa.create(Package);
-    errdefer gpa.destroy(ptr);
-
-    const owned_dir_path = if (root_src_dir_path) |p| try gpa.dupe(u8, p) else null;
-    errdefer if (owned_dir_path) |p| gpa.free(p);
-
-    const owned_src_path = try gpa.dupe(u8, root_src_path);
-    errdefer gpa.free(owned_src_path);
-
-    ptr.* = .{
-        .root_src_directory = .{
-            .path = owned_dir_path,
-            .handle = if (owned_dir_path) |p| try fs.cwd().openDir(p, .{}) else fs.cwd(),
-        },
-        .root_src_path = owned_src_path,
-    };
-
-    return ptr;
-}
-
-/// Free all memory associated with this package and recursively call destroy
-/// on all packages in its table
-pub fn destroy(pkg: *Package, gpa: *Allocator) void {
-    gpa.free(pkg.root_src_path);
-
-    // If root_src_directory.path is null then the handle is the cwd()
-    // which shouldn't be closed.
-    if (pkg.root_src_directory.path) |p| {
-        gpa.free(p);
-        pkg.root_src_directory.handle.close();
+    pub fn clone(p: Path, arena: Allocator) Allocator.Error!Path {
+        return .{
+            .root_dir = try p.root_dir.clone(arena),
+            .sub_path = try arena.dupe(u8, p.sub_path),
+        };
     }
 
-    {
-        var it = pkg.table.iterator();
-        while (it.next()) |kv| {
-            kv.value.destroy(gpa);
-            gpa.free(kv.key);
+    pub fn cwd() Path {
+        return .{ .root_dir = Cache.Directory.cwd() };
+    }
+
+    pub fn join(p: Path, arena: Allocator, sub_path: []const u8) Allocator.Error!Path {
+        if (sub_path.len == 0) return p;
+        const parts: []const []const u8 =
+            if (p.sub_path.len == 0) &.{sub_path} else &.{ p.sub_path, sub_path };
+        return .{
+            .root_dir = p.root_dir,
+            .sub_path = try fs.path.join(arena, parts),
+        };
+    }
+
+    pub fn resolvePosix(p: Path, arena: Allocator, sub_path: []const u8) Allocator.Error!Path {
+        if (sub_path.len == 0) return p;
+        return .{
+            .root_dir = p.root_dir,
+            .sub_path = try fs.path.resolvePosix(arena, &.{ p.sub_path, sub_path }),
+        };
+    }
+
+    pub fn joinString(p: Path, allocator: Allocator, sub_path: []const u8) Allocator.Error![]u8 {
+        const parts: []const []const u8 =
+            if (p.sub_path.len == 0) &.{sub_path} else &.{ p.sub_path, sub_path };
+        return p.root_dir.join(allocator, parts);
+    }
+
+    pub fn joinStringZ(p: Path, allocator: Allocator, sub_path: []const u8) Allocator.Error![:0]u8 {
+        const parts: []const []const u8 =
+            if (p.sub_path.len == 0) &.{sub_path} else &.{ p.sub_path, sub_path };
+        return p.root_dir.joinZ(allocator, parts);
+    }
+
+    pub fn openFile(
+        p: Path,
+        sub_path: []const u8,
+        flags: fs.File.OpenFlags,
+    ) !fs.File {
+        var buf: [fs.MAX_PATH_BYTES]u8 = undefined;
+        const joined_path = if (p.sub_path.len == 0) sub_path else p: {
+            break :p std.fmt.bufPrint(&buf, "{s}" ++ fs.path.sep_str ++ "{s}", .{
+                p.sub_path, sub_path,
+            }) catch return error.NameTooLong;
+        };
+        return p.root_dir.handle.openFile(joined_path, flags);
+    }
+
+    pub fn makeOpenPath(p: Path, sub_path: []const u8, opts: fs.OpenDirOptions) !fs.Dir {
+        var buf: [fs.MAX_PATH_BYTES]u8 = undefined;
+        const joined_path = if (p.sub_path.len == 0) sub_path else p: {
+            break :p std.fmt.bufPrint(&buf, "{s}" ++ fs.path.sep_str ++ "{s}", .{
+                p.sub_path, sub_path,
+            }) catch return error.NameTooLong;
+        };
+        return p.root_dir.handle.makeOpenPath(joined_path, opts);
+    }
+
+    pub fn statFile(p: Path, sub_path: []const u8) !fs.Dir.Stat {
+        var buf: [fs.MAX_PATH_BYTES]u8 = undefined;
+        const joined_path = if (p.sub_path.len == 0) sub_path else p: {
+            break :p std.fmt.bufPrint(&buf, "{s}" ++ fs.path.sep_str ++ "{s}", .{
+                p.sub_path, sub_path,
+            }) catch return error.NameTooLong;
+        };
+        return p.root_dir.handle.statFile(joined_path);
+    }
+
+    pub fn atomicFile(
+        p: Path,
+        sub_path: []const u8,
+        options: fs.Dir.AtomicFileOptions,
+    ) !fs.AtomicFile {
+        var buf: [fs.MAX_PATH_BYTES]u8 = undefined;
+        const joined_path = if (p.sub_path.len == 0) sub_path else p: {
+            break :p std.fmt.bufPrint(&buf, "{s}" ++ fs.path.sep_str ++ "{s}", .{
+                p.sub_path, sub_path,
+            }) catch return error.NameTooLong;
+        };
+        return p.root_dir.handle.atomicFile(joined_path, options);
+    }
+
+    pub fn access(p: Path, sub_path: []const u8, flags: fs.File.OpenFlags) !void {
+        var buf: [fs.MAX_PATH_BYTES]u8 = undefined;
+        const joined_path = if (p.sub_path.len == 0) sub_path else p: {
+            break :p std.fmt.bufPrint(&buf, "{s}" ++ fs.path.sep_str ++ "{s}", .{
+                p.sub_path, sub_path,
+            }) catch return error.NameTooLong;
+        };
+        return p.root_dir.handle.access(joined_path, flags);
+    }
+
+    pub fn format(
+        self: Path,
+        comptime fmt_string: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        if (fmt_string.len == 1) {
+            // Quote-escape the string.
+            const stringEscape = std.zig.fmt.stringEscape;
+            const f = switch (fmt_string[0]) {
+                'q' => "",
+                '\'' => '\'',
+                else => @compileError("unsupported format string: " ++ fmt_string),
+            };
+            if (self.root_dir.path) |p| {
+                try stringEscape(p, f, options, writer);
+                if (self.sub_path.len > 0) try stringEscape(fs.path.sep_str, f, options, writer);
+            }
+            if (self.sub_path.len > 0) {
+                try stringEscape(self.sub_path, f, options, writer);
+            }
+            return;
+        }
+        if (fmt_string.len > 0)
+            std.fmt.invalidFmtError(fmt_string, self);
+        if (self.root_dir.path) |p| {
+            try writer.writeAll(p);
+            try writer.writeAll(fs.path.sep_str);
+        }
+        if (self.sub_path.len > 0) {
+            try writer.writeAll(self.sub_path);
+            try writer.writeAll(fs.path.sep_str);
         }
     }
+};
 
-    pkg.table.deinit(gpa);
-    gpa.destroy(pkg);
-}
-
-pub fn add(pkg: *Package, gpa: *Allocator, name: []const u8, package: *Package) !void {
-    try pkg.table.ensureCapacity(gpa, pkg.table.count() + 1);
-    const name_dupe = try mem.dupe(gpa, u8, name);
-    pkg.table.putAssumeCapacityNoClobber(name_dupe, package);
-}
+const Package = @This();
+const builtin = @import("builtin");
+const std = @import("std");
+const fs = std.fs;
+const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
+const Cache = std.Build.Cache;

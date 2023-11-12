@@ -7,46 +7,51 @@
 # LLD_LIBRARIES
 
 find_path(LLD_INCLUDE_DIRS NAMES lld/Common/Driver.h
+    HINTS ${LLVM_INCLUDE_DIRS}
     PATHS
-        /usr/lib/llvm-11/include
-        /usr/local/llvm110/include
-        /usr/local/llvm11/include
+        /usr/lib/llvm-17/include
+        /usr/local/llvm170/include
+        /usr/local/llvm17/include
+        /usr/local/opt/llvm@17/include
+        /opt/homebrew/opt/llvm@17/include
         /mingw64/include)
 
-find_library(LLD_LIBRARY NAMES lld-11.0 lld110 lld
+find_library(LLD_LIBRARY NAMES lld-17.0 lld170 lld NAMES_PER_DIR
+    HINTS ${LLVM_LIBDIRS}
     PATHS
-        /usr/lib/llvm-11/lib
-        /usr/local/llvm110/lib
-        /usr/local/llvm11/lib
+        /usr/lib/llvm-17/lib
+        /usr/local/llvm170/lib
+        /usr/local/llvm17/lib
+        /usr/local/opt/llvm@17/lib
+        /opt/homebrew/opt/llvm@17/lib
 )
 if(EXISTS ${LLD_LIBRARY})
     set(LLD_LIBRARIES ${LLD_LIBRARY})
 else()
     macro(FIND_AND_ADD_LLD_LIB _libname_)
         string(TOUPPER ${_libname_} _prettylibname_)
-        find_library(LLD_${_prettylibname_}_LIB NAMES ${_libname_}
+        find_library(LLD_${_prettylibname_}_LIB NAMES ${_libname_} NAMES_PER_DIR
+            HINTS ${LLVM_LIBDIRS}
             PATHS
                 ${LLD_LIBDIRS}
-                /usr/lib/llvm-11/lib
-                /usr/local/llvm110/lib
-                /usr/local/llvm11/lib
+                /usr/lib/llvm-17/lib
+                /usr/local/llvm170/lib
+                /usr/local/llvm17/lib
+                /usr/local/opt/llvm@17/lib
+                /opt/homebrew/opt/llvm@17/lib
                 /mingw64/lib
                 /c/msys64/mingw64/lib
                 c:/msys64/mingw64/lib)
-            if(LLD_${_prettylibname_}_LIB)
-                set(LLD_LIBRARIES ${LLD_LIBRARIES} ${LLD_${_prettylibname_}_LIB})
+        if(LLD_${_prettylibname_}_LIB)
+            set(LLD_LIBRARIES ${LLD_LIBRARIES} ${LLD_${_prettylibname_}_LIB})
         endif()
     endmacro(FIND_AND_ADD_LLD_LIB)
 
-    FIND_AND_ADD_LLD_LIB(lldDriver)
     FIND_AND_ADD_LLD_LIB(lldMinGW)
     FIND_AND_ADD_LLD_LIB(lldELF)
     FIND_AND_ADD_LLD_LIB(lldCOFF)
-    FIND_AND_ADD_LLD_LIB(lldMachO)
     FIND_AND_ADD_LLD_LIB(lldWasm)
-    FIND_AND_ADD_LLD_LIB(lldReaderWriter)
-    FIND_AND_ADD_LLD_LIB(lldCore)
-    FIND_AND_ADD_LLD_LIB(lldYAML)
+    FIND_AND_ADD_LLD_LIB(lldMachO)
     FIND_AND_ADD_LLD_LIB(lldCommon)
 endif()
 

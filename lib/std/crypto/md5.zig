@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("../std.zig");
 const mem = std.mem;
 const math = std.math;
@@ -45,6 +40,7 @@ pub const Md5 = struct {
     total_len: u64,
 
     pub fn init(options: Options) Self {
+        _ = options;
         return Self{
             .s = [_]u32{
                 0x67452301,
@@ -70,7 +66,7 @@ pub const Md5 = struct {
         // Partial buffer exists from previous update. Copy into buffer then hash.
         if (d.buf_len != 0 and d.buf_len + b.len >= 64) {
             off += 64 - d.buf_len;
-            mem.copy(u8, d.buf[d.buf_len..], b[0..off]);
+            @memcpy(d.buf[d.buf_len..][0..off], b[0..off]);
 
             d.round(&d.buf);
             d.buf_len = 0;
@@ -82,8 +78,9 @@ pub const Md5 = struct {
         }
 
         // Copy any remainder for next pass.
-        mem.copy(u8, d.buf[d.buf_len..], b[off..]);
-        d.buf_len += @intCast(u8, b[off..].len);
+        const b_slice = b[off..];
+        @memcpy(d.buf[d.buf_len..][0..b_slice.len], b_slice);
+        d.buf_len += @as(u8, @intCast(b_slice.len));
 
         // Md5 uses the bottom 64-bits for length padding
         d.total_len +%= b.len;
@@ -91,7 +88,7 @@ pub const Md5 = struct {
 
     pub fn final(d: *Self, out: *[digest_length]u8) void {
         // The buffer here will never be completely full.
-        mem.set(u8, d.buf[d.buf_len..], 0);
+        @memset(d.buf[d.buf_len..], 0);
 
         // Append padding bits.
         d.buf[d.buf_len] = 0x80;
@@ -100,22 +97,22 @@ pub const Md5 = struct {
         // > 448 mod 512 so need to add an extra round to wrap around.
         if (64 - d.buf_len < 8) {
             d.round(d.buf[0..]);
-            mem.set(u8, d.buf[0..], 0);
+            @memset(d.buf[0..], 0);
         }
 
         // Append message length.
         var i: usize = 1;
         var len = d.total_len >> 5;
-        d.buf[56] = @intCast(u8, d.total_len & 0x1f) << 3;
+        d.buf[56] = @as(u8, @intCast(d.total_len & 0x1f)) << 3;
         while (i < 8) : (i += 1) {
-            d.buf[56 + i] = @intCast(u8, len & 0xff);
+            d.buf[56 + i] = @as(u8, @intCast(len & 0xff));
             len >>= 8;
         }
 
         d.round(d.buf[0..]);
 
-        for (d.s) |s, j| {
-            mem.writeIntLittle(u32, out[4 * j ..][0..4], s);
+        for (d.s, 0..) |s, j| {
+            mem.writeInt(u32, out[4 * j ..][0..4], s, .little);
         }
     }
 
@@ -124,12 +121,7 @@ pub const Md5 = struct {
 
         var i: usize = 0;
         while (i < 16) : (i += 1) {
-            // NOTE: Performing or's separately improves perf by ~10%
-            s[i] = 0;
-            s[i] |= @as(u32, b[i * 4 + 0]);
-            s[i] |= @as(u32, b[i * 4 + 1]) << 8;
-            s[i] |= @as(u32, b[i * 4 + 2]) << 16;
-            s[i] |= @as(u32, b[i * 4 + 3]) << 24;
+            s[i] = mem.readInt(u32, b[i * 4 ..][0..4], .little);
         }
 
         var v: [4]u32 = [_]u32{
@@ -241,13 +233,13 @@ pub const Md5 = struct {
 const htest = @import("test.zig");
 
 test "md5 single" {
-    htest.assertEqualHash(Md5, "d41d8cd98f00b204e9800998ecf8427e", "");
-    htest.assertEqualHash(Md5, "0cc175b9c0f1b6a831c399e269772661", "a");
-    htest.assertEqualHash(Md5, "900150983cd24fb0d6963f7d28e17f72", "abc");
-    htest.assertEqualHash(Md5, "f96b697d7cb7938d525a2f31aaf161d0", "message digest");
-    htest.assertEqualHash(Md5, "c3fcd3d76192e4007dfb496cca67e13b", "abcdefghijklmnopqrstuvwxyz");
-    htest.assertEqualHash(Md5, "d174ab98d277d9f5a5611c2c9f419d9f", "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
-    htest.assertEqualHash(Md5, "57edf4a22be3c955ac49da2e2107b67a", "12345678901234567890123456789012345678901234567890123456789012345678901234567890");
+    try htest.assertEqualHash(Md5, "d41d8cd98f00b204e9800998ecf8427e", "");
+    try htest.assertEqualHash(Md5, "0cc175b9c0f1b6a831c399e269772661", "a");
+    try htest.assertEqualHash(Md5, "900150983cd24fb0d6963f7d28e17f72", "abc");
+    try htest.assertEqualHash(Md5, "f96b697d7cb7938d525a2f31aaf161d0", "message digest");
+    try htest.assertEqualHash(Md5, "c3fcd3d76192e4007dfb496cca67e13b", "abcdefghijklmnopqrstuvwxyz");
+    try htest.assertEqualHash(Md5, "d174ab98d277d9f5a5611c2c9f419d9f", "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
+    try htest.assertEqualHash(Md5, "57edf4a22be3c955ac49da2e2107b67a", "12345678901234567890123456789012345678901234567890123456789012345678901234567890");
 }
 
 test "md5 streaming" {
@@ -255,12 +247,12 @@ test "md5 streaming" {
     var out: [16]u8 = undefined;
 
     h.final(out[0..]);
-    htest.assertEqual("d41d8cd98f00b204e9800998ecf8427e", out[0..]);
+    try htest.assertEqual("d41d8cd98f00b204e9800998ecf8427e", out[0..]);
 
     h = Md5.init(.{});
     h.update("abc");
     h.final(out[0..]);
-    htest.assertEqual("900150983cd24fb0d6963f7d28e17f72", out[0..]);
+    try htest.assertEqual("900150983cd24fb0d6963f7d28e17f72", out[0..]);
 
     h = Md5.init(.{});
     h.update("a");
@@ -268,7 +260,7 @@ test "md5 streaming" {
     h.update("c");
     h.final(out[0..]);
 
-    htest.assertEqual("900150983cd24fb0d6963f7d28e17f72", out[0..]);
+    try htest.assertEqual("900150983cd24fb0d6963f7d28e17f72", out[0..]);
 }
 
 test "md5 aligned final" {

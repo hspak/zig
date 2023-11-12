@@ -1,14 +1,10 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("../std.zig");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
 const testing = std.testing;
 const mem = std.mem;
 const Loop = std.event.Loop;
+const Allocator = std.mem.Allocator;
 
 /// Thread-safe async/await lock.
 /// Functions which are waiting for the lock are suspended, and
@@ -225,12 +221,12 @@ test "std.event.RwLock" {
     var lock = RwLock.init();
     defer lock.deinit();
 
-    const handle = testLock(std.heap.page_allocator, &lock);
+    _ = testLock(std.heap.page_allocator, &lock);
 
-    const expected_result = [1]i32{shared_it_count * @intCast(i32, shared_test_data.len)} ** shared_test_data.len;
-    testing.expectEqualSlices(i32, expected_result, shared_test_data);
+    const expected_result = [1]i32{shared_it_count * @as(i32, @intCast(shared_test_data.len))} ** shared_test_data.len;
+    try testing.expectEqualSlices(i32, expected_result, shared_test_data);
 }
-fn testLock(allocator: *Allocator, lock: *RwLock) callconv(.Async) void {
+fn testLock(allocator: Allocator, lock: *RwLock) callconv(.Async) void {
     var read_nodes: [100]Loop.NextTickNode = undefined;
     for (read_nodes) |*read_node| {
         const frame = allocator.create(@Frame(readRunner)) catch @panic("memory");
@@ -248,12 +244,12 @@ fn testLock(allocator: *Allocator, lock: *RwLock) callconv(.Async) void {
     }
 
     for (write_nodes) |*write_node| {
-        const casted = @ptrCast(*const @Frame(writeRunner), write_node.data);
+        const casted = @as(*const @Frame(writeRunner), @ptrCast(write_node.data));
         await casted;
         allocator.destroy(casted);
     }
     for (read_nodes) |*read_node| {
-        const casted = @ptrCast(*const @Frame(readRunner), read_node.data);
+        const casted = @as(*const @Frame(readRunner), @ptrCast(read_node.data));
         await casted;
         allocator.destroy(casted);
     }
@@ -264,7 +260,7 @@ var shared_test_data = [1]i32{0} ** 10;
 var shared_test_index: usize = 0;
 var shared_count: usize = 0;
 fn writeRunner(lock: *RwLock) callconv(.Async) void {
-    suspend; // resumed by onNextTick
+    suspend {} // resumed by onNextTick
 
     var i: usize = 0;
     while (i < shared_test_data.len) : (i += 1) {
@@ -281,7 +277,7 @@ fn writeRunner(lock: *RwLock) callconv(.Async) void {
     }
 }
 fn readRunner(lock: *RwLock) callconv(.Async) void {
-    suspend; // resumed by onNextTick
+    suspend {} // resumed by onNextTick
     std.time.sleep(1);
 
     var i: usize = 0;
@@ -290,7 +286,7 @@ fn readRunner(lock: *RwLock) callconv(.Async) void {
         const handle = await lock_promise;
         defer handle.release();
 
-        testing.expect(shared_test_index == 0);
-        testing.expect(shared_test_data[i] == @intCast(i32, shared_count));
+        try testing.expect(shared_test_index == 0);
+        try testing.expect(shared_test_data[i] == @as(i32, @intCast(shared_count)));
     }
 }

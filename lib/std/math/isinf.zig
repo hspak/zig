@@ -1,136 +1,54 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("../std.zig");
 const math = std.math;
 const expect = std.testing.expect;
-const maxInt = std.math.maxInt;
 
 /// Returns whether x is an infinity, ignoring sign.
-pub fn isInf(x: anytype) bool {
+pub inline fn isInf(x: anytype) bool {
     const T = @TypeOf(x);
-    switch (T) {
-        f16 => {
-            const bits = @bitCast(u16, x);
-            return bits & 0x7FFF == 0x7C00;
-        },
-        f32 => {
-            const bits = @bitCast(u32, x);
-            return bits & 0x7FFFFFFF == 0x7F800000;
-        },
-        f64 => {
-            const bits = @bitCast(u64, x);
-            return bits & (maxInt(u64) >> 1) == (0x7FF << 52);
-        },
-        f128 => {
-            const bits = @bitCast(u128, x);
-            return bits & (maxInt(u128) >> 1) == (0x7FFF << 112);
-        },
-        else => {
-            @compileError("isInf not implemented for " ++ @typeName(T));
-        },
-    }
+    const TBits = std.meta.Int(.unsigned, @typeInfo(T).Float.bits);
+    const remove_sign = ~@as(TBits, 0) >> 1;
+    return @as(TBits, @bitCast(x)) & remove_sign == @as(TBits, @bitCast(math.inf(T)));
 }
 
 /// Returns whether x is an infinity with a positive sign.
-pub fn isPositiveInf(x: anytype) bool {
-    const T = @TypeOf(x);
-    switch (T) {
-        f16 => {
-            return @bitCast(u16, x) == 0x7C00;
-        },
-        f32 => {
-            return @bitCast(u32, x) == 0x7F800000;
-        },
-        f64 => {
-            return @bitCast(u64, x) == 0x7FF << 52;
-        },
-        f128 => {
-            return @bitCast(u128, x) == 0x7FFF << 112;
-        },
-        else => {
-            @compileError("isPositiveInf not implemented for " ++ @typeName(T));
-        },
-    }
+pub inline fn isPositiveInf(x: anytype) bool {
+    return x == math.inf(@TypeOf(x));
 }
 
 /// Returns whether x is an infinity with a negative sign.
-pub fn isNegativeInf(x: anytype) bool {
-    const T = @TypeOf(x);
-    switch (T) {
-        f16 => {
-            return @bitCast(u16, x) == 0xFC00;
-        },
-        f32 => {
-            return @bitCast(u32, x) == 0xFF800000;
-        },
-        f64 => {
-            return @bitCast(u64, x) == 0xFFF << 52;
-        },
-        f128 => {
-            return @bitCast(u128, x) == 0xFFFF << 112;
-        },
-        else => {
-            @compileError("isNegativeInf not implemented for " ++ @typeName(T));
-        },
-    }
+pub inline fn isNegativeInf(x: anytype) bool {
+    return x == -math.inf(@TypeOf(x));
 }
 
 test "math.isInf" {
-    expect(!isInf(@as(f16, 0.0)));
-    expect(!isInf(@as(f16, -0.0)));
-    expect(!isInf(@as(f32, 0.0)));
-    expect(!isInf(@as(f32, -0.0)));
-    expect(!isInf(@as(f64, 0.0)));
-    expect(!isInf(@as(f64, -0.0)));
-    expect(!isInf(@as(f128, 0.0)));
-    expect(!isInf(@as(f128, -0.0)));
-    expect(isInf(math.inf(f16)));
-    expect(isInf(-math.inf(f16)));
-    expect(isInf(math.inf(f32)));
-    expect(isInf(-math.inf(f32)));
-    expect(isInf(math.inf(f64)));
-    expect(isInf(-math.inf(f64)));
-    expect(isInf(math.inf(f128)));
-    expect(isInf(-math.inf(f128)));
+    inline for ([_]type{ f16, f32, f64, f80, f128 }) |T| {
+        try expect(!isInf(@as(T, 0.0)));
+        try expect(!isInf(@as(T, -0.0)));
+        try expect(isInf(math.inf(T)));
+        try expect(isInf(-math.inf(T)));
+        try expect(!isInf(math.nan(T)));
+        try expect(!isInf(-math.nan(T)));
+    }
 }
 
 test "math.isPositiveInf" {
-    expect(!isPositiveInf(@as(f16, 0.0)));
-    expect(!isPositiveInf(@as(f16, -0.0)));
-    expect(!isPositiveInf(@as(f32, 0.0)));
-    expect(!isPositiveInf(@as(f32, -0.0)));
-    expect(!isPositiveInf(@as(f64, 0.0)));
-    expect(!isPositiveInf(@as(f64, -0.0)));
-    expect(!isPositiveInf(@as(f128, 0.0)));
-    expect(!isPositiveInf(@as(f128, -0.0)));
-    expect(isPositiveInf(math.inf(f16)));
-    expect(!isPositiveInf(-math.inf(f16)));
-    expect(isPositiveInf(math.inf(f32)));
-    expect(!isPositiveInf(-math.inf(f32)));
-    expect(isPositiveInf(math.inf(f64)));
-    expect(!isPositiveInf(-math.inf(f64)));
-    expect(isPositiveInf(math.inf(f128)));
-    expect(!isPositiveInf(-math.inf(f128)));
+    inline for ([_]type{ f16, f32, f64, f80, f128 }) |T| {
+        try expect(!isPositiveInf(@as(T, 0.0)));
+        try expect(!isPositiveInf(@as(T, -0.0)));
+        try expect(isPositiveInf(math.inf(T)));
+        try expect(!isPositiveInf(-math.inf(T)));
+        try expect(!isInf(math.nan(T)));
+        try expect(!isInf(-math.nan(T)));
+    }
 }
 
 test "math.isNegativeInf" {
-    expect(!isNegativeInf(@as(f16, 0.0)));
-    expect(!isNegativeInf(@as(f16, -0.0)));
-    expect(!isNegativeInf(@as(f32, 0.0)));
-    expect(!isNegativeInf(@as(f32, -0.0)));
-    expect(!isNegativeInf(@as(f64, 0.0)));
-    expect(!isNegativeInf(@as(f64, -0.0)));
-    expect(!isNegativeInf(@as(f128, 0.0)));
-    expect(!isNegativeInf(@as(f128, -0.0)));
-    expect(!isNegativeInf(math.inf(f16)));
-    expect(isNegativeInf(-math.inf(f16)));
-    expect(!isNegativeInf(math.inf(f32)));
-    expect(isNegativeInf(-math.inf(f32)));
-    expect(!isNegativeInf(math.inf(f64)));
-    expect(isNegativeInf(-math.inf(f64)));
-    expect(!isNegativeInf(math.inf(f128)));
-    expect(isNegativeInf(-math.inf(f128)));
+    inline for ([_]type{ f16, f32, f64, f80, f128 }) |T| {
+        try expect(!isNegativeInf(@as(T, 0.0)));
+        try expect(!isNegativeInf(@as(T, -0.0)));
+        try expect(!isNegativeInf(math.inf(T)));
+        try expect(isNegativeInf(-math.inf(T)));
+        try expect(!isInf(math.nan(T)));
+        try expect(!isInf(-math.nan(T)));
+    }
 }

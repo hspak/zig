@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("../std.zig");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
@@ -37,11 +32,11 @@ pub const Lock = struct {
     }
 
     pub fn acquire(self: *Lock) Held {
-        const held = self.mutex.acquire();
+        self.mutex.lock();
 
         // self.head transitions from multiple stages depending on the value:
         // UNLOCKED -> LOCKED:
-        //   acquire Lock ownership when theres no waiters
+        //   acquire Lock ownership when there are no waiters
         // LOCKED -> <Waiter head ptr>:
         //   Lock is already owned, enqueue first Waiter
         // <head ptr> -> <head ptr>:
@@ -49,7 +44,7 @@ pub const Lock = struct {
 
         if (self.head == UNLOCKED) {
             self.head = LOCKED;
-            held.release();
+            self.mutex.unlock();
             return Held{ .lock = self };
         }
 
@@ -60,14 +55,14 @@ pub const Lock = struct {
         const head = switch (self.head) {
             UNLOCKED => unreachable,
             LOCKED => null,
-            else => @intToPtr(*Waiter, self.head),
+            else => @as(*Waiter, @ptrFromInt(self.head)),
         };
 
         if (head) |h| {
             h.tail.next = &waiter;
             h.tail = &waiter;
         } else {
-            self.head = @ptrToInt(&waiter);
+            self.head = @intFromPtr(&waiter);
         }
 
         suspend {
@@ -76,7 +71,7 @@ pub const Lock = struct {
                 .next = undefined,
                 .data = @frame(),
             };
-            held.release();
+            self.mutex.unlock();
         }
 
         return Held{ .lock = self };
@@ -87,12 +82,12 @@ pub const Lock = struct {
 
         pub fn release(self: Held) void {
             const waiter = blk: {
-                const held = self.lock.mutex.acquire();
-                defer held.release();
+                self.lock.mutex.lock();
+                defer self.lock.mutex.unlock();
 
                 // self.head goes through the reverse transition from acquire():
                 // <head ptr> -> <new head ptr>:
-                //   pop a waiter from the queue to give Lock ownership when theres still others pending
+                //   pop a waiter from the queue to give Lock ownership when there are still others pending
                 // <head ptr> -> LOCKED:
                 //   pop the laster waiter from the queue, while also giving it lock ownership when awaken
                 // LOCKED -> UNLOCKED:
@@ -107,8 +102,8 @@ pub const Lock = struct {
                         break :blk null;
                     },
                     else => {
-                        const waiter = @intToPtr(*Waiter, self.lock.head);
-                        self.lock.head = if (waiter.next == null) LOCKED else @ptrToInt(waiter.next);
+                        const waiter = @as(*Waiter, @ptrFromInt(self.lock.head));
+                        self.lock.head = if (waiter.next == null) LOCKED else @intFromPtr(waiter.next);
                         if (waiter.next) |next|
                             next.tail = waiter.tail;
                         break :blk waiter;
@@ -135,8 +130,8 @@ test "std.event.Lock" {
     var lock = Lock{};
     testLock(&lock);
 
-    const expected_result = [1]i32{3 * @intCast(i32, shared_test_data.len)} ** shared_test_data.len;
-    testing.expectEqualSlices(i32, &expected_result, &shared_test_data);
+    const expected_result = [1]i32{3 * @as(i32, @intCast(shared_test_data.len))} ** shared_test_data.len;
+    try testing.expectEqualSlices(i32, &expected_result, &shared_test_data);
 }
 fn testLock(lock: *Lock) void {
     var handle1 = async lockRunner(lock);

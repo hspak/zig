@@ -1,9 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
-
 //! Sfc64 pseudo-random number generator from Practically Random.
 //! Fastest engine of pracrand and smallest footprint.
 //! See http://pracrand.sourceforge.net/
@@ -12,8 +6,6 @@ const std = @import("std");
 const Random = std.rand.Random;
 const math = std.math;
 const Sfc64 = @This();
-
-random: Random,
 
 a: u64 = undefined,
 b: u64 = undefined,
@@ -25,12 +17,14 @@ const RightShift = 11;
 const LeftShift = 3;
 
 pub fn init(init_s: u64) Sfc64 {
-    var x = Sfc64{
-        .random = Random{ .fillFn = fill },
-    };
+    var x = Sfc64{};
 
     x.seed(init_s);
     return x;
+}
+
+pub fn random(self: *Sfc64) Random {
+    return Random.init(self, fill);
 }
 
 fn next(self: *Sfc64) u64 {
@@ -53,9 +47,7 @@ fn seed(self: *Sfc64, init_s: u64) void {
     }
 }
 
-fn fill(r: *Random, buf: []u8) void {
-    const self = @fieldParentPtr(Sfc64, "random", r);
-
+pub fn fill(self: *Sfc64, buf: []u8) void {
     var i: usize = 0;
     const aligned_len = buf.len - (buf.len & 7);
 
@@ -64,7 +56,7 @@ fn fill(r: *Random, buf: []u8) void {
         var n = self.next();
         comptime var j: usize = 0;
         inline while (j < 8) : (j += 1) {
-            buf[i + j] = @truncate(u8, n);
+            buf[i + j] = @as(u8, @truncate(n));
             n >>= 8;
         }
     }
@@ -73,7 +65,7 @@ fn fill(r: *Random, buf: []u8) void {
     if (i != buf.len) {
         var n = self.next();
         while (i < buf.len) : (i += 1) {
-            buf[i] = @truncate(u8, n);
+            buf[i] = @as(u8, @truncate(n));
             n >>= 8;
         }
     }
@@ -103,7 +95,7 @@ test "Sfc64 sequence" {
     };
 
     for (seq) |s| {
-        std.testing.expectEqual(s, r.next());
+        try std.testing.expectEqual(s, r.next());
     }
 }
 
@@ -133,8 +125,8 @@ test "Sfc64 fill" {
     for (seq) |s| {
         var buf0: [8]u8 = undefined;
         var buf1: [7]u8 = undefined;
-        std.mem.writeIntLittle(u64, &buf0, s);
-        Sfc64.fill(&r.random, &buf1);
-        std.testing.expect(std.mem.eql(u8, buf0[0..7], buf1[0..]));
+        std.mem.writeInt(u64, &buf0, s, .little);
+        r.fill(&buf1);
+        try std.testing.expect(std.mem.eql(u8, buf0[0..7], buf1[0..]));
     }
 }

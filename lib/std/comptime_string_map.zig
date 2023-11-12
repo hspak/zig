@@ -1,39 +1,76 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("std.zig");
 const mem = std.mem;
 
-/// Like ComptimeStringHashMap but optimized for small sets of disparate string keys.
+/// Comptime string map optimized for small sets of disparate string keys.
 /// Works by separating the keys by length at comptime and only checking strings of
 /// equal length at runtime.
 ///
-/// `kvs` expects a list literal containing list literals or an array/slice of structs
-/// where `.@"0"` is the `[]const u8` key and `.@"1"` is the associated value of type `V`.
-/// TODO: https://github.com/ziglang/zig/issues/4335
-pub fn ComptimeStringMap(comptime V: type, comptime kvs: anytype) type {
+/// `kvs_list` expects a list of `struct { []const u8, V }` (key-value pair) tuples.
+/// You can pass `struct { []const u8 }` (only keys) tuples if `V` is `void`.
+pub fn ComptimeStringMap(
+    comptime V: type,
+    comptime kvs_list: anytype,
+) type {
+    return ComptimeStringMapWithEql(V, kvs_list, defaultEql);
+}
+
+/// Like `std.mem.eql`, but takes advantage of the fact that the lengths
+/// of `a` and `b` are known to be equal.
+pub fn defaultEql(a: []const u8, b: []const u8) bool {
+    if (a.ptr == b.ptr) return true;
+    for (a, b) |a_elem, b_elem| {
+        if (a_elem != b_elem) return false;
+    }
+    return true;
+}
+
+/// Like `std.ascii.eqlIgnoreCase` but takes advantage of the fact that
+/// the lengths of `a` and `b` are known to be equal.
+pub fn eqlAsciiIgnoreCase(a: []const u8, b: []const u8) bool {
+    if (a.ptr == b.ptr) return true;
+    for (a, b) |a_c, b_c| {
+        if (std.ascii.toLower(a_c) != std.ascii.toLower(b_c)) return false;
+    }
+    return true;
+}
+
+/// ComptimeStringMap, but accepts an equality function (`eql`).
+/// The `eql` function is only called to determine the equality
+/// of equal length strings. Any strings that are not equal length
+/// are never compared using the `eql` function.
+pub fn ComptimeStringMapWithEql(
+    comptime V: type,
+    comptime kvs_list: anytype,
+    comptime eql: fn (a: []const u8, b: []const u8) bool,
+) type {
     const precomputed = comptime blk: {
-        @setEvalBranchQuota(2000);
+        @setEvalBranchQuota(1500);
         const KV = struct {
             key: []const u8,
             value: V,
         };
-        var sorted_kvs: [kvs.len]KV = undefined;
-        const lenAsc = (struct {
-            fn lenAsc(context: void, a: KV, b: KV) bool {
-                return a.key.len < b.key.len;
-            }
-        }).lenAsc;
-        for (kvs) |kv, i| {
+        var sorted_kvs: [kvs_list.len]KV = undefined;
+        for (kvs_list, 0..) |kv, i| {
             if (V != void) {
                 sorted_kvs[i] = .{ .key = kv.@"0", .value = kv.@"1" };
             } else {
                 sorted_kvs[i] = .{ .key = kv.@"0", .value = {} };
             }
         }
-        std.sort.sort(KV, &sorted_kvs, {}, lenAsc);
+
+        const SortContext = struct {
+            kvs: []KV,
+
+            pub fn lessThan(ctx: @This(), a: usize, b: usize) bool {
+                return ctx.kvs[a].key.len < ctx.kvs[b].key.len;
+            }
+
+            pub fn swap(ctx: @This(), a: usize, b: usize) void {
+                return std.mem.swap(KV, &ctx.kvs[a], &ctx.kvs[b]);
+            }
+        };
+        mem.sortUnstableContext(0, sorted_kvs.len, SortContext{ .kvs = &sorted_kvs });
+
         const min_len = sorted_kvs[0].key.len;
         const max_len = sorted_kvs[sorted_kvs.len - 1].key.len;
         var len_indexes: [max_len + 1]usize = undefined;
@@ -55,10 +92,16 @@ pub fn ComptimeStringMap(comptime V: type, comptime kvs: anytype) type {
     };
 
     return struct {
+        /// Array of `struct { key: []const u8, value: V }` where `value` is `void{}` if `V` is `void`.
+        /// Sorted by `key` length.
+        pub const kvs = precomputed.sorted_kvs;
+
+        /// Checks if the map has a value for the key.
         pub fn has(str: []const u8) bool {
             return get(str) != null;
         }
 
+        /// Returns the value for the key if any, else null.
         pub fn get(str: []const u8) ?V {
             if (str.len < precomputed.min_len or str.len > precomputed.max_len)
                 return null;
@@ -68,7 +111,7 @@ pub fn ComptimeStringMap(comptime V: type, comptime kvs: anytype) type {
                 const kv = precomputed.sorted_kvs[i];
                 if (kv.key.len != str.len)
                     return null;
-                if (mem.eql(u8, kv.key, str))
+                if (eql(kv.key, str))
                     return kv.value;
                 i += 1;
                 if (i >= precomputed.sorted_kvs.len)
@@ -95,67 +138,59 @@ test "ComptimeStringMap list literal of list literals" {
         .{ "samelen", .E },
     });
 
-    testMap(map);
+    try testMap(map);
 }
 
 test "ComptimeStringMap array of structs" {
-    const KV = struct {
-        @"0": []const u8,
-        @"1": TestEnum,
-    };
+    const KV = struct { []const u8, TestEnum };
     const map = ComptimeStringMap(TestEnum, [_]KV{
-        .{ .@"0" = "these", .@"1" = .D },
-        .{ .@"0" = "have", .@"1" = .A },
-        .{ .@"0" = "nothing", .@"1" = .B },
-        .{ .@"0" = "incommon", .@"1" = .C },
-        .{ .@"0" = "samelen", .@"1" = .E },
+        .{ "these", .D },
+        .{ "have", .A },
+        .{ "nothing", .B },
+        .{ "incommon", .C },
+        .{ "samelen", .E },
     });
 
-    testMap(map);
+    try testMap(map);
 }
 
 test "ComptimeStringMap slice of structs" {
-    const KV = struct {
-        @"0": []const u8,
-        @"1": TestEnum,
-    };
+    const KV = struct { []const u8, TestEnum };
     const slice: []const KV = &[_]KV{
-        .{ .@"0" = "these", .@"1" = .D },
-        .{ .@"0" = "have", .@"1" = .A },
-        .{ .@"0" = "nothing", .@"1" = .B },
-        .{ .@"0" = "incommon", .@"1" = .C },
-        .{ .@"0" = "samelen", .@"1" = .E },
+        .{ "these", .D },
+        .{ "have", .A },
+        .{ "nothing", .B },
+        .{ "incommon", .C },
+        .{ "samelen", .E },
     };
     const map = ComptimeStringMap(TestEnum, slice);
 
-    testMap(map);
+    try testMap(map);
 }
 
-fn testMap(comptime map: anytype) void {
-    std.testing.expectEqual(TestEnum.A, map.get("have").?);
-    std.testing.expectEqual(TestEnum.B, map.get("nothing").?);
-    std.testing.expect(null == map.get("missing"));
-    std.testing.expectEqual(TestEnum.D, map.get("these").?);
-    std.testing.expectEqual(TestEnum.E, map.get("samelen").?);
+fn testMap(comptime map: anytype) !void {
+    try std.testing.expectEqual(TestEnum.A, map.get("have").?);
+    try std.testing.expectEqual(TestEnum.B, map.get("nothing").?);
+    try std.testing.expect(null == map.get("missing"));
+    try std.testing.expectEqual(TestEnum.D, map.get("these").?);
+    try std.testing.expectEqual(TestEnum.E, map.get("samelen").?);
 
-    std.testing.expect(!map.has("missing"));
-    std.testing.expect(map.has("these"));
+    try std.testing.expect(!map.has("missing"));
+    try std.testing.expect(map.has("these"));
 }
 
 test "ComptimeStringMap void value type, slice of structs" {
-    const KV = struct {
-        @"0": []const u8,
-    };
+    const KV = struct { []const u8 };
     const slice: []const KV = &[_]KV{
-        .{ .@"0" = "these" },
-        .{ .@"0" = "have" },
-        .{ .@"0" = "nothing" },
-        .{ .@"0" = "incommon" },
-        .{ .@"0" = "samelen" },
+        .{"these"},
+        .{"have"},
+        .{"nothing"},
+        .{"incommon"},
+        .{"samelen"},
     };
     const map = ComptimeStringMap(void, slice);
 
-    testSet(map);
+    try testSet(map);
 }
 
 test "ComptimeStringMap void value type, list literal of list literals" {
@@ -167,16 +202,33 @@ test "ComptimeStringMap void value type, list literal of list literals" {
         .{"samelen"},
     });
 
-    testSet(map);
+    try testSet(map);
 }
 
-fn testSet(comptime map: anytype) void {
-    std.testing.expectEqual({}, map.get("have").?);
-    std.testing.expectEqual({}, map.get("nothing").?);
-    std.testing.expect(null == map.get("missing"));
-    std.testing.expectEqual({}, map.get("these").?);
-    std.testing.expectEqual({}, map.get("samelen").?);
+fn testSet(comptime map: anytype) !void {
+    try std.testing.expectEqual({}, map.get("have").?);
+    try std.testing.expectEqual({}, map.get("nothing").?);
+    try std.testing.expect(null == map.get("missing"));
+    try std.testing.expectEqual({}, map.get("these").?);
+    try std.testing.expectEqual({}, map.get("samelen").?);
 
-    std.testing.expect(!map.has("missing"));
-    std.testing.expect(map.has("these"));
+    try std.testing.expect(!map.has("missing"));
+    try std.testing.expect(map.has("these"));
+}
+
+test "ComptimeStringMapWithEql" {
+    const map = ComptimeStringMapWithEql(TestEnum, .{
+        .{ "these", .D },
+        .{ "have", .A },
+        .{ "nothing", .B },
+        .{ "incommon", .C },
+        .{ "samelen", .E },
+    }, eqlAsciiIgnoreCase);
+
+    try testMap(map);
+    try std.testing.expectEqual(TestEnum.A, map.get("HAVE").?);
+    try std.testing.expectEqual(TestEnum.E, map.get("SameLen").?);
+    try std.testing.expect(null == map.get("SameLength"));
+
+    try std.testing.expect(map.has("ThESe"));
 }

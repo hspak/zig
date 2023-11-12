@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("../std.zig");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
@@ -61,7 +56,7 @@ pub fn Channel(comptime T: type) type {
         pub fn init(self: *SelfChannel, buffer: []T) void {
             // The ring buffer implementation only works with power of 2 buffer sizes
             // because of relying on subtracting across zero. For example (0 -% 1) % 10 == 5
-            assert(buffer.len == 0 or @popCount(usize, buffer.len) == 1);
+            assert(buffer.len == 0 or @popCount(buffer.len) == 1);
 
             self.* = SelfChannel{
                 .buffer_len = 0,
@@ -252,7 +247,7 @@ pub fn Channel(comptime T: type) type {
                     // All the "get or null" functions should resume now.
                     var remove_count: usize = 0;
                     while (self.or_null_queue.get()) |or_null_node| {
-                        remove_count += @boolToInt(self.getters.remove(or_null_node.data));
+                        remove_count += @intFromBool(self.getters.remove(or_null_node.data));
                         global_event_loop.onNextTick(or_null_node.data.data.tick_node);
                     }
                     if (remove_count != 0) {
@@ -308,27 +303,26 @@ test "std.event.Channel wraparound" {
 
     // add items to channel and pull them out until
     // the buffer wraps around, make sure it doesn't crash.
-    var result: i32 = undefined;
     channel.put(5);
-    testing.expectEqual(@as(i32, 5), channel.get());
+    try testing.expectEqual(@as(i32, 5), channel.get());
     channel.put(6);
-    testing.expectEqual(@as(i32, 6), channel.get());
+    try testing.expectEqual(@as(i32, 6), channel.get());
     channel.put(7);
-    testing.expectEqual(@as(i32, 7), channel.get());
+    try testing.expectEqual(@as(i32, 7), channel.get());
 }
 fn testChannelGetter(channel: *Channel(i32)) callconv(.Async) void {
     const value1 = channel.get();
-    testing.expect(value1 == 1234);
+    try testing.expect(value1 == 1234);
 
     const value2 = channel.get();
-    testing.expect(value2 == 4567);
+    try testing.expect(value2 == 4567);
 
     const value3 = channel.getOrNull();
-    testing.expect(value3 == null);
+    try testing.expect(value3 == null);
 
     var last_put = async testPut(channel, 4444);
     const value4 = channel.getOrNull();
-    testing.expect(value4.? == 4444);
+    try testing.expect(value4.? == 4444);
     await last_put;
 }
 fn testChannelPutter(channel: *Channel(i32)) callconv(.Async) void {

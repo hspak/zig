@@ -1,12 +1,6 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 // Based on Go stdlib implementation
 
 const std = @import("../std.zig");
-const builtin = std.builtin;
 const mem = std.mem;
 const debug = std.debug;
 
@@ -16,7 +10,7 @@ const debug = std.debug;
 ///
 /// Important: the counter mode doesn't provide authenticated encryption: the ciphertext can be trivially modified without this being detected.
 /// As a result, applications should generally never use it directly, but only in a construction that includes a MAC.
-pub fn ctr(comptime BlockCipher: anytype, block_cipher: BlockCipher, dst: []u8, src: []const u8, iv: [BlockCipher.block_length]u8, endian: comptime builtin.Endian) void {
+pub fn ctr(comptime BlockCipher: anytype, block_cipher: BlockCipher, dst: []u8, src: []const u8, iv: [BlockCipher.block_length]u8, endian: std.builtin.Endian) void {
     debug.assert(dst.len >= src.len);
     const block_length = BlockCipher.block_length;
     var counter: [BlockCipher.block_length]u8 = undefined;
@@ -44,8 +38,10 @@ pub fn ctr(comptime BlockCipher: anytype, block_cipher: BlockCipher, dst: []u8, 
     if (i < src.len) {
         mem.writeInt(u128, &counter, counterInt, endian);
         var pad = [_]u8{0} ** block_length;
-        mem.copy(u8, &pad, src[i..]);
+        const src_slice = src[i..];
+        @memcpy(pad[0..src_slice.len], src_slice);
         block_cipher.xor(&pad, &pad, counter);
-        mem.copy(u8, dst[i..], pad[0 .. src.len - i]);
+        const pad_slice = pad[0 .. src.len - i];
+        @memcpy(dst[i..][0..pad_slice.len], pad_slice);
     }
 }

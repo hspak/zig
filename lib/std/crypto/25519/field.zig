@@ -1,12 +1,15 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const std = @import("std");
-const readIntLittle = std.mem.readIntLittle;
-const writeIntLittle = std.mem.writeIntLittle;
-const Error = std.crypto.Error;
+const builtin = @import("builtin");
+const crypto = std.crypto;
+
+const NonCanonicalError = crypto.errors.NonCanonicalError;
+const NotSquareError = crypto.errors.NotSquareError;
+
+// Inline conditionally, when it can result in large code generation.
+const bloaty_inline = switch (builtin.mode) {
+    .ReleaseSafe, .ReleaseFast => .Inline,
+    .Debug, .ReleaseSmall => .Unspecified,
+};
 
 pub const Fe = struct {
     limbs: [5]u64,
@@ -53,7 +56,7 @@ pub const Fe = struct {
     pub const edwards25519sqrtam2 = Fe{ .limbs = .{ 1693982333959686, 608509411481997, 2235573344831311, 947681270984193, 266558006233600 } };
 
     /// Return true if the field element is zero
-    pub fn isZero(fe: Fe) callconv(.Inline) bool {
+    pub inline fn isZero(fe: Fe) bool {
         var reduced = fe;
         reduced.reduce();
         const limbs = reduced.limbs;
@@ -61,18 +64,18 @@ pub const Fe = struct {
     }
 
     /// Return true if both field elements are equivalent
-    pub fn equivalent(a: Fe, b: Fe) callconv(.Inline) bool {
+    pub inline fn equivalent(a: Fe, b: Fe) bool {
         return a.sub(b).isZero();
     }
 
     /// Unpack a field element
     pub fn fromBytes(s: [32]u8) Fe {
         var fe: Fe = undefined;
-        fe.limbs[0] = readIntLittle(u64, s[0..8]) & MASK51;
-        fe.limbs[1] = (readIntLittle(u64, s[6..14]) >> 3) & MASK51;
-        fe.limbs[2] = (readIntLittle(u64, s[12..20]) >> 6) & MASK51;
-        fe.limbs[3] = (readIntLittle(u64, s[19..27]) >> 1) & MASK51;
-        fe.limbs[4] = (readIntLittle(u64, s[24..32]) >> 12) & MASK51;
+        fe.limbs[0] = std.mem.readInt(u64, s[0..8], .little) & MASK51;
+        fe.limbs[1] = (std.mem.readInt(u64, s[6..14], .little) >> 3) & MASK51;
+        fe.limbs[2] = (std.mem.readInt(u64, s[12..20], .little) >> 6) & MASK51;
+        fe.limbs[3] = (std.mem.readInt(u64, s[19..27], .little) >> 1) & MASK51;
+        fe.limbs[4] = (std.mem.readInt(u64, s[24..32], .little) >> 12) & MASK51;
 
         return fe;
     }
@@ -82,15 +85,15 @@ pub const Fe = struct {
         var reduced = fe;
         reduced.reduce();
         var s: [32]u8 = undefined;
-        writeIntLittle(u64, s[0..8], reduced.limbs[0] | (reduced.limbs[1] << 51));
-        writeIntLittle(u64, s[8..16], (reduced.limbs[1] >> 13) | (reduced.limbs[2] << 38));
-        writeIntLittle(u64, s[16..24], (reduced.limbs[2] >> 26) | (reduced.limbs[3] << 25));
-        writeIntLittle(u64, s[24..32], (reduced.limbs[3] >> 39) | (reduced.limbs[4] << 12));
+        std.mem.writeInt(u64, s[0..8], reduced.limbs[0] | (reduced.limbs[1] << 51), .little);
+        std.mem.writeInt(u64, s[8..16], (reduced.limbs[1] >> 13) | (reduced.limbs[2] << 38), .little);
+        std.mem.writeInt(u64, s[16..24], (reduced.limbs[2] >> 26) | (reduced.limbs[3] << 25), .little);
+        std.mem.writeInt(u64, s[24..32], (reduced.limbs[3] >> 39) | (reduced.limbs[4] << 12), .little);
 
         return s;
     }
 
-    /// Map a 64-bit big endian string into a field element
+    /// Map a 64 bytes big endian string into a field element
     pub fn fromBytes64(s: [64]u8) Fe {
         var fl: [32]u8 = undefined;
         var gl: [32]u8 = undefined;
@@ -103,7 +106,7 @@ pub const Fe = struct {
         gl[31] &= 0x7f;
         var fe_f = fromBytes(fl);
         const fe_g = fromBytes(gl);
-        fe_f.limbs[0] += (s[32] >> 7) * 19;
+        fe_f.limbs[0] += (s[32] >> 7) * 19 + @as(u10, s[0] >> 7) * 722;
         i = 0;
         while (i < 5) : (i += 1) {
             fe_f.limbs[i] += 38 * fe_g.limbs[i];
@@ -113,7 +116,7 @@ pub const Fe = struct {
     }
 
     /// Reject non-canonical encodings of an element, possibly ignoring the top bit
-    pub fn rejectNonCanonical(s: [32]u8, comptime ignore_extra_bit: bool) Error!void {
+    pub fn rejectNonCanonical(s: [32]u8, comptime ignore_extra_bit: bool) NonCanonicalError!void {
         var c: u16 = (s[31] & 0x7f) ^ 0x7f;
         comptime var i = 30;
         inline while (i > 0) : (i -= 1) {
@@ -165,7 +168,7 @@ pub const Fe = struct {
     }
 
     /// Add a field element
-    pub fn add(a: Fe, b: Fe) callconv(.Inline) Fe {
+    pub inline fn add(a: Fe, b: Fe) Fe {
         var fe: Fe = undefined;
         comptime var i = 0;
         inline while (i < 5) : (i += 1) {
@@ -174,8 +177,8 @@ pub const Fe = struct {
         return fe;
     }
 
-    /// Substract a field elememnt
-    pub fn sub(a: Fe, b: Fe) callconv(.Inline) Fe {
+    /// Subtract a field element
+    pub inline fn sub(a: Fe, b: Fe) Fe {
         var fe = b;
         comptime var i = 0;
         inline while (i < 4) : (i += 1) {
@@ -194,17 +197,17 @@ pub const Fe = struct {
     }
 
     /// Negate a field element
-    pub fn neg(a: Fe) callconv(.Inline) Fe {
+    pub inline fn neg(a: Fe) Fe {
         return zero.sub(a);
     }
 
     /// Return true if a field element is negative
-    pub fn isNegative(a: Fe) callconv(.Inline) bool {
+    pub inline fn isNegative(a: Fe) bool {
         return (a.toBytes()[0] & 1) != 0;
     }
 
     /// Conditonally replace a field element with `a` if `c` is positive
-    pub fn cMov(fe: *Fe, a: Fe, c: u64) callconv(.Inline) void {
+    pub inline fn cMov(fe: *Fe, a: Fe, c: u64) void {
         const mask: u64 = 0 -% c;
         var x = fe.*;
         comptime var i = 0;
@@ -245,15 +248,15 @@ pub const Fe = struct {
         }
     }
 
-    fn _carry128(r: *[5]u128) callconv(.Inline) Fe {
+    inline fn _carry128(r: *[5]u128) Fe {
         var rs: [5]u64 = undefined;
         comptime var i = 0;
         inline while (i < 4) : (i += 1) {
-            rs[i] = @truncate(u64, r[i]) & MASK51;
-            r[i + 1] += @intCast(u64, r[i] >> 51);
+            rs[i] = @as(u64, @truncate(r[i])) & MASK51;
+            r[i + 1] += @as(u64, @intCast(r[i] >> 51));
         }
-        rs[4] = @truncate(u64, r[4]) & MASK51;
-        var carry = @intCast(u64, r[4] >> 51);
+        rs[4] = @as(u64, @truncate(r[4])) & MASK51;
+        var carry = @as(u64, @intCast(r[4] >> 51));
         rs[0] += 19 * carry;
         carry = rs[0] >> 51;
         rs[0] &= MASK51;
@@ -266,15 +269,15 @@ pub const Fe = struct {
     }
 
     /// Multiply two field elements
-    pub fn mul(a: Fe, b: Fe) callconv(.Inline) Fe {
+    pub fn mul(a: Fe, b: Fe) callconv(bloaty_inline) Fe {
         var ax: [5]u128 = undefined;
         var bx: [5]u128 = undefined;
         var a19: [5]u128 = undefined;
         var r: [5]u128 = undefined;
         comptime var i = 0;
         inline while (i < 5) : (i += 1) {
-            ax[i] = @intCast(u128, a.limbs[i]);
-            bx[i] = @intCast(u128, b.limbs[i]);
+            ax[i] = @as(u128, @intCast(a.limbs[i]));
+            bx[i] = @as(u128, @intCast(b.limbs[i]));
         }
         i = 1;
         inline while (i < 5) : (i += 1) {
@@ -289,12 +292,12 @@ pub const Fe = struct {
         return _carry128(&r);
     }
 
-    fn _sq(a: Fe, double: comptime bool) callconv(.Inline) Fe {
+    fn _sq(a: Fe, comptime double: bool) Fe {
         var ax: [5]u128 = undefined;
         var r: [5]u128 = undefined;
         comptime var i = 0;
         inline while (i < 5) : (i += 1) {
-            ax[i] = @intCast(u128, a.limbs[i]);
+            ax[i] = @as(u128, @intCast(a.limbs[i]));
         }
         const a0_2 = 2 * ax[0];
         const a1_2 = 2 * ax[1];
@@ -318,32 +321,32 @@ pub const Fe = struct {
     }
 
     /// Square a field element
-    pub fn sq(a: Fe) callconv(.Inline) Fe {
+    pub inline fn sq(a: Fe) Fe {
         return _sq(a, false);
     }
 
     /// Square and double a field element
-    pub fn sq2(a: Fe) callconv(.Inline) Fe {
+    pub inline fn sq2(a: Fe) Fe {
         return _sq(a, true);
     }
 
     /// Multiply a field element with a small (32-bit) integer
-    pub fn mul32(a: Fe, comptime n: u32) callconv(.Inline) Fe {
-        const sn = @intCast(u128, n);
+    pub inline fn mul32(a: Fe, comptime n: u32) Fe {
+        const sn = @as(u128, @intCast(n));
         var fe: Fe = undefined;
         var x: u128 = 0;
         comptime var i = 0;
         inline while (i < 5) : (i += 1) {
             x = a.limbs[i] * sn + (x >> 51);
-            fe.limbs[i] = @truncate(u64, x) & MASK51;
+            fe.limbs[i] = @as(u64, @truncate(x)) & MASK51;
         }
-        fe.limbs[0] += @intCast(u64, x >> 51) * 19;
+        fe.limbs[0] += @as(u64, @intCast(x >> 51)) * 19;
 
         return fe;
     }
 
     /// Square a field element `n` times
-    fn sqn(a: Fe, comptime n: comptime_int) callconv(.Inline) Fe {
+    fn sqn(a: Fe, n: usize) Fe {
         var i: usize = 0;
         var fe = a;
         while (i < n) : (i += 1) {
@@ -352,7 +355,7 @@ pub const Fe = struct {
         return fe;
     }
 
-    /// Compute the inverse of a field element
+    /// Return the inverse of a field element, or 0 if a=0.
     pub fn invert(a: Fe) Fe {
         var t0 = a.sq();
         var t1 = t0.sqn(2).mul(a);
@@ -382,7 +385,7 @@ pub const Fe = struct {
     /// Return the absolute value of a field element
     pub fn abs(a: Fe) Fe {
         var r = a;
-        r.cMov(a.neg(), @boolToInt(a.isNegative()));
+        r.cMov(a.neg(), @intFromBool(a.isNegative()));
         return r;
     }
 
@@ -392,13 +395,12 @@ pub const Fe = struct {
         const _11 = a.mul(a.sq());
         const _1111 = _11.mul(_11.sq().sq());
         const _11111111 = _1111.mul(_1111.sq().sq().sq().sq());
-        var t = _11111111.sqn(2).mul(_11);
-        const u = t;
-        t = t.sqn(10).mul(u).sqn(10).mul(u);
-        t = t.sqn(30).mul(t);
-        t = t.sqn(60).mul(t);
-        t = t.sqn(120).mul(t).sqn(10).mul(u).sqn(3).mul(_11).sq();
-        return @bitCast(bool, @truncate(u1, ~(t.toBytes()[1] & 1)));
+        const u = _11111111.sqn(2).mul(_11);
+        const t = u.sqn(10).mul(u).sqn(10).mul(u);
+        const t2 = t.sqn(30).mul(t);
+        const t3 = t2.sqn(60).mul(t2);
+        const t4 = t3.sqn(120).mul(t3).sqn(10).mul(u).sqn(3).mul(_11).sq();
+        return @as(bool, @bitCast(@as(u1, @truncate(~(t4.toBytes()[1] & 1)))));
     }
 
     fn uncheckedSqrt(x2: Fe) Fe {
@@ -408,12 +410,12 @@ pub const Fe = struct {
         const m_root2 = m_root.sq();
         e = x2.sub(m_root2);
         var x = p_root;
-        x.cMov(m_root, @boolToInt(e.isZero()));
+        x.cMov(m_root, @intFromBool(e.isZero()));
         return x;
     }
 
     /// Compute the square root of `x2`, returning `error.NotSquare` if `x2` was not a square
-    pub fn sqrt(x2: Fe) Error!Fe {
+    pub fn sqrt(x2: Fe) NotSquareError!Fe {
         var x2_copy = x2;
         const x = x2.uncheckedSqrt();
         const check = x.sq().sub(x2_copy);

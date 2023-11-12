@@ -1,15 +1,14 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
-usingnamespace std.os.linux;
 const std = @import("../../std.zig");
 const errno = getErrno;
 const unexpectedErrno = std.os.unexpectedErrno;
 const expectEqual = std.testing.expectEqual;
 const expectError = std.testing.expectError;
 const expect = std.testing.expect;
+
+const linux = std.os.linux;
+const fd_t = linux.fd_t;
+const pid_t = linux.pid_t;
+const getErrno = linux.getErrno;
 
 pub const btf = @import("bpf/btf.zig");
 pub const kern = @import("bpf/kern.zig");
@@ -167,6 +166,13 @@ pub const F_ANY_ALIGNMENT = 0x2;
 /// them.  Then, if verifier is not doing correct analysis, such randomization
 /// will regress tests to expose bugs.
 pub const F_TEST_RND_HI32 = 0x4;
+
+/// If BPF_F_SLEEPABLE is used in BPF_PROG_LOAD command, the verifier will
+/// restrict map and helper usage for such programs. Sleepable BPF programs can
+/// only be attached to hooks where kernel execution context allows sleeping.
+/// Such programs are allowed to use helpers that may sleep like
+/// bpf_copy_from_user().
+pub const F_SLEEPABLE = 0x10;
 
 /// When BPF ldimm64's insn[0].src_reg != 0 then this can have two extensions:
 /// insn[0].src_reg:  BPF_PSEUDO_MAP_FD   BPF_PSEUDO_MAP_VALUE
@@ -398,10 +404,10 @@ pub const Insn = packed struct {
 
     /// r0 - r9 are general purpose 64-bit registers, r10 points to the stack
     /// frame
-    pub const Reg = packed enum(u4) { r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10 };
-    const Source = packed enum(u1) { reg, imm };
+    pub const Reg = enum(u4) { r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10 };
+    const Source = enum(u1) { reg, imm };
 
-    const Mode = packed enum(u8) {
+    const Mode = enum(u8) {
         imm = IMM,
         abs = ABS,
         ind = IND,
@@ -410,7 +416,7 @@ pub const Insn = packed struct {
         msh = MSH,
     };
 
-    const AluOp = packed enum(u8) {
+    pub const AluOp = enum(u8) {
         add = ADD,
         sub = SUB,
         mul = MUL,
@@ -426,14 +432,14 @@ pub const Insn = packed struct {
         arsh = ARSH,
     };
 
-    pub const Size = packed enum(u8) {
+    pub const Size = enum(u8) {
         byte = B,
         half_word = H,
         word = W,
         double_word = DW,
     };
 
-    const JmpOp = packed enum(u8) {
+    pub const JmpOp = enum(u8) {
         ja = JA,
         jeq = JEQ,
         jgt = JGT,
@@ -449,27 +455,27 @@ pub const Insn = packed struct {
     };
 
     const ImmOrReg = union(Source) {
-        imm: i32,
         reg: Reg,
+        imm: i32,
     };
 
     fn imm_reg(code: u8, dst: Reg, src: anytype, off: i16) Insn {
-        const imm_or_reg = if (@typeInfo(@TypeOf(src)) == .EnumLiteral)
+        const imm_or_reg = if (@TypeOf(src) == Reg or @typeInfo(@TypeOf(src)) == .EnumLiteral)
             ImmOrReg{ .reg = @as(Reg, src) }
         else
             ImmOrReg{ .imm = src };
 
-        const src_type = switch (imm_or_reg) {
+        const src_type: u8 = switch (imm_or_reg) {
             .imm => K,
             .reg => X,
         };
 
         return Insn{
             .code = code | src_type,
-            .dst = @enumToInt(dst),
+            .dst = @intFromEnum(dst),
             .src = switch (imm_or_reg) {
                 .imm => 0,
-                .reg => |r| @enumToInt(r),
+                .reg => |r| @intFromEnum(r),
             },
             .off = off,
             .imm = switch (imm_or_reg) {
@@ -479,14 +485,14 @@ pub const Insn = packed struct {
         };
     }
 
-    fn alu(comptime width: comptime_int, op: AluOp, dst: Reg, src: anytype) Insn {
+    pub fn alu(comptime width: comptime_int, op: AluOp, dst: Reg, src: anytype) Insn {
         const width_bitfield = switch (width) {
             32 => ALU,
             64 => ALU64,
             else => @compileError("width must be 32 or 64"),
         };
 
-        return imm_reg(width_bitfield | @enumToInt(op), dst, src, 0);
+        return imm_reg(width_bitfield | @intFromEnum(op), dst, src, 0);
     }
 
     pub fn mov(dst: Reg, src: anytype) Insn {
@@ -541,8 +547,8 @@ pub const Insn = packed struct {
         return alu(64, .arsh, dst, src);
     }
 
-    fn jmp(op: JmpOp, dst: Reg, src: anytype, off: i16) Insn {
-        return imm_reg(JMP | @enumToInt(op), dst, src, off);
+    pub fn jmp(op: JmpOp, dst: Reg, src: anytype, off: i16) Insn {
+        return imm_reg(JMP | @intFromEnum(op), dst, src, off);
     }
 
     pub fn ja(off: i16) Insn {
@@ -596,8 +602,8 @@ pub const Insn = packed struct {
     pub fn xadd(dst: Reg, src: Reg) Insn {
         return Insn{
             .code = STX | XADD | DW,
-            .dst = @enumToInt(dst),
-            .src = @enumToInt(src),
+            .dst = @intFromEnum(dst),
+            .src = @intFromEnum(src),
             .off = 0,
             .imm = 0,
         };
@@ -605,9 +611,9 @@ pub const Insn = packed struct {
 
     fn ld(mode: Mode, size: Size, dst: Reg, src: Reg, imm: i32) Insn {
         return Insn{
-            .code = @enumToInt(mode) | @enumToInt(size) | LD,
-            .dst = @enumToInt(dst),
-            .src = @enumToInt(src),
+            .code = @intFromEnum(mode) | @intFromEnum(size) | LD,
+            .dst = @intFromEnum(dst),
+            .src = @intFromEnum(src),
             .off = 0,
             .imm = imm,
         };
@@ -623,9 +629,9 @@ pub const Insn = packed struct {
 
     pub fn ldx(size: Size, dst: Reg, src: Reg, off: i16) Insn {
         return Insn{
-            .code = MEM | @enumToInt(size) | LDX,
-            .dst = @enumToInt(dst),
-            .src = @enumToInt(src),
+            .code = MEM | @intFromEnum(size) | LDX,
+            .dst = @intFromEnum(dst),
+            .src = @intFromEnum(src),
             .off = off,
             .imm = 0,
         };
@@ -634,10 +640,10 @@ pub const Insn = packed struct {
     fn ld_imm_impl1(dst: Reg, src: Reg, imm: u64) Insn {
         return Insn{
             .code = LD | DW | IMM,
-            .dst = @enumToInt(dst),
-            .src = @enumToInt(src),
+            .dst = @intFromEnum(dst),
+            .src = @intFromEnum(src),
             .off = 0,
-            .imm = @intCast(i32, @truncate(u32, imm)),
+            .imm = @as(i32, @intCast(@as(u32, @truncate(imm)))),
         };
     }
 
@@ -647,7 +653,7 @@ pub const Insn = packed struct {
             .dst = 0,
             .src = 0,
             .off = 0,
-            .imm = @intCast(i32, @truncate(u32, imm >> 32)),
+            .imm = @as(i32, @intCast(@as(u32, @truncate(imm >> 32)))),
         };
     }
 
@@ -660,18 +666,17 @@ pub const Insn = packed struct {
     }
 
     pub fn ld_map_fd1(dst: Reg, map_fd: fd_t) Insn {
-        return ld_imm_impl1(dst, @intToEnum(Reg, PSEUDO_MAP_FD), @intCast(u64, map_fd));
+        return ld_imm_impl1(dst, @as(Reg, @enumFromInt(PSEUDO_MAP_FD)), @as(u64, @intCast(map_fd)));
     }
 
     pub fn ld_map_fd2(map_fd: fd_t) Insn {
-        return ld_imm_impl2(@intCast(u64, map_fd));
+        return ld_imm_impl2(@as(u64, @intCast(map_fd)));
     }
 
-    pub fn st(comptime size: Size, dst: Reg, off: i16, imm: i32) Insn {
-        if (size == .double_word) @compileError("TODO: need to determine how to correctly handle double words");
+    pub fn st(size: Size, dst: Reg, off: i16, imm: i32) Insn {
         return Insn{
-            .code = MEM | @enumToInt(size) | ST,
-            .dst = @enumToInt(dst),
+            .code = MEM | @intFromEnum(size) | ST,
+            .dst = @intFromEnum(dst),
             .src = 0,
             .off = off,
             .imm = imm,
@@ -680,9 +685,9 @@ pub const Insn = packed struct {
 
     pub fn stx(size: Size, dst: Reg, off: i16, src: Reg) Insn {
         return Insn{
-            .code = MEM | @enumToInt(size) | STX,
-            .dst = @enumToInt(dst),
-            .src = @enumToInt(src),
+            .code = MEM | @intFromEnum(size) | STX,
+            .dst = @intFromEnum(dst),
+            .src = @intFromEnum(src),
             .off = off,
             .imm = 0,
         };
@@ -691,10 +696,10 @@ pub const Insn = packed struct {
     fn endian_swap(endian: std.builtin.Endian, comptime size: Size, dst: Reg) Insn {
         return Insn{
             .code = switch (endian) {
-                .Big => 0xdc,
-                .Little => 0xd4,
+                .big => 0xdc,
+                .little => 0xd4,
             },
-            .dst = @enumToInt(dst),
+            .dst = @intFromEnum(dst),
             .src = 0,
             .off = 0,
             .imm = switch (size) {
@@ -707,11 +712,11 @@ pub const Insn = packed struct {
     }
 
     pub fn le(comptime size: Size, dst: Reg) Insn {
-        return endian_swap(.Little, size, dst);
+        return endian_swap(.little, size, dst);
     }
 
     pub fn be(comptime size: Size, dst: Reg) Insn {
-        return endian_swap(.Big, size, dst);
+        return endian_swap(.big, size, dst);
     }
 
     pub fn call(helper: Helper) Insn {
@@ -720,7 +725,7 @@ pub const Insn = packed struct {
             .dst = 0,
             .src = 0,
             .off = 0,
-            .imm = @enumToInt(helper),
+            .imm = @intFromEnum(helper),
         };
     }
 
@@ -737,11 +742,11 @@ pub const Insn = packed struct {
 };
 
 test "insn bitsize" {
-    expectEqual(@bitSizeOf(Insn), 64);
+    try expectEqual(@bitSizeOf(Insn), 64);
 }
 
-fn expect_opcode(code: u8, insn: Insn) void {
-    expectEqual(code, insn.code);
+fn expect_opcode(code: u8, insn: Insn) !void {
+    try expectEqual(code, insn.code);
 }
 
 // The opcodes were grabbed from https://github.com/iovisor/bpf-docs/blob/master/eBPF.md
@@ -750,111 +755,111 @@ test "opcodes" {
     // loading 64-bit immediates (imm is only 32 bits wide)
 
     // alu instructions
-    expect_opcode(0x07, Insn.add(.r1, 0));
-    expect_opcode(0x0f, Insn.add(.r1, .r2));
-    expect_opcode(0x17, Insn.sub(.r1, 0));
-    expect_opcode(0x1f, Insn.sub(.r1, .r2));
-    expect_opcode(0x27, Insn.mul(.r1, 0));
-    expect_opcode(0x2f, Insn.mul(.r1, .r2));
-    expect_opcode(0x37, Insn.div(.r1, 0));
-    expect_opcode(0x3f, Insn.div(.r1, .r2));
-    expect_opcode(0x47, Insn.alu_or(.r1, 0));
-    expect_opcode(0x4f, Insn.alu_or(.r1, .r2));
-    expect_opcode(0x57, Insn.alu_and(.r1, 0));
-    expect_opcode(0x5f, Insn.alu_and(.r1, .r2));
-    expect_opcode(0x67, Insn.lsh(.r1, 0));
-    expect_opcode(0x6f, Insn.lsh(.r1, .r2));
-    expect_opcode(0x77, Insn.rsh(.r1, 0));
-    expect_opcode(0x7f, Insn.rsh(.r1, .r2));
-    expect_opcode(0x87, Insn.neg(.r1));
-    expect_opcode(0x97, Insn.mod(.r1, 0));
-    expect_opcode(0x9f, Insn.mod(.r1, .r2));
-    expect_opcode(0xa7, Insn.xor(.r1, 0));
-    expect_opcode(0xaf, Insn.xor(.r1, .r2));
-    expect_opcode(0xb7, Insn.mov(.r1, 0));
-    expect_opcode(0xbf, Insn.mov(.r1, .r2));
-    expect_opcode(0xc7, Insn.arsh(.r1, 0));
-    expect_opcode(0xcf, Insn.arsh(.r1, .r2));
+    try expect_opcode(0x07, Insn.add(.r1, 0));
+    try expect_opcode(0x0f, Insn.add(.r1, .r2));
+    try expect_opcode(0x17, Insn.sub(.r1, 0));
+    try expect_opcode(0x1f, Insn.sub(.r1, .r2));
+    try expect_opcode(0x27, Insn.mul(.r1, 0));
+    try expect_opcode(0x2f, Insn.mul(.r1, .r2));
+    try expect_opcode(0x37, Insn.div(.r1, 0));
+    try expect_opcode(0x3f, Insn.div(.r1, .r2));
+    try expect_opcode(0x47, Insn.alu_or(.r1, 0));
+    try expect_opcode(0x4f, Insn.alu_or(.r1, .r2));
+    try expect_opcode(0x57, Insn.alu_and(.r1, 0));
+    try expect_opcode(0x5f, Insn.alu_and(.r1, .r2));
+    try expect_opcode(0x67, Insn.lsh(.r1, 0));
+    try expect_opcode(0x6f, Insn.lsh(.r1, .r2));
+    try expect_opcode(0x77, Insn.rsh(.r1, 0));
+    try expect_opcode(0x7f, Insn.rsh(.r1, .r2));
+    try expect_opcode(0x87, Insn.neg(.r1));
+    try expect_opcode(0x97, Insn.mod(.r1, 0));
+    try expect_opcode(0x9f, Insn.mod(.r1, .r2));
+    try expect_opcode(0xa7, Insn.xor(.r1, 0));
+    try expect_opcode(0xaf, Insn.xor(.r1, .r2));
+    try expect_opcode(0xb7, Insn.mov(.r1, 0));
+    try expect_opcode(0xbf, Insn.mov(.r1, .r2));
+    try expect_opcode(0xc7, Insn.arsh(.r1, 0));
+    try expect_opcode(0xcf, Insn.arsh(.r1, .r2));
 
     // atomic instructions: might be more of these not documented in the wild
-    expect_opcode(0xdb, Insn.xadd(.r1, .r2));
+    try expect_opcode(0xdb, Insn.xadd(.r1, .r2));
 
     // TODO: byteswap instructions
-    expect_opcode(0xd4, Insn.le(.half_word, .r1));
-    expectEqual(@intCast(i32, 16), Insn.le(.half_word, .r1).imm);
-    expect_opcode(0xd4, Insn.le(.word, .r1));
-    expectEqual(@intCast(i32, 32), Insn.le(.word, .r1).imm);
-    expect_opcode(0xd4, Insn.le(.double_word, .r1));
-    expectEqual(@intCast(i32, 64), Insn.le(.double_word, .r1).imm);
-    expect_opcode(0xdc, Insn.be(.half_word, .r1));
-    expectEqual(@intCast(i32, 16), Insn.be(.half_word, .r1).imm);
-    expect_opcode(0xdc, Insn.be(.word, .r1));
-    expectEqual(@intCast(i32, 32), Insn.be(.word, .r1).imm);
-    expect_opcode(0xdc, Insn.be(.double_word, .r1));
-    expectEqual(@intCast(i32, 64), Insn.be(.double_word, .r1).imm);
+    try expect_opcode(0xd4, Insn.le(.half_word, .r1));
+    try expectEqual(@as(i32, @intCast(16)), Insn.le(.half_word, .r1).imm);
+    try expect_opcode(0xd4, Insn.le(.word, .r1));
+    try expectEqual(@as(i32, @intCast(32)), Insn.le(.word, .r1).imm);
+    try expect_opcode(0xd4, Insn.le(.double_word, .r1));
+    try expectEqual(@as(i32, @intCast(64)), Insn.le(.double_word, .r1).imm);
+    try expect_opcode(0xdc, Insn.be(.half_word, .r1));
+    try expectEqual(@as(i32, @intCast(16)), Insn.be(.half_word, .r1).imm);
+    try expect_opcode(0xdc, Insn.be(.word, .r1));
+    try expectEqual(@as(i32, @intCast(32)), Insn.be(.word, .r1).imm);
+    try expect_opcode(0xdc, Insn.be(.double_word, .r1));
+    try expectEqual(@as(i32, @intCast(64)), Insn.be(.double_word, .r1).imm);
 
     // memory instructions
-    expect_opcode(0x18, Insn.ld_dw1(.r1, 0));
-    expect_opcode(0x00, Insn.ld_dw2(0));
+    try expect_opcode(0x18, Insn.ld_dw1(.r1, 0));
+    try expect_opcode(0x00, Insn.ld_dw2(0));
 
     //   loading a map fd
-    expect_opcode(0x18, Insn.ld_map_fd1(.r1, 0));
-    expectEqual(@intCast(u4, PSEUDO_MAP_FD), Insn.ld_map_fd1(.r1, 0).src);
-    expect_opcode(0x00, Insn.ld_map_fd2(0));
+    try expect_opcode(0x18, Insn.ld_map_fd1(.r1, 0));
+    try expectEqual(@as(u4, @intCast(PSEUDO_MAP_FD)), Insn.ld_map_fd1(.r1, 0).src);
+    try expect_opcode(0x00, Insn.ld_map_fd2(0));
 
-    expect_opcode(0x38, Insn.ld_abs(.double_word, .r1, .r2, 0));
-    expect_opcode(0x20, Insn.ld_abs(.word, .r1, .r2, 0));
-    expect_opcode(0x28, Insn.ld_abs(.half_word, .r1, .r2, 0));
-    expect_opcode(0x30, Insn.ld_abs(.byte, .r1, .r2, 0));
+    try expect_opcode(0x38, Insn.ld_abs(.double_word, .r1, .r2, 0));
+    try expect_opcode(0x20, Insn.ld_abs(.word, .r1, .r2, 0));
+    try expect_opcode(0x28, Insn.ld_abs(.half_word, .r1, .r2, 0));
+    try expect_opcode(0x30, Insn.ld_abs(.byte, .r1, .r2, 0));
 
-    expect_opcode(0x58, Insn.ld_ind(.double_word, .r1, .r2, 0));
-    expect_opcode(0x40, Insn.ld_ind(.word, .r1, .r2, 0));
-    expect_opcode(0x48, Insn.ld_ind(.half_word, .r1, .r2, 0));
-    expect_opcode(0x50, Insn.ld_ind(.byte, .r1, .r2, 0));
+    try expect_opcode(0x58, Insn.ld_ind(.double_word, .r1, .r2, 0));
+    try expect_opcode(0x40, Insn.ld_ind(.word, .r1, .r2, 0));
+    try expect_opcode(0x48, Insn.ld_ind(.half_word, .r1, .r2, 0));
+    try expect_opcode(0x50, Insn.ld_ind(.byte, .r1, .r2, 0));
 
-    expect_opcode(0x79, Insn.ldx(.double_word, .r1, .r2, 0));
-    expect_opcode(0x61, Insn.ldx(.word, .r1, .r2, 0));
-    expect_opcode(0x69, Insn.ldx(.half_word, .r1, .r2, 0));
-    expect_opcode(0x71, Insn.ldx(.byte, .r1, .r2, 0));
+    try expect_opcode(0x79, Insn.ldx(.double_word, .r1, .r2, 0));
+    try expect_opcode(0x61, Insn.ldx(.word, .r1, .r2, 0));
+    try expect_opcode(0x69, Insn.ldx(.half_word, .r1, .r2, 0));
+    try expect_opcode(0x71, Insn.ldx(.byte, .r1, .r2, 0));
 
-    expect_opcode(0x62, Insn.st(.word, .r1, 0, 0));
-    expect_opcode(0x6a, Insn.st(.half_word, .r1, 0, 0));
-    expect_opcode(0x72, Insn.st(.byte, .r1, 0, 0));
+    try expect_opcode(0x62, Insn.st(.word, .r1, 0, 0));
+    try expect_opcode(0x6a, Insn.st(.half_word, .r1, 0, 0));
+    try expect_opcode(0x72, Insn.st(.byte, .r1, 0, 0));
 
-    expect_opcode(0x63, Insn.stx(.word, .r1, 0, .r2));
-    expect_opcode(0x6b, Insn.stx(.half_word, .r1, 0, .r2));
-    expect_opcode(0x73, Insn.stx(.byte, .r1, 0, .r2));
-    expect_opcode(0x7b, Insn.stx(.double_word, .r1, 0, .r2));
+    try expect_opcode(0x63, Insn.stx(.word, .r1, 0, .r2));
+    try expect_opcode(0x6b, Insn.stx(.half_word, .r1, 0, .r2));
+    try expect_opcode(0x73, Insn.stx(.byte, .r1, 0, .r2));
+    try expect_opcode(0x7b, Insn.stx(.double_word, .r1, 0, .r2));
 
     // branch instructions
-    expect_opcode(0x05, Insn.ja(0));
-    expect_opcode(0x15, Insn.jeq(.r1, 0, 0));
-    expect_opcode(0x1d, Insn.jeq(.r1, .r2, 0));
-    expect_opcode(0x25, Insn.jgt(.r1, 0, 0));
-    expect_opcode(0x2d, Insn.jgt(.r1, .r2, 0));
-    expect_opcode(0x35, Insn.jge(.r1, 0, 0));
-    expect_opcode(0x3d, Insn.jge(.r1, .r2, 0));
-    expect_opcode(0xa5, Insn.jlt(.r1, 0, 0));
-    expect_opcode(0xad, Insn.jlt(.r1, .r2, 0));
-    expect_opcode(0xb5, Insn.jle(.r1, 0, 0));
-    expect_opcode(0xbd, Insn.jle(.r1, .r2, 0));
-    expect_opcode(0x45, Insn.jset(.r1, 0, 0));
-    expect_opcode(0x4d, Insn.jset(.r1, .r2, 0));
-    expect_opcode(0x55, Insn.jne(.r1, 0, 0));
-    expect_opcode(0x5d, Insn.jne(.r1, .r2, 0));
-    expect_opcode(0x65, Insn.jsgt(.r1, 0, 0));
-    expect_opcode(0x6d, Insn.jsgt(.r1, .r2, 0));
-    expect_opcode(0x75, Insn.jsge(.r1, 0, 0));
-    expect_opcode(0x7d, Insn.jsge(.r1, .r2, 0));
-    expect_opcode(0xc5, Insn.jslt(.r1, 0, 0));
-    expect_opcode(0xcd, Insn.jslt(.r1, .r2, 0));
-    expect_opcode(0xd5, Insn.jsle(.r1, 0, 0));
-    expect_opcode(0xdd, Insn.jsle(.r1, .r2, 0));
-    expect_opcode(0x85, Insn.call(.unspec));
-    expect_opcode(0x95, Insn.exit());
+    try expect_opcode(0x05, Insn.ja(0));
+    try expect_opcode(0x15, Insn.jeq(.r1, 0, 0));
+    try expect_opcode(0x1d, Insn.jeq(.r1, .r2, 0));
+    try expect_opcode(0x25, Insn.jgt(.r1, 0, 0));
+    try expect_opcode(0x2d, Insn.jgt(.r1, .r2, 0));
+    try expect_opcode(0x35, Insn.jge(.r1, 0, 0));
+    try expect_opcode(0x3d, Insn.jge(.r1, .r2, 0));
+    try expect_opcode(0xa5, Insn.jlt(.r1, 0, 0));
+    try expect_opcode(0xad, Insn.jlt(.r1, .r2, 0));
+    try expect_opcode(0xb5, Insn.jle(.r1, 0, 0));
+    try expect_opcode(0xbd, Insn.jle(.r1, .r2, 0));
+    try expect_opcode(0x45, Insn.jset(.r1, 0, 0));
+    try expect_opcode(0x4d, Insn.jset(.r1, .r2, 0));
+    try expect_opcode(0x55, Insn.jne(.r1, 0, 0));
+    try expect_opcode(0x5d, Insn.jne(.r1, .r2, 0));
+    try expect_opcode(0x65, Insn.jsgt(.r1, 0, 0));
+    try expect_opcode(0x6d, Insn.jsgt(.r1, .r2, 0));
+    try expect_opcode(0x75, Insn.jsge(.r1, 0, 0));
+    try expect_opcode(0x7d, Insn.jsge(.r1, .r2, 0));
+    try expect_opcode(0xc5, Insn.jslt(.r1, 0, 0));
+    try expect_opcode(0xcd, Insn.jslt(.r1, .r2, 0));
+    try expect_opcode(0xd5, Insn.jsle(.r1, 0, 0));
+    try expect_opcode(0xdd, Insn.jsle(.r1, .r2, 0));
+    try expect_opcode(0x85, Insn.call(.unspec));
+    try expect_opcode(0x95, Insn.exit());
 }
 
-pub const Cmd = extern enum(usize) {
+pub const Cmd = enum(usize) {
     /// Create  a map and return a file descriptor that refers to the map.  The
     /// close-on-exec file descriptor flag is automatically enabled for the new
     /// file descriptor.
@@ -977,7 +982,7 @@ pub const Cmd = extern enum(usize) {
     _,
 };
 
-pub const MapType = extern enum(u32) {
+pub const MapType = enum(u32) {
     unspec,
     hash,
     array,
@@ -1044,7 +1049,7 @@ pub const MapType = extern enum(u32) {
     _,
 };
 
-pub const ProgType = extern enum(u32) {
+pub const ProgType = enum(u32) {
     unspec,
 
     /// context type: __sk_buff
@@ -1136,10 +1141,14 @@ pub const ProgType = extern enum(u32) {
 
     /// context type: bpf_sk_lookup
     sk_lookup,
+
+    /// context type: void *
+    syscall,
+
     _,
 };
 
-pub const AttachType = extern enum(u32) {
+pub const AttachType = enum(u32) {
     cgroup_inet_ingress,
     cgroup_inet_egress,
     cgroup_inet_sock_create,
@@ -1502,19 +1511,19 @@ pub fn map_create(map_type: MapType, key_size: u32, value_size: u32, max_entries
         .map_create = std.mem.zeroes(MapCreateAttr),
     };
 
-    attr.map_create.map_type = @enumToInt(map_type);
+    attr.map_create.map_type = @intFromEnum(map_type);
     attr.map_create.key_size = key_size;
     attr.map_create.value_size = value_size;
     attr.map_create.max_entries = max_entries;
 
-    const rc = bpf(.map_create, &attr, @sizeOf(MapCreateAttr));
-    return switch (errno(rc)) {
-        0 => @intCast(fd_t, rc),
-        EINVAL => error.MapTypeOrAttrInvalid,
-        ENOMEM => error.SystemResources,
-        EPERM => error.AccessDenied,
-        else => |err| unexpectedErrno(rc),
-    };
+    const rc = linux.bpf(.map_create, &attr, @sizeOf(MapCreateAttr));
+    switch (errno(rc)) {
+        .SUCCESS => return @as(fd_t, @intCast(rc)),
+        .INVAL => return error.MapTypeOrAttrInvalid,
+        .NOMEM => return error.SystemResources,
+        .PERM => return error.AccessDenied,
+        else => |err| return unexpectedErrno(err),
+    }
 }
 
 test "map_create" {
@@ -1528,18 +1537,18 @@ pub fn map_lookup_elem(fd: fd_t, key: []const u8, value: []u8) !void {
     };
 
     attr.map_elem.map_fd = fd;
-    attr.map_elem.key = @ptrToInt(key.ptr);
-    attr.map_elem.result.value = @ptrToInt(value.ptr);
+    attr.map_elem.key = @intFromPtr(key.ptr);
+    attr.map_elem.result.value = @intFromPtr(value.ptr);
 
-    const rc = bpf(.map_lookup_elem, &attr, @sizeOf(MapElemAttr));
+    const rc = linux.bpf(.map_lookup_elem, &attr, @sizeOf(MapElemAttr));
     switch (errno(rc)) {
-        0 => return,
-        EBADF => return error.BadFd,
-        EFAULT => unreachable,
-        EINVAL => return error.FieldInAttrNeedsZeroing,
-        ENOENT => return error.NotFound,
-        EPERM => return error.AccessDenied,
-        else => |err| return unexpectedErrno(rc),
+        .SUCCESS => return,
+        .BADF => return error.BadFd,
+        .FAULT => unreachable,
+        .INVAL => return error.FieldInAttrNeedsZeroing,
+        .NOENT => return error.NotFound,
+        .PERM => return error.AccessDenied,
+        else => |err| return unexpectedErrno(err),
     }
 }
 
@@ -1549,19 +1558,19 @@ pub fn map_update_elem(fd: fd_t, key: []const u8, value: []const u8, flags: u64)
     };
 
     attr.map_elem.map_fd = fd;
-    attr.map_elem.key = @ptrToInt(key.ptr);
-    attr.map_elem.result = .{ .value = @ptrToInt(value.ptr) };
+    attr.map_elem.key = @intFromPtr(key.ptr);
+    attr.map_elem.result = .{ .value = @intFromPtr(value.ptr) };
     attr.map_elem.flags = flags;
 
-    const rc = bpf(.map_update_elem, &attr, @sizeOf(MapElemAttr));
+    const rc = linux.bpf(.map_update_elem, &attr, @sizeOf(MapElemAttr));
     switch (errno(rc)) {
-        0 => return,
-        E2BIG => return error.ReachedMaxEntries,
-        EBADF => return error.BadFd,
-        EFAULT => unreachable,
-        EINVAL => return error.FieldInAttrNeedsZeroing,
-        ENOMEM => return error.SystemResources,
-        EPERM => return error.AccessDenied,
+        .SUCCESS => return,
+        .@"2BIG" => return error.ReachedMaxEntries,
+        .BADF => return error.BadFd,
+        .FAULT => unreachable,
+        .INVAL => return error.FieldInAttrNeedsZeroing,
+        .NOMEM => return error.SystemResources,
+        .PERM => return error.AccessDenied,
         else => |err| return unexpectedErrno(err),
     }
 }
@@ -1572,16 +1581,37 @@ pub fn map_delete_elem(fd: fd_t, key: []const u8) !void {
     };
 
     attr.map_elem.map_fd = fd;
-    attr.map_elem.key = @ptrToInt(key.ptr);
+    attr.map_elem.key = @intFromPtr(key.ptr);
 
-    const rc = bpf(.map_delete_elem, &attr, @sizeOf(MapElemAttr));
+    const rc = linux.bpf(.map_delete_elem, &attr, @sizeOf(MapElemAttr));
     switch (errno(rc)) {
-        0 => return,
-        EBADF => return error.BadFd,
-        EFAULT => unreachable,
-        EINVAL => return error.FieldInAttrNeedsZeroing,
-        ENOENT => return error.NotFound,
-        EPERM => return error.AccessDenied,
+        .SUCCESS => return,
+        .BADF => return error.BadFd,
+        .FAULT => unreachable,
+        .INVAL => return error.FieldInAttrNeedsZeroing,
+        .NOENT => return error.NotFound,
+        .PERM => return error.AccessDenied,
+        else => |err| return unexpectedErrno(err),
+    }
+}
+
+pub fn map_get_next_key(fd: fd_t, key: []const u8, next_key: []u8) !bool {
+    var attr = Attr{
+        .map_elem = std.mem.zeroes(MapElemAttr),
+    };
+
+    attr.map_elem.map_fd = fd;
+    attr.map_elem.key = @intFromPtr(key.ptr);
+    attr.map_elem.result.next_key = @intFromPtr(next_key.ptr);
+
+    const rc = linux.bpf(.map_get_next_key, &attr, @sizeOf(MapElemAttr));
+    switch (errno(rc)) {
+        .SUCCESS => return true,
+        .BADF => return error.BadFd,
+        .FAULT => unreachable,
+        .INVAL => return error.FieldInAttrNeedsZeroing,
+        .NOENT => return false,
+        .PERM => return error.AccessDenied,
         else => |err| return unexpectedErrno(err),
     }
 }
@@ -1596,7 +1626,7 @@ test "map lookup, update, and delete" {
     var value = std.mem.zeroes([value_size]u8);
 
     // fails looking up value that doesn't exist
-    expectError(error.NotFound, map_lookup_elem(map, &key, &value));
+    try expectError(error.NotFound, map_lookup_elem(map, &key, &value));
 
     // succeed at updating and looking up element
     try map_update_elem(map, &key, &value, 0);
@@ -1604,14 +1634,24 @@ test "map lookup, update, and delete" {
 
     // fails inserting more than max entries
     const second_key = [key_size]u8{ 0, 0, 0, 1 };
-    expectError(error.ReachedMaxEntries, map_update_elem(map, &second_key, &value, 0));
+    try expectError(error.ReachedMaxEntries, map_update_elem(map, &second_key, &value, 0));
+
+    // succeed at iterating all keys of map
+    var lookup_key = [_]u8{ 1, 0, 0, 0 };
+    var next_key = [_]u8{ 2, 3, 4, 5 }; // garbage value
+    const status = try map_get_next_key(map, &lookup_key, &next_key);
+    try expectEqual(status, true);
+    try expectEqual(next_key, key);
+    lookup_key = next_key;
+    const status2 = try map_get_next_key(map, &lookup_key, &next_key);
+    try expectEqual(status2, false);
 
     // succeed at deleting an existing elem
     try map_delete_elem(map, &key);
-    expectError(error.NotFound, map_lookup_elem(map, &key, &value));
+    try expectError(error.NotFound, map_lookup_elem(map, &key, &value));
 
     // fail at deleting a non-existing elem
-    expectError(error.NotFound, map_delete_elem(map, &key));
+    try expectError(error.NotFound, map_delete_elem(map, &key));
 }
 
 pub fn prog_load(
@@ -1620,30 +1660,32 @@ pub fn prog_load(
     log: ?*Log,
     license: []const u8,
     kern_version: u32,
+    flags: u32,
 ) !fd_t {
     var attr = Attr{
         .prog_load = std.mem.zeroes(ProgLoadAttr),
     };
 
-    attr.prog_load.prog_type = @enumToInt(prog_type);
-    attr.prog_load.insns = @ptrToInt(insns.ptr);
-    attr.prog_load.insn_cnt = @intCast(u32, insns.len);
-    attr.prog_load.license = @ptrToInt(license.ptr);
+    attr.prog_load.prog_type = @intFromEnum(prog_type);
+    attr.prog_load.insns = @intFromPtr(insns.ptr);
+    attr.prog_load.insn_cnt = @as(u32, @intCast(insns.len));
+    attr.prog_load.license = @intFromPtr(license.ptr);
     attr.prog_load.kern_version = kern_version;
+    attr.prog_load.prog_flags = flags;
 
     if (log) |l| {
-        attr.prog_load.log_buf = @ptrToInt(l.buf.ptr);
-        attr.prog_load.log_size = @intCast(u32, l.buf.len);
+        attr.prog_load.log_buf = @intFromPtr(l.buf.ptr);
+        attr.prog_load.log_size = @as(u32, @intCast(l.buf.len));
         attr.prog_load.log_level = l.level;
     }
 
-    const rc = bpf(.prog_load, &attr, @sizeOf(ProgLoadAttr));
+    const rc = linux.bpf(.prog_load, &attr, @sizeOf(ProgLoadAttr));
     return switch (errno(rc)) {
-        0 => @intCast(fd_t, rc),
-        EACCES => error.UnsafeProgram,
-        EFAULT => unreachable,
-        EINVAL => error.InvalidProgram,
-        EPERM => error.AccessDenied,
+        .SUCCESS => @as(fd_t, @intCast(rc)),
+        .ACCES => error.UnsafeProgram,
+        .FAULT => unreachable,
+        .INVAL => error.InvalidProgram,
+        .PERM => error.AccessDenied,
         else => |err| unexpectedErrno(err),
     };
 }
@@ -1659,8 +1701,8 @@ test "prog_load" {
         Insn.exit(),
     };
 
-    const prog = try prog_load(.socket_filter, &good_prog, null, "MIT", 0);
+    const prog = try prog_load(.socket_filter, &good_prog, null, "MIT", 0, 0);
     defer std.os.close(prog);
 
-    expectError(error.UnsafeProgram, prog_load(.socket_filter, &bad_prog, null, "MIT", 0));
+    try expectError(error.UnsafeProgram, prog_load(.socket_filter, &bad_prog, null, "MIT", 0, 0));
 }

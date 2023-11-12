@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 // Ported from musl, which is licensed under the MIT license:
 // https://git.musl-libc.org/cgit/musl/tree/COPYRIGHT
 //
@@ -51,7 +46,7 @@ fn atan32(x_: f32) f32 {
     };
 
     var x = x_;
-    var ix: u32 = @bitCast(u32, x);
+    var ix: u32 = @as(u32, @bitCast(x));
     const sign = ix >> 31;
     ix &= 0x7FFFFFFF;
 
@@ -78,7 +73,7 @@ fn atan32(x_: f32) f32 {
         }
         id = null;
     } else {
-        x = math.fabs(x);
+        x = @abs(x);
         // |x| < 1.1875
         if (ix < 0x3F980000) {
             // 7/16 <= |x| < 11/16
@@ -148,8 +143,8 @@ fn atan64(x_: f64) f64 {
     };
 
     var x = x_;
-    var ux = @bitCast(u64, x);
-    var ix = @intCast(u32, ux >> 32);
+    var ux = @as(u64, @bitCast(x));
+    var ix = @as(u32, @intCast(ux >> 32));
     const sign = ix >> 31;
     ix &= 0x7FFFFFFF;
 
@@ -166,17 +161,17 @@ fn atan64(x_: f64) f64 {
     var id: ?usize = undefined;
 
     // |x| < 0.4375
-    if (ix < 0x3DFC0000) {
+    if (ix < 0x3FDC0000) {
         // |x| < 2^(-27)
         if (ix < 0x3E400000) {
             if (ix < 0x00100000) {
-                math.doNotOptimizeAway(@floatCast(f32, x));
+                math.doNotOptimizeAway(@as(f32, @floatCast(x)));
             }
             return x;
         }
         id = null;
     } else {
-        x = math.fabs(x);
+        x = @abs(x);
         // |x| < 1.1875
         if (ix < 0x3FF30000) {
             // 7/16 <= |x| < 11/16
@@ -217,44 +212,44 @@ fn atan64(x_: f64) f64 {
 }
 
 test "math.atan" {
-    expect(@bitCast(u32, atan(@as(f32, 0.2))) == @bitCast(u32, atan32(0.2)));
-    expect(atan(@as(f64, 0.2)) == atan64(0.2));
+    try expect(@as(u32, @bitCast(atan(@as(f32, 0.2)))) == @as(u32, @bitCast(atan32(0.2))));
+    try expect(atan(@as(f64, 0.2)) == atan64(0.2));
 }
 
 test "math.atan32" {
     const epsilon = 0.000001;
 
-    expect(math.approxEqAbs(f32, atan32(0.2), 0.197396, epsilon));
-    expect(math.approxEqAbs(f32, atan32(-0.2), -0.197396, epsilon));
-    expect(math.approxEqAbs(f32, atan32(0.3434), 0.330783, epsilon));
-    expect(math.approxEqAbs(f32, atan32(0.8923), 0.728545, epsilon));
-    expect(math.approxEqAbs(f32, atan32(1.5), 0.982794, epsilon));
+    try expect(math.approxEqAbs(f32, atan32(0.2), 0.197396, epsilon));
+    try expect(math.approxEqAbs(f32, atan32(-0.2), -0.197396, epsilon));
+    try expect(math.approxEqAbs(f32, atan32(0.3434), 0.330783, epsilon));
+    try expect(math.approxEqAbs(f32, atan32(0.8923), 0.728545, epsilon));
+    try expect(math.approxEqAbs(f32, atan32(1.5), 0.982794, epsilon));
 }
 
 test "math.atan64" {
     const epsilon = 0.000001;
 
-    expect(math.approxEqAbs(f64, atan64(0.2), 0.197396, epsilon));
-    expect(math.approxEqAbs(f64, atan64(-0.2), -0.197396, epsilon));
-    expect(math.approxEqAbs(f64, atan64(0.3434), 0.330783, epsilon));
-    expect(math.approxEqAbs(f64, atan64(0.8923), 0.728545, epsilon));
-    expect(math.approxEqAbs(f64, atan64(1.5), 0.982794, epsilon));
+    try expect(math.approxEqAbs(f64, atan64(0.2), 0.197396, epsilon));
+    try expect(math.approxEqAbs(f64, atan64(-0.2), -0.197396, epsilon));
+    try expect(math.approxEqAbs(f64, atan64(0.3434), 0.330783, epsilon));
+    try expect(math.approxEqAbs(f64, atan64(0.8923), 0.728545, epsilon));
+    try expect(math.approxEqAbs(f64, atan64(1.5), 0.982794, epsilon));
 }
 
 test "math.atan32.special" {
     const epsilon = 0.000001;
 
-    expect(atan32(0.0) == 0.0);
-    expect(atan32(-0.0) == -0.0);
-    expect(math.approxEqAbs(f32, atan32(math.inf(f32)), math.pi / 2.0, epsilon));
-    expect(math.approxEqAbs(f32, atan32(-math.inf(f32)), -math.pi / 2.0, epsilon));
+    try expect(math.isPositiveZero(atan32(0.0)));
+    try expect(math.isNegativeZero(atan32(-0.0)));
+    try expect(math.approxEqAbs(f32, atan32(math.inf(f32)), math.pi / 2.0, epsilon));
+    try expect(math.approxEqAbs(f32, atan32(-math.inf(f32)), -math.pi / 2.0, epsilon));
 }
 
 test "math.atan64.special" {
     const epsilon = 0.000001;
 
-    expect(atan64(0.0) == 0.0);
-    expect(atan64(-0.0) == -0.0);
-    expect(math.approxEqAbs(f64, atan64(math.inf(f64)), math.pi / 2.0, epsilon));
-    expect(math.approxEqAbs(f64, atan64(-math.inf(f64)), -math.pi / 2.0, epsilon));
+    try expect(math.isPositiveZero(atan64(0.0)));
+    try expect(math.isNegativeZero(atan64(-0.0)));
+    try expect(math.approxEqAbs(f64, atan64(math.inf(f64)), math.pi / 2.0, epsilon));
+    try expect(math.approxEqAbs(f64, atan64(-math.inf(f64)), -math.pi / 2.0, epsilon));
 }

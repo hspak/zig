@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 // Ported from musl, which is licensed under the MIT license:
 // https://git.musl-libc.org/cgit/musl/tree/COPYRIGHT
 //
@@ -11,7 +6,6 @@
 
 // TODO: Updated recently.
 
-const builtin = @import("builtin");
 const std = @import("../std.zig");
 const math = std.math;
 const expect = std.testing.expect;
@@ -44,7 +38,7 @@ fn expm1_32(x_: f32) f32 {
     const Q2: f32 = 1.5807170421e-3;
 
     var x = x_;
-    const ux = @bitCast(u32, x);
+    const ux = @as(u32, @bitCast(x));
     const hx = ux & 0x7FFFFFFF;
     const sign = hx >> 31;
 
@@ -94,8 +88,8 @@ fn expm1_32(x_: f32) f32 {
                 kf += 0.5;
             }
 
-            k = @floatToInt(i32, kf);
-            const t = @intToFloat(f32, k);
+            k = @as(i32, @intFromFloat(kf));
+            const t = @as(f32, @floatFromInt(k));
             hi = x - t * ln2_hi;
             lo = t * ln2_lo;
         }
@@ -139,7 +133,7 @@ fn expm1_32(x_: f32) f32 {
         }
     }
 
-    const twopk = @bitCast(f32, @intCast(u32, (0x7F +% k) << 23));
+    const twopk = @as(f32, @bitCast(@as(u32, @intCast((0x7F +% k) << 23))));
 
     if (k < 0 or k > 56) {
         var y = x - e + 1.0;
@@ -152,7 +146,7 @@ fn expm1_32(x_: f32) f32 {
         return y - 1.0;
     }
 
-    const uf = @bitCast(f32, @intCast(u32, 0x7F -% k) << 23);
+    const uf = @as(f32, @bitCast(@as(u32, @intCast(0x7F -% k)) << 23));
     if (k < 23) {
         return (x - e + (1 - uf)) * twopk;
     } else {
@@ -175,8 +169,8 @@ fn expm1_64(x_: f64) f64 {
     const Q5: f64 = -2.01099218183624371326e-07;
 
     var x = x_;
-    const ux = @bitCast(u64, x);
-    const hx = @intCast(u32, ux >> 32) & 0x7FFFFFFF;
+    const ux = @as(u64, @bitCast(x));
+    const hx = @as(u32, @intCast(ux >> 32)) & 0x7FFFFFFF;
     const sign = ux >> 63;
 
     if (math.isNegativeInf(x)) {
@@ -225,8 +219,8 @@ fn expm1_64(x_: f64) f64 {
                 kf += 0.5;
             }
 
-            k = @floatToInt(i32, kf);
-            const t = @intToFloat(f64, k);
+            k = @as(i32, @intFromFloat(kf));
+            const t = @as(f64, @floatFromInt(k));
             hi = x - t * ln2_hi;
             lo = t * ln2_lo;
         }
@@ -237,7 +231,7 @@ fn expm1_64(x_: f64) f64 {
     // |x| < 2^(-54)
     else if (hx < 0x3C900000) {
         if (hx < 0x00100000) {
-            math.doNotOptimizeAway(@floatCast(f32, x));
+            math.doNotOptimizeAway(@as(f32, @floatCast(x)));
         }
         return x;
     } else {
@@ -270,7 +264,7 @@ fn expm1_64(x_: f64) f64 {
         }
     }
 
-    const twopk = @bitCast(f64, @intCast(u64, 0x3FF +% k) << 52);
+    const twopk = @as(f64, @bitCast(@as(u64, @intCast(0x3FF +% k)) << 52));
 
     if (k < 0 or k > 56) {
         var y = x - e + 1.0;
@@ -283,7 +277,7 @@ fn expm1_64(x_: f64) f64 {
         return y - 1.0;
     }
 
-    const uf = @bitCast(f64, @intCast(u64, 0x3FF -% k) << 52);
+    const uf = @as(f64, @bitCast(@as(u64, @intCast(0x3FF -% k)) << 52));
     if (k < 20) {
         return (x - e + (1 - uf)) * twopk;
     } else {
@@ -292,42 +286,38 @@ fn expm1_64(x_: f64) f64 {
 }
 
 test "math.exp1m" {
-    expect(expm1(@as(f32, 0.0)) == expm1_32(0.0));
-    expect(expm1(@as(f64, 0.0)) == expm1_64(0.0));
+    try expect(expm1(@as(f32, 0.0)) == expm1_32(0.0));
+    try expect(expm1(@as(f64, 0.0)) == expm1_64(0.0));
 }
 
 test "math.expm1_32" {
     const epsilon = 0.000001;
 
-    expect(expm1_32(0.0) == 0.0);
-    expect(math.approxEqAbs(f32, expm1_32(0.0), 0.0, epsilon));
-    expect(math.approxEqAbs(f32, expm1_32(0.2), 0.221403, epsilon));
-    expect(math.approxEqAbs(f32, expm1_32(0.8923), 1.440737, epsilon));
-    expect(math.approxEqAbs(f32, expm1_32(1.5), 3.481689, epsilon));
+    try expect(math.isPositiveZero(expm1_32(0.0)));
+    try expect(math.approxEqAbs(f32, expm1_32(0.0), 0.0, epsilon));
+    try expect(math.approxEqAbs(f32, expm1_32(0.2), 0.221403, epsilon));
+    try expect(math.approxEqAbs(f32, expm1_32(0.8923), 1.440737, epsilon));
+    try expect(math.approxEqAbs(f32, expm1_32(1.5), 3.481689, epsilon));
 }
 
 test "math.expm1_64" {
     const epsilon = 0.000001;
 
-    expect(expm1_64(0.0) == 0.0);
-    expect(math.approxEqAbs(f64, expm1_64(0.0), 0.0, epsilon));
-    expect(math.approxEqAbs(f64, expm1_64(0.2), 0.221403, epsilon));
-    expect(math.approxEqAbs(f64, expm1_64(0.8923), 1.440737, epsilon));
-    expect(math.approxEqAbs(f64, expm1_64(1.5), 3.481689, epsilon));
+    try expect(math.isPositiveZero(expm1_64(0.0)));
+    try expect(math.approxEqAbs(f64, expm1_64(0.0), 0.0, epsilon));
+    try expect(math.approxEqAbs(f64, expm1_64(0.2), 0.221403, epsilon));
+    try expect(math.approxEqAbs(f64, expm1_64(0.8923), 1.440737, epsilon));
+    try expect(math.approxEqAbs(f64, expm1_64(1.5), 3.481689, epsilon));
 }
 
 test "math.expm1_32.special" {
-    const epsilon = 0.000001;
-
-    expect(math.isPositiveInf(expm1_32(math.inf(f32))));
-    expect(expm1_32(-math.inf(f32)) == -1.0);
-    expect(math.isNan(expm1_32(math.nan(f32))));
+    try expect(math.isPositiveInf(expm1_32(math.inf(f32))));
+    try expect(expm1_32(-math.inf(f32)) == -1.0);
+    try expect(math.isNan(expm1_32(math.nan(f32))));
 }
 
 test "math.expm1_64.special" {
-    const epsilon = 0.000001;
-
-    expect(math.isPositiveInf(expm1_64(math.inf(f64))));
-    expect(expm1_64(-math.inf(f64)) == -1.0);
-    expect(math.isNan(expm1_64(math.nan(f64))));
+    try expect(math.isPositiveInf(expm1_64(math.inf(f64))));
+    try expect(expm1_64(-math.inf(f64)) == -1.0);
+    try expect(math.isNan(expm1_64(math.nan(f64))));
 }

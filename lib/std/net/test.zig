@@ -1,10 +1,5 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
-const std = @import("../std.zig");
-const builtin = std.builtin;
+const std = @import("std");
+const builtin = @import("builtin");
 const net = std.net;
 const mem = std.mem;
 const testing = std.testing;
@@ -18,6 +13,7 @@ test "parse and render IPv6 addresses" {
         "FF01::Fb",
         "::1",
         "::",
+        "1::",
         "2001:db8::",
         "::1234:5678",
         "2001:db8::1234:5678",
@@ -29,46 +25,48 @@ test "parse and render IPv6 addresses" {
         "ff01::fb",
         "::1",
         "::",
+        "1::",
         "2001:db8::",
         "::1234:5678",
         "2001:db8::1234:5678",
         "ff01::fb",
         "::ffff:123.5.123.5",
     };
-    for (ips) |ip, i| {
+    for (ips, 0..) |ip, i| {
         var addr = net.Address.parseIp6(ip, 0) catch unreachable;
         var newIp = std.fmt.bufPrint(buffer[0..], "{}", .{addr}) catch unreachable;
-        std.testing.expect(std.mem.eql(u8, printed[i], newIp[1 .. newIp.len - 3]));
+        try std.testing.expect(std.mem.eql(u8, printed[i], newIp[1 .. newIp.len - 3]));
 
-        if (std.builtin.os.tag == .linux) {
+        if (builtin.os.tag == .linux) {
             var addr_via_resolve = net.Address.resolveIp6(ip, 0) catch unreachable;
             var newResolvedIp = std.fmt.bufPrint(buffer[0..], "{}", .{addr_via_resolve}) catch unreachable;
-            std.testing.expect(std.mem.eql(u8, printed[i], newResolvedIp[1 .. newResolvedIp.len - 3]));
+            try std.testing.expect(std.mem.eql(u8, printed[i], newResolvedIp[1 .. newResolvedIp.len - 3]));
         }
     }
 
-    testing.expectError(error.InvalidCharacter, net.Address.parseIp6(":::", 0));
-    testing.expectError(error.Overflow, net.Address.parseIp6("FF001::FB", 0));
-    testing.expectError(error.InvalidCharacter, net.Address.parseIp6("FF01::Fb:zig", 0));
-    testing.expectError(error.InvalidEnd, net.Address.parseIp6("FF01:0:0:0:0:0:0:FB:", 0));
-    testing.expectError(error.Incomplete, net.Address.parseIp6("FF01:", 0));
-    testing.expectError(error.InvalidIpv4Mapping, net.Address.parseIp6("::123.123.123.123", 0));
+    try testing.expectError(error.InvalidCharacter, net.Address.parseIp6(":::", 0));
+    try testing.expectError(error.Overflow, net.Address.parseIp6("FF001::FB", 0));
+    try testing.expectError(error.InvalidCharacter, net.Address.parseIp6("FF01::Fb:zig", 0));
+    try testing.expectError(error.InvalidEnd, net.Address.parseIp6("FF01:0:0:0:0:0:0:FB:", 0));
+    try testing.expectError(error.Incomplete, net.Address.parseIp6("FF01:", 0));
+    try testing.expectError(error.InvalidIpv4Mapping, net.Address.parseIp6("::123.123.123.123", 0));
+    try testing.expectError(error.Incomplete, net.Address.parseIp6("1", 0));
     // TODO Make this test pass on other operating systems.
-    if (std.builtin.os.tag == .linux) {
-        testing.expectError(error.Incomplete, net.Address.resolveIp6("ff01::fb%", 0));
-        testing.expectError(error.Overflow, net.Address.resolveIp6("ff01::fb%wlp3s0s0s0s0s0s0s0s0", 0));
-        testing.expectError(error.Overflow, net.Address.resolveIp6("ff01::fb%12345678901234", 0));
+    if (builtin.os.tag == .linux or comptime builtin.os.tag.isDarwin()) {
+        try testing.expectError(error.Incomplete, net.Address.resolveIp6("ff01::fb%", 0));
+        try testing.expectError(error.Overflow, net.Address.resolveIp6("ff01::fb%wlp3s0s0s0s0s0s0s0s0", 0));
+        try testing.expectError(error.Overflow, net.Address.resolveIp6("ff01::fb%12345678901234", 0));
     }
 }
 
 test "invalid but parseable IPv6 scope ids" {
-    if (std.builtin.os.tag != .linux) {
+    if (builtin.os.tag != .linux and comptime !builtin.os.tag.isDarwin()) {
         // Currently, resolveIp6 with alphanumerical scope IDs only works on Linux.
         // TODO Make this test pass on other operating systems.
         return error.SkipZigTest;
     }
 
-    testing.expectError(error.InterfaceNotFound, net.Address.resolveIp6("ff01::fb%123s45678901234", 0));
+    try testing.expectError(error.InterfaceNotFound, net.Address.resolveIp6("ff01::fb%123s45678901234", 0));
 }
 
 test "parse and render IPv4 addresses" {
@@ -84,24 +82,38 @@ test "parse and render IPv4 addresses" {
     }) |ip| {
         var addr = net.Address.parseIp4(ip, 0) catch unreachable;
         var newIp = std.fmt.bufPrint(buffer[0..], "{}", .{addr}) catch unreachable;
-        std.testing.expect(std.mem.eql(u8, ip, newIp[0 .. newIp.len - 2]));
+        try std.testing.expect(std.mem.eql(u8, ip, newIp[0 .. newIp.len - 2]));
     }
 
-    testing.expectError(error.Overflow, net.Address.parseIp4("256.0.0.1", 0));
-    testing.expectError(error.InvalidCharacter, net.Address.parseIp4("x.0.0.1", 0));
-    testing.expectError(error.InvalidEnd, net.Address.parseIp4("127.0.0.1.1", 0));
-    testing.expectError(error.Incomplete, net.Address.parseIp4("127.0.0.", 0));
-    testing.expectError(error.InvalidCharacter, net.Address.parseIp4("100..0.1", 0));
+    try testing.expectError(error.Overflow, net.Address.parseIp4("256.0.0.1", 0));
+    try testing.expectError(error.InvalidCharacter, net.Address.parseIp4("x.0.0.1", 0));
+    try testing.expectError(error.InvalidEnd, net.Address.parseIp4("127.0.0.1.1", 0));
+    try testing.expectError(error.Incomplete, net.Address.parseIp4("127.0.0.", 0));
+    try testing.expectError(error.InvalidCharacter, net.Address.parseIp4("100..0.1", 0));
+    try testing.expectError(error.NonCanonical, net.Address.parseIp4("127.01.0.1", 0));
+}
+
+test "parse and render UNIX addresses" {
+    if (builtin.os.tag == .wasi) return error.SkipZigTest;
+    if (!net.has_unix_sockets) return error.SkipZigTest;
+
+    var buffer: [14]u8 = undefined;
+    const addr = net.Address.initUnix("/tmp/testpath") catch unreachable;
+    const fmt_addr = std.fmt.bufPrint(buffer[0..], "{}", .{addr}) catch unreachable;
+    try std.testing.expectEqualSlices(u8, "/tmp/testpath", fmt_addr);
+
+    const too_long = [_]u8{'a'} ** 200;
+    try testing.expectError(error.NameTooLong, net.Address.initUnix(too_long[0..]));
 }
 
 test "resolve DNS" {
     if (builtin.os.tag == .wasi) return error.SkipZigTest;
 
-    if (std.builtin.os.tag == .windows) {
+    if (builtin.os.tag == .windows) {
         _ = try std.os.windows.WSAStartup(2, 2);
     }
     defer {
-        if (std.builtin.os.tag == .windows) {
+        if (builtin.os.tag == .windows) {
             std.os.windows.WSACleanup() catch unreachable;
         }
     }
@@ -134,11 +146,11 @@ test "listen on a port, send bytes, receive bytes" {
     if (builtin.single_threaded) return error.SkipZigTest;
     if (builtin.os.tag == .wasi) return error.SkipZigTest;
 
-    if (std.builtin.os.tag == .windows) {
+    if (builtin.os.tag == .windows) {
         _ = try std.os.windows.WSAStartup(2, 2);
     }
     defer {
-        if (std.builtin.os.tag == .windows) {
+        if (builtin.os.tag == .windows) {
             std.os.windows.WSACleanup() catch unreachable;
         }
     }
@@ -161,22 +173,22 @@ test "listen on a port, send bytes, receive bytes" {
         }
     };
 
-    const t = try std.Thread.spawn(S.clientFn, server.listen_address);
-    defer t.wait();
+    const t = try std.Thread.spawn(.{}, S.clientFn, .{server.listen_address});
+    defer t.join();
 
     var client = try server.accept();
     defer client.stream.close();
     var buf: [16]u8 = undefined;
     const n = try client.stream.reader().read(&buf);
 
-    testing.expectEqual(@as(usize, 12), n);
-    testing.expectEqualSlices(u8, "Hello world!", buf[0..n]);
+    try testing.expectEqual(@as(usize, 12), n);
+    try testing.expectEqualSlices(u8, "Hello world!", buf[0..n]);
 }
 
-test "listen on a port, send bytes, receive bytes" {
+test "listen on a port, send bytes, receive bytes, async-only" {
     if (!std.io.is_async) return error.SkipZigTest;
 
-    if (std.builtin.os.tag != .linux and !std.builtin.os.tag.isDarwin()) {
+    if (builtin.os.tag != .linux and !builtin.os.tag.isDarwin()) {
         // TODO build abstractions for other operating systems
         return error.SkipZigTest;
     }
@@ -198,7 +210,7 @@ test "listen on a port, send bytes, receive bytes" {
 test "listen on ipv4 try connect on ipv6 then ipv4" {
     if (!std.io.is_async) return error.SkipZigTest;
 
-    if (std.builtin.os.tag != .linux and !std.builtin.os.tag.isDarwin()) {
+    if (builtin.os.tag != .linux and !builtin.os.tag.isDarwin()) {
         // TODO build abstractions for other operating systems
         return error.SkipZigTest;
     }
@@ -221,7 +233,28 @@ test "listen on ipv4 try connect on ipv6 then ipv4" {
     try await client_frame;
 }
 
-fn testClientToHost(allocator: *mem.Allocator, name: []const u8, port: u16) anyerror!void {
+test "listen on an in use port" {
+    if (builtin.os.tag != .linux and comptime !builtin.os.tag.isDarwin()) {
+        // TODO build abstractions for other operating systems
+        return error.SkipZigTest;
+    }
+
+    const localhost = try net.Address.parseIp("127.0.0.1", 0);
+
+    var server1 = net.StreamServer.init(net.StreamServer.Options{
+        .reuse_port = true,
+    });
+    defer server1.deinit();
+    try server1.listen(localhost);
+
+    var server2 = net.StreamServer.init(net.StreamServer.Options{
+        .reuse_port = true,
+    });
+    defer server2.deinit();
+    try server2.listen(server1.listen_address);
+}
+
+fn testClientToHost(allocator: mem.Allocator, name: []const u8, port: u16) anyerror!void {
     if (builtin.os.tag == .wasi) return error.SkipZigTest;
 
     const connection = try net.tcpConnectToHost(allocator, name, port);
@@ -230,7 +263,7 @@ fn testClientToHost(allocator: *mem.Allocator, name: []const u8, port: u16) anye
     var buf: [100]u8 = undefined;
     const len = try connection.read(&buf);
     const msg = buf[0..len];
-    testing.expect(mem.eql(u8, msg, "hello from server\n"));
+    try testing.expect(mem.eql(u8, msg, "hello from server\n"));
 }
 
 fn testClient(addr: net.Address) anyerror!void {
@@ -242,7 +275,7 @@ fn testClient(addr: net.Address) anyerror!void {
     var buf: [100]u8 = undefined;
     const len = try socket_file.read(&buf);
     const msg = buf[0..len];
-    testing.expect(mem.eql(u8, msg, "hello from server\n"));
+    try testing.expect(mem.eql(u8, msg, "hello from server\n"));
 }
 
 fn testServer(server: *net.StreamServer) anyerror!void {
@@ -258,11 +291,11 @@ test "listen on a unix socket, send bytes, receive bytes" {
     if (builtin.single_threaded) return error.SkipZigTest;
     if (!net.has_unix_sockets) return error.SkipZigTest;
 
-    if (std.builtin.os.tag == .windows) {
+    if (builtin.os.tag == .windows) {
         _ = try std.os.windows.WSAStartup(2, 2);
     }
     defer {
-        if (std.builtin.os.tag == .windows) {
+        if (builtin.os.tag == .windows) {
             std.os.windows.WSACleanup() catch unreachable;
         }
     }
@@ -270,29 +303,40 @@ test "listen on a unix socket, send bytes, receive bytes" {
     var server = net.StreamServer.init(.{});
     defer server.deinit();
 
-    const socket_path = "socket.unix";
+    var socket_path = try generateFileName("socket.unix");
+    defer testing.allocator.free(socket_path);
 
     var socket_addr = try net.Address.initUnix(socket_path);
     defer std.fs.cwd().deleteFile(socket_path) catch {};
     try server.listen(socket_addr);
 
     const S = struct {
-        fn clientFn(_: void) !void {
-            const socket = try net.connectUnixSocket(socket_path);
+        fn clientFn(path: []const u8) !void {
+            const socket = try net.connectUnixSocket(path);
             defer socket.close();
 
             _ = try socket.writer().writeAll("Hello world!");
         }
     };
 
-    const t = try std.Thread.spawn(S.clientFn, {});
-    defer t.wait();
+    const t = try std.Thread.spawn(.{}, S.clientFn, .{socket_path});
+    defer t.join();
 
     var client = try server.accept();
     defer client.stream.close();
     var buf: [16]u8 = undefined;
     const n = try client.stream.reader().read(&buf);
 
-    testing.expectEqual(@as(usize, 12), n);
-    testing.expectEqualSlices(u8, "Hello world!", buf[0..n]);
+    try testing.expectEqual(@as(usize, 12), n);
+    try testing.expectEqualSlices(u8, "Hello world!", buf[0..n]);
+}
+
+fn generateFileName(base_name: []const u8) ![]const u8 {
+    const random_bytes_count = 12;
+    const sub_path_len = comptime std.fs.base64_encoder.calcSize(random_bytes_count);
+    var random_bytes: [12]u8 = undefined;
+    std.crypto.random.bytes(&random_bytes);
+    var sub_path: [sub_path_len]u8 = undefined;
+    _ = std.fs.base64_encoder.encode(&sub_path, &random_bytes);
+    return std.fmt.allocPrint(testing.allocator, "{s}-{s}", .{ sub_path[0..], base_name });
 }

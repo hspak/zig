@@ -1,15 +1,10 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
 const uefi = @import("std").os.uefi;
 const BootServices = uefi.tables.BootServices;
 const ConfigurationTable = uefi.tables.ConfigurationTable;
 const Handle = uefi.Handle;
 const RuntimeServices = uefi.tables.RuntimeServices;
-const SimpleTextInputProtocol = uefi.protocols.SimpleTextInputProtocol;
-const SimpleTextOutputProtocol = uefi.protocols.SimpleTextOutputProtocol;
+const SimpleTextInputProtocol = uefi.protocol.SimpleTextInput;
+const SimpleTextOutputProtocol = uefi.protocol.SimpleTextOutput;
 const TableHeader = uefi.tables.TableHeader;
 
 /// The EFI System Table contains pointers to the runtime and boot services tables.

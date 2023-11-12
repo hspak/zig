@@ -1,24 +1,25 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2021 Zig Contributors
-// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
-// The MIT license requires this copyright notice to be included in all copies
-// and substantial portions of the software.
-
 const std = @import("../std.zig");
+const builtin = @import("builtin");
 const testing = std.testing;
-const builtin = std.builtin;
 
-const has_aesni = comptime std.Target.x86.featureSetHas(std.Target.current.cpu.features, .aes);
-const has_avx = comptime std.Target.x86.featureSetHas(std.Target.current.cpu.features, .avx);
-const has_armaes = comptime std.Target.aarch64.featureSetHas(std.Target.current.cpu.features, .aes);
-const impl = if (std.Target.current.cpu.arch == .x86_64 and has_aesni and has_avx) impl: {
+const has_aesni = std.Target.x86.featureSetHas(builtin.cpu.features, .aes);
+const has_avx = std.Target.x86.featureSetHas(builtin.cpu.features, .avx);
+const has_armaes = std.Target.aarch64.featureSetHas(builtin.cpu.features, .aes);
+// C backend doesn't currently support passing vectors to inline asm.
+const impl = if (builtin.cpu.arch == .x86_64 and builtin.zig_backend != .stage2_c and builtin.zig_backend != .stage2_x86_64 and has_aesni and has_avx) impl: {
     break :impl @import("aes/aesni.zig");
-} else if (std.Target.current.cpu.arch == .aarch64 and has_armaes)
+} else if (builtin.cpu.arch == .aarch64 and builtin.zig_backend != .stage2_c and has_armaes)
 impl: {
     break :impl @import("aes/armcrypto.zig");
 } else impl: {
     break :impl @import("aes/soft.zig");
 };
+
+/// `true` if AES is backed by hardware (AES-NI on x86_64, ARM Crypto Extensions on AArch64).
+/// Software implementations are much slower, and should be avoided if possible.
+pub const has_hardware_support =
+    (builtin.cpu.arch == .x86_64 and has_aesni and has_avx) or
+    (builtin.cpu.arch == .aarch64 and has_armaes);
 
 pub const Block = impl.Block;
 pub const AesEncryptCtx = impl.AesEncryptCtx;
@@ -47,8 +48,8 @@ test "ctr" {
 
     var out: [exp_out.len]u8 = undefined;
     var ctx = Aes128.initEnc(key);
-    ctr(AesEncryptCtx(Aes128), ctx, out[0..], in[0..], iv, builtin.Endian.Big);
-    testing.expectEqualSlices(u8, exp_out[0..], out[0..]);
+    ctr(AesEncryptCtx(Aes128), ctx, out[0..], in[0..], iv, std.builtin.Endian.big);
+    try testing.expectEqualSlices(u8, exp_out[0..], out[0..]);
 }
 
 test "encrypt" {
@@ -61,7 +62,7 @@ test "encrypt" {
         var out: [exp_out.len]u8 = undefined;
         var ctx = Aes128.initEnc(key);
         ctx.encrypt(out[0..], in[0..]);
-        testing.expectEqualSlices(u8, exp_out[0..], out[0..]);
+        try testing.expectEqualSlices(u8, exp_out[0..], out[0..]);
     }
 
     // Appendix C.3
@@ -76,7 +77,7 @@ test "encrypt" {
         var out: [exp_out.len]u8 = undefined;
         var ctx = Aes256.initEnc(key);
         ctx.encrypt(out[0..], in[0..]);
-        testing.expectEqualSlices(u8, exp_out[0..], out[0..]);
+        try testing.expectEqualSlices(u8, exp_out[0..], out[0..]);
     }
 }
 
@@ -90,7 +91,7 @@ test "decrypt" {
         var out: [exp_out.len]u8 = undefined;
         var ctx = Aes128.initDec(key);
         ctx.decrypt(out[0..], in[0..]);
-        testing.expectEqualSlices(u8, exp_out[0..], out[0..]);
+        try testing.expectEqualSlices(u8, exp_out[0..], out[0..]);
     }
 
     // Appendix C.3
@@ -105,7 +106,7 @@ test "decrypt" {
         var out: [exp_out.len]u8 = undefined;
         var ctx = Aes256.initDec(key);
         ctx.decrypt(out[0..], in[0..]);
-        testing.expectEqualSlices(u8, exp_out[0..], out[0..]);
+        try testing.expectEqualSlices(u8, exp_out[0..], out[0..]);
     }
 }
 
@@ -115,40 +116,57 @@ test "expand 128-bit key" {
         "2b7e151628aed2a6abf7158809cf4f3c", "a0fafe1788542cb123a339392a6c7605", "f2c295f27a96b9435935807a7359f67f", "3d80477d4716fe3e1e237e446d7a883b", "ef44a541a8525b7fb671253bdb0bad00", "d4d1c6f87c839d87caf2b8bc11f915bc", "6d88a37a110b3efddbf98641ca0093fd", "4e54f70e5f5fc9f384a64fb24ea6dc4f", "ead27321b58dbad2312bf5607f8d292f", "ac7766f319fadc2128d12941575c006e", "d014f9a8c9ee2589e13f0cc8b6630ca6",
     };
     const exp_dec = [_]*const [32:0]u8{
-        "2b7e151628aed2a6abf7158809cf4f3c", "a0fafe1788542cb123a339392a6c7605", "f2c295f27a96b9435935807a7359f67f", "3d80477d4716fe3e1e237e446d7a883b", "ef44a541a8525b7fb671253bdb0bad00", "d4d1c6f87c839d87caf2b8bc11f915bc", "6d88a37a110b3efddbf98641ca0093fd", "4e54f70e5f5fc9f384a64fb24ea6dc4f", "ead27321b58dbad2312bf5607f8d292f", "ac7766f319fadc2128d12941575c006e", "d014f9a8c9ee2589e13f0cc8b6630ca6",
+        "d014f9a8c9ee2589e13f0cc8b6630ca6", "0c7b5a631319eafeb0398890664cfbb4", "df7d925a1f62b09da320626ed6757324", "12c07647c01f22c7bc42d2f37555114a", "6efcd876d2df54807c5df034c917c3b9", "6ea30afcbc238cf6ae82a4b4b54a338d", "90884413d280860a12a128421bc89739", "7c1f13f74208c219c021ae480969bf7b", "cc7505eb3e17d1ee82296c51c9481133", "2b3708a7f262d405bc3ebdbf4b617d62", "2b7e151628aed2a6abf7158809cf4f3c",
     };
     const enc = Aes128.initEnc(key);
     const dec = Aes128.initDec(key);
     var exp: [16]u8 = undefined;
 
-    for (enc.key_schedule.round_keys) |round_key, i| {
+    for (enc.key_schedule.round_keys, 0..) |round_key, i| {
         _ = try std.fmt.hexToBytes(&exp, exp_enc[i]);
-        testing.expectEqualSlices(u8, &exp, &round_key.toBytes());
+        try testing.expectEqualSlices(u8, &exp, &round_key.toBytes());
     }
-    for (enc.key_schedule.round_keys) |round_key, i| {
+    for (dec.key_schedule.round_keys, 0..) |round_key, i| {
         _ = try std.fmt.hexToBytes(&exp, exp_dec[i]);
-        testing.expectEqualSlices(u8, &exp, &round_key.toBytes());
+        try testing.expectEqualSlices(u8, &exp, &round_key.toBytes());
     }
 }
 
 test "expand 256-bit key" {
-    const key = [_]u8{ 0x60, 0x3d, 0xeb, 0x10, 0x15, 0xca, 0x71, 0xbe, 0x2b, 0x73, 0xae, 0xf0, 0x85, 0x7d, 0x77, 0x81, 0x1f, 0x35, 0x2c, 0x07, 0x3b, 0x61, 0x08, 0xd7, 0x2d, 0x98, 0x10, 0xa3, 0x09, 0x14, 0xdf, 0xf4 };
+    const key = [_]u8{
+        0x60, 0x3d, 0xeb, 0x10,
+        0x15, 0xca, 0x71, 0xbe,
+        0x2b, 0x73, 0xae, 0xf0,
+        0x85, 0x7d, 0x77, 0x81,
+        0x1f, 0x35, 0x2c, 0x07,
+        0x3b, 0x61, 0x08, 0xd7,
+        0x2d, 0x98, 0x10, 0xa3,
+        0x09, 0x14, 0xdf, 0xf4,
+    };
     const exp_enc = [_]*const [32:0]u8{
-        "603deb1015ca71be2b73aef0857d7781", "1f352c073b6108d72d9810a30914dff4", "9ba354118e6925afa51a8b5f2067fcde", "a8b09c1a93d194cdbe49846eb75d5b9a", "d59aecb85bf3c917fee94248de8ebe96", "b5a9328a2678a647983122292f6c79b3", "812c81addadf48ba24360af2fab8b464", "98c5bfc9bebd198e268c3ba709e04214", "68007bacb2df331696e939e46c518d80", "c814e20476a9fb8a5025c02d59c58239", "de1369676ccc5a71fa2563959674ee15", "5886ca5d2e2f31d77e0af1fa27cf73c3", "749c47ab18501ddae2757e4f7401905a", "cafaaae3e4d59b349adf6acebd10190d", "fe4890d1e6188d0b046df344706c631e",
+        "603deb1015ca71be2b73aef0857d7781", "1f352c073b6108d72d9810a30914dff4", "9ba354118e6925afa51a8b5f2067fcde",
+        "a8b09c1a93d194cdbe49846eb75d5b9a", "d59aecb85bf3c917fee94248de8ebe96", "b5a9328a2678a647983122292f6c79b3",
+        "812c81addadf48ba24360af2fab8b464", "98c5bfc9bebd198e268c3ba709e04214", "68007bacb2df331696e939e46c518d80",
+        "c814e20476a9fb8a5025c02d59c58239", "de1369676ccc5a71fa2563959674ee15", "5886ca5d2e2f31d77e0af1fa27cf73c3",
+        "749c47ab18501ddae2757e4f7401905a", "cafaaae3e4d59b349adf6acebd10190d", "fe4890d1e6188d0b046df344706c631e",
     };
     const exp_dec = [_]*const [32:0]u8{
-        "fe4890d1e6188d0b046df344706c631e", "ada23f4963e23b2455427c8a5c709104", "57c96cf6074f07c0706abb07137f9241", "b668b621ce40046d36a047ae0932ed8e", "34ad1e4450866b367725bcc763152946", "32526c367828b24cf8e043c33f92aa20", "c440b289642b757227a3d7f114309581", "d669a7334a7ade7a80c8f18fc772e9e3", "25ba3c22a06bc7fb4388a28333934270", "54fb808b9c137949cab22ff547ba186c", "6c3d632985d1fbd9e3e36578701be0f3", "4a7459f9c8e8f9c256a156bc8d083799", "42107758e9ec98f066329ea193f8858b", "8ec6bff6829ca03b9e49af7edba96125", "603deb1015ca71be2b73aef0857d7781",
+        "fe4890d1e6188d0b046df344706c631e", "ada23f4963e23b2455427c8a5c709104", "57c96cf6074f07c0706abb07137f9241",
+        "b668b621ce40046d36a047ae0932ed8e", "34ad1e4450866b367725bcc763152946", "32526c367828b24cf8e043c33f92aa20",
+        "c440b289642b757227a3d7f114309581", "d669a7334a7ade7a80c8f18fc772e9e3", "25ba3c22a06bc7fb4388a28333934270",
+        "54fb808b9c137949cab22ff547ba186c", "6c3d632985d1fbd9e3e36578701be0f3", "4a7459f9c8e8f9c256a156bc8d083799",
+        "42107758e9ec98f066329ea193f8858b", "8ec6bff6829ca03b9e49af7edba96125", "603deb1015ca71be2b73aef0857d7781",
     };
     const enc = Aes256.initEnc(key);
     const dec = Aes256.initDec(key);
     var exp: [16]u8 = undefined;
 
-    for (enc.key_schedule.round_keys) |round_key, i| {
+    for (enc.key_schedule.round_keys, 0..) |round_key, i| {
         _ = try std.fmt.hexToBytes(&exp, exp_enc[i]);
-        testing.expectEqualSlices(u8, &exp, &round_key.toBytes());
+        try testing.expectEqualSlices(u8, &exp, &round_key.toBytes());
     }
-    for (dec.key_schedule.round_keys) |round_key, i| {
+    for (dec.key_schedule.round_keys, 0..) |round_key, i| {
         _ = try std.fmt.hexToBytes(&exp, exp_dec[i]);
-        testing.expectEqualSlices(u8, &exp, &round_key.toBytes());
+        try testing.expectEqualSlices(u8, &exp, &round_key.toBytes());
     }
 }
